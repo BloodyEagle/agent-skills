@@ -100,10 +100,10 @@ const outline = symbols
   .map(s => `  L${String(s.line).padStart(4)}  [${s.kind}] ${s.name}`)
   .join('\n');
 
+// Массив symbols в вывод не включаем: он дублирует outline и удваивает расход токенов.
 console.log(JSON.stringify({
   file: args.file,
   lines: lines.length,
   count: symbols.length,
-  symbols,
   outline: outline || '(объявления не найдены)'
 }));

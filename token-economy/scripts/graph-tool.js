@@ -1,12 +1,20 @@
-// graph-tool.js — граф зависимостей TS/Angular с кэшем и точечными запросами.
-// Один раз строит graph-deps.json, дальше отвечает на навигационные вопросы
-// без обхода репозитория: где определён символ, кто импортирует файл,
-// цепочка связей, циклы. Актуальность проверяет сам (mtime) и перестраивает
-// инкрементально — только изменённые файлы.
+// graph-tool.js — граф зависимостей Angular-проекта: TS, HTML-шаблоны и стили (CSS/SCSS/Sass/Less).
+// Один раз строит graph-deps.json, дальше отвечает на навигационные вопросы без обхода
+// репозитория: где определён символ, кто импортирует/использует файл, цепочка связей, циклы.
+// Актуальность проверяет сам (mtime, список файлов, angular.json/tsconfig) и перестраивает
+// инкрементально — парсятся только изменённые файлы.
+//
+// Рёбра (A → B = «A зависит от B»):
+//   ts    → ts               import / export … from / import()
+//   ts    → html, стиль      templateUrl, styleUrl(s), import './x.scss?inline'
+//   ts    → ts               компонент/директива/пайп, использованные в inline-template
+//   html  → ts               компонент/директива/пайп, использованные в шаблоне (по selector / name)
+//   html  → стиль            <link rel="stylesheet" href="…"> (index.html)
+//   стиль → стиль            @use / @forward / @import / @plugin
+// Определения в стилях попадают в symbols: $var, @mixin, @function, Less @var и .mixin(), --custom-prop.
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 let args = {};
 // CLI-режим: node graph-tool.js build file=src/app/a.ts depth=2
@@ -24,30 +32,57 @@ const cwd = process.cwd();
 const ROOT = path.resolve(cwd, args.root || 'src');
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
+const GRAPH_VERSION = 2; // формат graph-deps.json и кэша; смена версии пересобирает всё
+const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const EXCLUDE = new Set(['node_modules', '.git', 'dist', '.kilocode', '.angular', 'coverage', 'build']);
 const NG_KINDS = { Component: 'component', Directive: 'directive', Pipe: 'pipe', Injectable: 'injectable', NgModule: 'ngmodule' };
 const KIND_PRI = { component: 5, directive: 4, pipe: 3, injectable: 3, ngmodule: 2, class: 1 };
+const KNOWN_EXT = /\.(tsx?|html|css|scss|sass|less)$/i;
+const ASSET_EXT = /\.(html|css|scss|sass|less)(\?.*)?$/i;
+const CONFIG_FILES = ['angular.json', '.angular.json', 'tsconfig.json'];
 
 const emit = (obj) => console.log(JSON.stringify(obj));
 const fail = (msg) => { emit({ error: msg }); process.exit(1); };
 const toPosix = (p) => path.relative(cwd, p).replace(/\\/g, '/');
+const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+const statCache = new Map();
+const statOf = (f) => {
+  let s = statCache.get(f);
+  if (!s) { s = fs.statSync(f); statCache.set(f, s); }
+  return s;
+};
 
 /**
- * Собирает .ts файлы проекта (без спеков и .d.ts).
+ * Тип файла по имени: 'ts' | 'html' | 'style' | null.
+ */
+function fileType(name) {
+  if (/\.(ts|tsx)$/.test(name)) return 'ts';
+  if (/\.html$/i.test(name)) return 'html';
+  if (/\.(css|scss|sass|less)$/i.test(name)) return 'style';
+  return null;
+}
+
+/**
+ * Собирает файлы проекта: .ts/.tsx (без спеков и .d.ts), .html и стили (без *.min.css и файлов > 1 МБ).
  */
 function collectFiles(dir, acc = []) {
   if (!fs.existsSync(dir)) return acc;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) { if (!EXCLUDE.has(e.name)) collectFiles(p, acc); }
-    else if (/\.(ts|tsx)$/.test(e.name) && !e.name.endsWith('.d.ts')
-      && (args.specs || !/\.(spec|test)\.tsx?$/.test(e.name))) acc.push(p);
+    if (e.isDirectory()) { if (!EXCLUDE.has(e.name)) collectFiles(p, acc); continue; }
+    const type = fileType(e.name);
+    if (!type) continue;
+    if (type === 'ts' && (e.name.endsWith('.d.ts') || (!args.specs && /\.(spec|test)\.tsx?$/.test(e.name)))) continue;
+    if (type === 'style' && /\.min\.css$/i.test(e.name)) continue;
+    if (statOf(p).size > MAX_BYTES) continue;
+    acc.push(p);
   }
   return acc;
 }
 
 /**
- * JSONC без комментариев (для чтения compilerOptions.paths).
+ * JSONC без комментариев (для чтения tsconfig.json / angular.json).
  */
 function parseJsonc(text) {
   let out = '', i = 0, str = false;
@@ -95,12 +130,247 @@ function loadAliases() {
 }
 
 /**
- * Разбирает содержимое .ts: импорты, экспорты, объявления с номерами строк.
+ * Каталоги поиска для @use/@import в стилях: stylePreprocessorOptions.includePaths из angular.json.
+ * @returns {string[]} абсолютные пути.
  */
-function parseFile(content) {
+function loadStyleIncludePaths() {
+  const out = new Set();
+  for (const name of ['angular.json', '.angular.json']) {
+    try {
+      const file = path.join(cwd, name);
+      if (!fs.existsSync(file)) continue;
+      (function walkCfg(o) {
+        if (!o || typeof o !== 'object') return;
+        const sp = o.stylePreprocessorOptions;
+        if (sp && typeof sp === 'object')
+          for (const p of [].concat(sp.includePaths || [])) if (typeof p === 'string') out.add(path.resolve(cwd, p));
+        for (const v of Object.values(o)) walkCfg(v);
+      })(parseJsonc(fs.readFileSync(file, 'utf8')));
+    } catch (e) { /* битый angular.json — просто без includePaths */ }
+  }
+  return [...out];
+}
+
+// ---------- разбор HTML ----------
+
+/**
+ * Убирает HTML-комментарии, сохраняя переводы строк.
+ */
+const stripHtmlComments = (s) => s.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ''));
+
+/**
+ * Имя атрибута шаблона без Angular-обёрток: [x] / [(x)] / (x) / *x → x.
+ */
+function normAttr(a) {
+  if (a[0] === '*') return a.slice(1);
+  if (a.startsWith('[(')) return a.slice(2, a.endsWith(')]') ? -2 : undefined);
+  if (a[0] === '[') return a.slice(1, a.endsWith(']') ? -1 : undefined);
+  if (a[0] === '(') return a.slice(1, a.endsWith(')') ? -1 : undefined);
+  return a;
+}
+
+/**
+ * Собирает из шаблона то, по чему находятся компоненты/директивы/пайпы:
+ * элементы (тег + имена атрибутов + статические классы) и имена пайпов.
+ * @param {string} text - HTML шаблона (без экранирования).
+ * @returns {{els: Array<{t: string, a: string[], c: string[]}>, pipes: string[]}|null}
+ */
+function collectUsages(text) {
+  const code = stripHtmlComments(text);
+  const els = [], seen = new Set();
+  const reTag = /<([A-Za-z][\w.:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
+  const reAttr = /([^\s=<>"'\/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|[^\s>]+))?/g;
+  let m;
+  while ((m = reTag.exec(code))) {
+    const attrs = new Set(), classes = new Set();
+    let a;
+    reAttr.lastIndex = 0;
+    while ((a = reAttr.exec(m[2]))) {
+      const name = normAttr(a[1]);
+      if (!name || name[0] === '#' || name[0] === '@') continue;
+      attrs.add(name);
+      if (name === 'class' && a[1] === 'class') {
+        for (const c of (a[2] || a[3] || '').split(/\s+/)) if (c && !c.includes('{{')) classes.add(c);
+      }
+    }
+    const el = { t: m[1], a: [...attrs].sort(), c: [...classes].sort() };
+    const key = el.t + '|' + el.a.join(',') + '|' + el.c.join(' ');
+    if (!seen.has(key) && seen.size < 3000) { seen.add(key); els.push(el); }
+  }
+  const pipes = new Set();
+  const rePipe = /(?<!\|)\|(?!\|)\s*([A-Za-z_$][\w$]*)/g;
+  while ((m = rePipe.exec(code))) pipes.add(m[1]);
+  return els.length || pipes.size ? { els, pipes: [...pipes] } : null;
+}
+
+/**
+ * Объединяет два результата collectUsages.
+ */
+function mergeUsages(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return { els: a.els.concat(b.els), pipes: [...new Set(a.pipes.concat(b.pipes))] };
+}
+
+/**
+ * Разбирает selector компонента/директивы: «app-x, [appY], button[appZ]:not(.q)» → части {tag, attrs, classes}.
+ * Значения атрибутов и :not() игнорируются — достаточно присутствия имени.
+ */
+function parseSelector(sel) {
+  const raw = [];
+  let depth = 0, cur = '';
+  for (const ch of sel) {
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth--;
+    if (ch === ',' && depth === 0) { raw.push(cur); cur = ''; } else cur += ch;
+  }
+  raw.push(cur);
+  const parts = [];
+  for (let p of raw) {
+    p = p.replace(/:not\((?:[^()]|\([^()]*\))*\)/g, '').trim();
+    if (!p) continue;
+    const tag = p.match(/^([A-Za-z][\w-]*|\*)/);
+    const attrs = [...p.matchAll(/\[\s*([\w.:-]+)\s*(?:[~|^$*]?=[^\]]*)?\]/g)].map((x) => x[1]);
+    const classes = [...p.replace(/\[[^\]]*\]/g, '').matchAll(/\.([\w-]+)/g)].map((x) => x[1]);
+    const t = tag && tag[1] !== '*' ? tag[1] : null;
+    if (t || attrs.length || classes.length) parts.push({ tag: t, attrs, classes });
+  }
+  return parts;
+}
+
+/**
+ * Проверка: элемент шаблона подходит под часть селектора (все атрибуты и классы присутствуют).
+ */
+function partMatches(part, el) {
+  if (part.tag && part.tag !== el.t) return false;
+  for (const a of part.attrs) if (!el.a.includes(a)) return false;
+  for (const c of part.classes) if (!el.c.includes(c)) return false;
+  return true;
+}
+
+// ---------- разбор стилей ----------
+
+/**
+ * Убирает комментарии из CSS/SCSS/Sass/Less, не трогая строки и url(...); переводы строк сохраняются,
+ * поэтому номера строк совпадают с исходником.
+ * @param {string} code - исходник стиля.
+ * @param {boolean} lineComments - удалять ли «//» (в чистом CSS их нет).
+ */
+function stripStyleComments(code, lineComments) {
+  let out = '', i = 0;
+  const n = code.length;
+  while (i < n) {
+    const c = code[i], nx = code[i + 1];
+    if (c === '"' || c === "'") {
+      out += c; i++;
+      while (i < n && code[i] !== c && code[i] !== '\n') {
+        if (code[i] === '\\') { out += code[i] + (code[i + 1] || ''); i += 2; continue; }
+        out += code[i++];
+      }
+      if (i < n) { out += code[i]; i++; }
+      continue;
+    }
+    if (c === '/' && nx === '*') {
+      i += 2;
+      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) { if (code[i] === '\n') out += '\n'; i++; }
+      i += 2; continue;
+    }
+    if (lineComments && c === '/' && nx === '/') { while (i < n && code[i] !== '\n') i++; continue; }
+    if ((c === 'u' || c === 'U') && code.slice(i, i + 4).toLowerCase() === 'url(') {
+      out += code.slice(i, i + 4); i += 4;
+      let j = i;
+      while (j < n && /\s/.test(code[j])) j++;
+      if (code[j] !== '"' && code[j] !== "'") { // url(http://x) без кавычек — копируем до «)»
+        while (i < n && code[i] !== ')' && code[i] !== '\n') out += code[i++];
+      }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+/**
+ * Разбирает стиль: @use/@forward/@import/@plugin и определения переменных, миксинов, функций, custom-свойств.
+ */
+function parseStyle(content, rel) {
+  const ext = path.extname(rel).toLowerCase();
+  const code = stripStyleComments(content.replace(/^\uFEFF/, ''), ext !== '.css');
+  const lineAt = (idx) => code.slice(0, idx).split('\n').length;
+  const specifiers = [], entities = [], seen = new Set();
+  let m;
+
+  const reAt = /@(use|forward|import|plugin)\b/g;
+  while ((m = reAt.exec(code))) {
+    let j = reAt.lastIndex, stmt = '';
+    while (j < code.length && stmt.length < 600) {
+      const ch = code[j];
+      if (ch === ';' || ch === '{') break;
+      if (ch === '\n' && !/,\s*$/.test(stmt)) break;
+      stmt += ch; j++;
+    }
+    const found = [];
+    const reStr = /"([^"]+)"|'([^']+)'|url\(\s*([^"')\s][^)]*?)\s*\)/gi;
+    let s;
+    while ((s = reStr.exec(stmt))) found.push(s[1] || s[2] || s[3]);
+    if (m[1] !== 'import' && found.length) found.length = 1; // use/forward/plugin: только первый аргумент
+    for (const f of found) specifiers.push(f);
+  }
+
+  const add = (name, kind, idx) => {
+    if (seen.has(kind + name)) return;
+    seen.add(kind + name);
+    entities.push({ name, kind, line: lineAt(idx) });
+  };
+  if (ext === '.scss' || ext === '.sass') {
+    const reVar = /^[ \t]*(\$[\w-]+)\s*:/gm;
+    while ((m = reVar.exec(code))) add(m[1], 'variable', m.index);
+    const reDef = /@(mixin|function)\s+([\w-]+)/g;
+    while ((m = reDef.exec(code))) add(m[2], m[1], m.index);
+  }
+  if (ext === '.less') {
+    const reVar = /^[ \t]*(@[\w-]+)\s*:(?!:)/gm;
+    while ((m = reVar.exec(code))) add(m[1], 'variable', m.index);
+    const reMixin = /^[ \t]*(\.[\w-]+)\s*\([^)]*\)\s*(?:when\b[^{]*)?\{/gm;
+    while ((m = reMixin.exec(code))) add(m[1], 'mixin', m.index);
+  }
+  const reProp = /(?:^|[;{\s])(--[\w-]+)\s*:/g;
+  while ((m = reProp.exec(code))) add(m[1], 'custom-property', m.index);
+
+  return { specifiers, entities, exports: [], reexportAll: false, loc: content.split('\n').length };
+}
+
+/**
+ * Разбирает HTML: использование компонентов/директив/пайпов и подключённые стили (<link rel="stylesheet">).
+ */
+function parseHtml(content) {
+  const code = stripHtmlComments(content.replace(/^\uFEFF/, ''));
+  const fileRefs = [];
+  const reLink = /<link\b[^>]*>/gi;
+  let m;
+  while ((m = reLink.exec(code))) {
+    if (!/\brel\s*=\s*["']?stylesheet/i.test(m[0])) continue;
+    const h = m[0].match(/\bhref\s*=\s*(?:"([^"]+)"|'([^']+)')/i);
+    const href = h && (h[1] || h[2]);
+    if (href && !/^(https?:|\/\/|data:|\{\{)/i.test(href)) fileRefs.push(href);
+  }
+  return {
+    specifiers: [], fileRefs, usages: collectUsages(code),
+    entities: [], exports: [], reexportAll: false, loc: content.split('\n').length
+  };
+}
+
+// ---------- разбор TS ----------
+
+/**
+ * Разбирает содержимое .ts: импорты, экспорты, объявления с номерами строк,
+ * а для @Component — templateUrl, styleUrl(s) и использование в inline-template.
+ */
+function parseTs(content) {
   content = content.replace(/^\uFEFF/, '');
-  const specifiers = [], entities = [], exports = [];
-  let reexportAll = false, m;
+  const specifiers = [], entities = [], exports = [], fileRefs = [];
+  let reexportAll = false, templateUrl = null, usages = null, m;
+  const decorated = new Set();
   const lineAt = (idx) => content.slice(0, idx).split('\n').length;
 
   // Импорты и реэкспорты (включая динамические import()); многострочные поддержаны
@@ -127,27 +397,61 @@ function parseFile(content) {
     if (m[1]) exports.push(m[3]);
   }
 
-  // Angular-декораторы: вид сущности + селектор
-  const reNg = /@(Component|Directive|Pipe|Injectable|NgModule)\s*\(([\s\S]{0,1500}?)\)\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/g;
+  // Angular-декораторы: вид сущности, selector / имя пайпа, шаблон и стили
+  const reNg = /@(Component|Directive|Pipe|Injectable|NgModule)\s*\(([\s\S]{0,30000}?)\)\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/g;
   while ((m = reNg.exec(content))) {
-    const sel = m[2].match(/selector\s*:\s*['"`]([^'"`]+)['"`]/);
-    entities.push({ name: m[3], kind: NG_KINDS[m[1]], line: lineAt(m.index), ...(sel ? { selector: sel[1] } : {}) });
+    const body = m[2];
+    const entity = { name: m[3], kind: NG_KINDS[m[1]], line: lineAt(m.index) };
+    const sel = body.match(/\bselector\s*:\s*['"`]([^'"`]+)['"`]/);
+    if (sel) entity.selector = sel[1];
+    if (m[1] === 'Pipe') {
+      const pn = body.match(/\bname\s*:\s*['"`]([^'"`]+)['"`]/);
+      if (pn) entity.pipeName = pn[1];
+    }
+    if (m[1] === 'Component') {
+      const tu = body.match(/\btemplateUrl\s*:\s*(['"`])([^'"`\n]+)\1/);
+      if (tu) templateUrl = tu[2];
+      const su = body.match(/\bstyleUrl\s*:\s*(['"`])([^'"`\n]+)\1/);
+      if (su) fileRefs.push(su[2]);
+      const sus = body.match(/\bstyleUrls\s*:\s*\[([^\]]*)\]/);
+      if (sus) for (const q of sus[1].matchAll(/['"`]([^'"`\n]+)['"`]/g)) fileRefs.push(q[1]);
+      const inl = body.match(/\btemplate\s*:\s*(`(?:\\[\s\S]|[^`\\])*`|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*")/);
+      if (inl) usages = mergeUsages(usages, collectUsages(inl[1].slice(1, -1)));
+    }
+    entities.push(entity);
     exports.push(m[3]);
+    decorated.add(m[3]);
   }
+  // у декорированного класса оставляем одну запись (component/directive/…), без дубля «class»
+  const uniqEntities = entities.filter((e) => !(e.kind === 'class' && decorated.has(e.name)));
 
   return {
     specifiers: [...new Set(specifiers)],
-    entities,
+    entities: uniqEntities,
     exports: [...new Set(exports)],
     reexportAll,
-    loc: content.split('\n').length
+    loc: content.split('\n').length,
+    ...(templateUrl ? { templateUrl } : {}),
+    ...(fileRefs.length ? { fileRefs } : {}),
+    ...(usages ? { usages } : {})
   };
 }
 
+function parseFile(content, rel) {
+  const type = fileType(rel);
+  if (type === 'html') return parseHtml(content);
+  if (type === 'style') return parseStyle(content, rel);
+  return parseTs(content);
+}
+
+// ---------- резолвинг ссылок ----------
+
 /**
- * Превращает спецификатор импорта в файл проекта либо имя внешнего пакета.
+ * Превращает спецификатор TS-импорта в файл проекта либо имя внешнего пакета.
+ * Импорты ресурсов ('./x.scss?inline', './x.html') резолвятся по точному пути.
  */
 function resolveSpec(spec, fromAbs, fileSet, alias) {
+  if (ASSET_EXT.test(spec)) spec = spec.replace(/\?.*$/, '');
   let bases;
   if (spec.startsWith('.')) bases = [path.resolve(path.dirname(fromAbs), spec)];
   else {
@@ -158,7 +462,63 @@ function resolveSpec(spec, fromAbs, fileSet, alias) {
   for (const b of bases)
     for (const v of [b, b + '.ts', b + '.tsx', path.join(b, 'index.ts')])
       if (fileSet.has(v)) return { file: v };
-  return null; // стили, ассеты, html — вне графа
+  return null;
+}
+
+/**
+ * Расширения, которые импортёр может подтянуть без указания расширения (Sass не подключает .less и наоборот).
+ */
+function styleFamily(fromAbs) {
+  const e = path.extname(fromAbs).toLowerCase();
+  if (e === '.less') return ['.less', '.css'];
+  if (e === '.css') return ['.css'];
+  return ['.scss', '.sass', '.css'];
+}
+
+/**
+ * Кандидаты файла стиля для базового пути: расширения, партиалы (_name) и index.
+ */
+function styleCandidates(base, exts) {
+  const dir = path.dirname(base), name = path.basename(base);
+  const out = [];
+  if (/\.(css|scss|sass|less)$/i.test(name)) out.push(base, path.join(dir, '_' + name));
+  else for (const e of exts) out.push(path.join(dir, '_' + name + e), path.join(dir, name + e));
+  for (const e of exts) out.push(path.join(base, '_index' + e), path.join(base, 'index' + e));
+  return out;
+}
+
+/**
+ * Резолвит @use/@import: относительно файла, затем includePaths из angular.json;
+ * пакеты (@angular/material, ~pkg, папка в node_modules) — в external.
+ */
+function resolveStyleSpec(spec, fromAbs, fileSet, includePaths) {
+  let s = spec.trim().replace(/[?#].*$/, '');
+  if (!s || /^(https?:|data:|sass:|\/\/)/i.test(s)) return null;
+  const tilde = s.startsWith('~');
+  if (tilde) s = s.slice(1);
+  const bases = [];
+  if (!tilde) bases.push(path.resolve(path.dirname(fromAbs), s));
+  if (!s.startsWith('.')) {
+    for (const ip of includePaths) bases.push(path.resolve(ip, s));
+    if (tilde) bases.push(path.resolve(cwd, s));
+  }
+  for (const b of bases)
+    for (const v of styleCandidates(b, styleFamily(fromAbs))) if (fileSet.has(v)) return { file: v };
+  if (s.startsWith('.') || s.startsWith('/')) return null;
+  const pkg = s.startsWith('@') ? s.split('/').slice(0, 2).join('/') : s.split('/')[0];
+  if (tilde || s.startsWith('@') || fs.existsSync(path.join(cwd, 'node_modules', pkg))) return { external: pkg };
+  return null;
+}
+
+/**
+ * Резолвит ссылку на ресурс (templateUrl, styleUrls, <link href>) по точному пути: от файла, затем от корня src.
+ */
+function resolveFileRef(ref, fromAbs, fileSet) {
+  const clean = ref.replace(/[?#].*$/, '');
+  if (!clean || /^(https?:|data:|\/)/i.test(clean)) return null;
+  for (const b of [path.resolve(path.dirname(fromAbs), clean), path.resolve(ROOT, clean)])
+    if (fileSet.has(b)) return b;
+  return null;
 }
 
 /**
@@ -207,55 +567,106 @@ function tarjan(nodes) {
 function buildGraph(files) {
   const t0 = Date.now();
   files = (files || collectFiles(ROOT)).sort();
-  if (!files.length) fail('Не найдено .ts файлов в ' + (args.root || 'src'));
+  if (!files.length) fail('Не найдено .ts/.html/стилей в ' + (args.root || 'src'));
 
   const fileSet = new Set(files);
   const alias = loadAliases();
+  const includePaths = loadStyleIncludePaths();
   let cache = {};
   try { cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); } catch (e) {}
-  const newCache = {};
+  if (cache.__v !== GRAPH_VERSION) cache = {};
+  const newCache = { __v: GRAPH_VERSION };
   let reparsed = 0;
 
   const nodes = files.map((f, i) => {
     const rel = toPosix(f);
-    const st = fs.statSync(f);
+    const st = statOf(f);
     const c = cache[rel];
     let data;
     if (c && c.mtime === st.mtimeMs && c.size === st.size) data = c.data;
-    else { data = parseFile(fs.readFileSync(f, 'utf8')); reparsed++; }
+    else { data = parseFile(fs.readFileSync(f, 'utf8'), rel); reparsed++; }
     newCache[rel] = { mtime: st.mtimeMs, size: st.size, data };
     return { id: i + 1, path: rel, ...data };
   });
   const idByAbs = new Map(files.map((f, i) => [f, i + 1]));
 
+  // 1. Явные ссылки: импорты, @use/@import, templateUrl/styleUrls, <link>
   const externals = new Set();
+  const ownerOfTemplate = new Map(); // id html → id компонента-владельца
   for (const n of nodes) {
     n.imports = [];
     n.external = [];
     const abs = path.join(cwd, n.path);
-    for (const spec of n.specifiers) {
-      const r = resolveSpec(spec, abs, fileSet, alias);
+    const type = fileType(n.path);
+    for (const spec of n.specifiers || []) {
+      const r = type === 'style' ? resolveStyleSpec(spec, abs, fileSet, includePaths) : resolveSpec(spec, abs, fileSet, alias);
       if (r && r.file) n.imports.push(idByAbs.get(r.file));
       else if (r && r.external) { n.external.push(r.external); externals.add(r.external); }
     }
-    n.imports = [...new Set(n.imports)].sort((a, b) => a - b);
-    n.external = [...new Set(n.external)].sort();
-    delete n.specifiers;
-    n.kind = nodeKind(n);
+    if (n.templateUrl) {
+      const f = resolveFileRef(n.templateUrl, abs, fileSet);
+      if (f) { n.imports.push(idByAbs.get(f)); ownerOfTemplate.set(idByAbs.get(f), n.id); }
+    }
+    for (const ref of n.fileRefs || []) {
+      const f = resolveFileRef(ref, abs, fileSet);
+      if (f) n.imports.push(idByAbs.get(f));
+    }
   }
 
-  const symbols = {}, selectors = {};
+  // 2. Индексы символов, селекторов и пайпов
+  const symbols = Object.create(null), selectors = Object.create(null);
+  const byTag = new Map(), byAttr = new Map(), byClass = new Map(), pipes = new Map();
+  const put = (map, key, val) => { if (!map.has(key)) map.set(key, []); map.get(key).push(val); };
   for (const n of nodes) {
     for (const e of n.entities) {
       (symbols[e.name] = symbols[e.name] || []).push(n.id);
-      if (e.selector) selectors[e.selector] = n.id;
+      if (e.pipeName) {
+        (symbols[e.pipeName] = symbols[e.pipeName] || []).push(n.id);
+        put(pipes, e.pipeName, n.id);
+      }
+      if (e.selector) {
+        selectors[e.selector] = n.id;
+        for (const part of parseSelector(e.selector)) {
+          const p = { ...part, id: n.id };
+          if (part.tag) put(byTag, part.tag, p);
+          else if (part.attrs.length) put(byAttr, part.attrs[0], p);
+          else put(byClass, part.classes[0], p);
+        }
+      }
     }
     for (const ex of n.exports) if (!symbols[ex]) symbols[ex] = [n.id];
   }
 
+  // 3. Использование в шаблонах (html и inline-template): шаблон → компонент/директива/пайп
+  for (const n of nodes) {
+    if (!n.usages) continue;
+    const targets = new Set();
+    for (const el of n.usages.els) {
+      const cand = new Set(byTag.get(el.t) || []);
+      for (const a of el.a) for (const p of byAttr.get(a) || []) cand.add(p);
+      for (const c of el.c) for (const p of byClass.get(c) || []) cand.add(p);
+      for (const p of cand) if (partMatches(p, el)) targets.add(p.id);
+    }
+    for (const name of n.usages.pipes) for (const id of pipes.get(name) || []) targets.add(id);
+    const owner = ownerOfTemplate.get(n.id);
+    // самого себя (рекурсивный компонент) и владельца шаблона не добавляем — иначе ts↔html даёт ложный цикл
+    for (const t of targets) if (t !== n.id && t !== owner) n.imports.push(t);
+  }
+
+  // 4. Уборка временных полей, виды узлов
+  const byKind = {};
+  for (const n of nodes) {
+    n.imports = [...new Set(n.imports)].sort((a, b) => a - b);
+    n.external = [...new Set(n.external)].sort();
+    for (const k of ['specifiers', 'fileRefs', 'templateUrl', 'usages']) delete n[k];
+    const type = fileType(n.path);
+    n.kind = type === 'html' ? 'template' : type === 'style' ? 'style' : nodeKind(n);
+    byKind[n.kind] = (byKind[n.kind] || 0) + 1;
+  }
+
   const cycles = tarjan(nodes);
   const graph = {
-    version: 1,
+    version: GRAPH_VERSION,
     root: args.root || 'src',
     files: nodes,
     symbols, selectors,
@@ -263,6 +674,7 @@ function buildGraph(files) {
     cycles,
     stats: {
       files: nodes.length,
+      byKind,
       edges: nodes.reduce((s, n) => s + n.imports.length, 0),
       externalPackages: externals.size,
       cycles: cycles.length
@@ -274,24 +686,31 @@ function buildGraph(files) {
 }
 
 /**
- * Отдаёт актуальный граф: при изменении/удалении файлов перестраивает сам.
+ * Отдаёт актуальный граф: при добавлении/удалении/переименовании/изменении файлов
+ * (а также angular.json и tsconfig.json) перестраивает сам.
  */
 function ensureGraph() {
   let graph = null;
   try { graph = JSON.parse(fs.readFileSync(GRAPH_FILE, 'utf8')); } catch (e) {}
   const files = collectFiles(ROOT);
-  let stale = !graph || graph.version !== 1
+  let stale = !graph || graph.version !== GRAPH_VERSION
     || graph.root !== (args.root || 'src')
     || files.length !== graph.files.length;
   if (!stale) {
+    const known = new Set(graph.files.map((f) => f.path));
+    stale = files.some((f) => !known.has(toPosix(f)));
+  }
+  if (!stale) {
     const gm = fs.statSync(GRAPH_FILE).mtimeMs;
-    for (const f of files) if (fs.statSync(f).mtimeMs > gm) { stale = true; break; }
+    stale = files.some((f) => statOf(f).mtimeMs > gm)
+      || CONFIG_FILES.some((c) => fs.existsSync(path.join(cwd, c)) && fs.statSync(path.join(cwd, c)).mtimeMs > gm);
   }
   return stale ? buildGraph(files) : { graph, reparsed: 0 };
 }
 
 /**
  * Ищет узел по id / пути / имени файла; при неоднозначности — список кандидатов.
+ * Запрос без расширения («profile.component») предпочитает .ts-файл его html/стилям-соседям.
  */
 function findNode(graph, q) {
   q = String(q).replace(/\\/g, '/');
@@ -300,17 +719,22 @@ function findNode(graph, q) {
     if (byId) return { node: byId };
   }
   const qs = q.toLowerCase();
+  const isCode = (f) => f.kind !== 'template' && f.kind !== 'style';
   let list = graph.files.filter((f) => f.path === q || f.path.endsWith('/' + q));
   if (!list.length) list = graph.files.filter((f) => f.path.toLowerCase() === qs || f.path.toLowerCase().endsWith('/' + qs));
   if (!list.length) {
-    const base = path.posix.basename(qs, path.posix.extname(qs));
+    const qbase = path.posix.basename(qs).replace(KNOWN_EXT, '');
     list = graph.files.filter((f) => {
       const b = path.posix.basename(f.path.toLowerCase());
-      return b === qs || b.replace(/\.(ts|tsx)$/, '') === base;
+      return b === qs || b.replace(KNOWN_EXT, '') === qbase;
     });
   }
   if (!list.length) list = graph.files.filter((f) => f.path.toLowerCase().includes(qs));
   if (!list.length) return { error: 'Файл не найден в графе: ' + q };
+  if (list.length > 1 && !KNOWN_EXT.test(q)) {
+    const code = list.filter(isCode);
+    if (code.length === 1) list = code;
+  }
   if (list.length > 1) return { ambiguous: list.slice(0, 15).map((f) => f.path + ' [' + f.kind + ']') };
   return { node: list[0] };
 }
@@ -373,20 +797,27 @@ if (op === 'stats') {
 }
 
 if (op === 'cycles') {
-  emit({ count: graph.cycles.length, cycles: graph.cycles.slice(0, 20) });
+  // большие циклические группы (сотни файлов) показываем выборкой — иначе вывод раздувается
+  const cap = (c) => (c.length > 15 ? { size: c.length, sample: c.slice(0, 15) } : c);
+  emit({ count: graph.cycles.length, cycles: graph.cycles.slice(0, 20).map(cap) });
   process.exit(0);
 }
 
 if (op === 'symbol') {
   if (!args.name) fail('Укажите payload.name');
-  const ids = graph.symbols[args.name];
+  const ids = has(graph.symbols, args.name) ? graph.symbols[args.name] : null;
   if (!ids) { emit({ name: args.name, definedIn: [] }); process.exit(0); }
   emit({
     name: args.name,
     definedIn: [...new Set(ids)].map((id) => {
       const f = byId(id);
-      const e = f.entities.find((x) => x.name === args.name);
-      return { file: f.path, kind: e ? e.kind : f.kind, ...(e && e.line ? { line: e.line } : {}), ...(e && e.selector ? { selector: e.selector } : {}) };
+      const e = f.entities.find((x) => x.name === args.name || x.pipeName === args.name);
+      return {
+        file: f.path, kind: e ? e.kind : f.kind,
+        ...(e && e.line ? { line: e.line } : {}),
+        ...(e && e.selector ? { selector: e.selector } : {}),
+        ...(e && e.pipeName ? { pipe: e.pipeName } : {})
+      };
     })
   });
   process.exit(0);
@@ -394,10 +825,21 @@ if (op === 'symbol') {
 
 if (op === 'selector') {
   if (!args.selector) fail('Укажите payload.selector');
-  const id = graph.selectors[args.selector];
-  emit(id
-    ? { selector: args.selector, file: byId(id).path, kind: byId(id).kind }
-    : { selector: args.selector, file: null });
+  const s = String(args.selector).trim();
+  const keys = Object.keys(graph.selectors);
+  const norm = (x) => x.replace(/[\[\]]/g, '');
+  const parts = (k) => parseSelector(k).length ? k.split(',').map((x) => x.trim()) : [k];
+  const key = keys.find((k) => k === s)
+    || keys.find((k) => parts(k).some((p) => p === s || norm(p) === norm(s) || p.includes('[' + norm(s) + ']')));
+  if (!key) { emit({ selector: s, file: null }); process.exit(0); }
+  const n = byId(graph.selectors[key]);
+  const rev = reverseIndex(graph);
+  const templates = (rev.get(n.id) || []).map(byId).filter((f) => f.kind === 'template').map((f) => f.path);
+  emit({
+    selector: key, file: n.path, kind: n.kind,
+    usedInTemplatesTotal: templates.length,
+    usedInTemplates: templates.slice(0, 30)
+  });
   process.exit(0);
 }
 
