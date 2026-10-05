@@ -60,7 +60,7 @@ graph — граф зависимостей с кэшем. Отвечает бе
 | Тип | Расширения | Что связывается |
 |---|---|---|
 | ts | `.ts`, `.tsx` (без `.spec`/`.test` и `.d.ts`) | `import` / `export … from` / `import()`; алиасы из tsconfig `paths`; `templateUrl`, `styleUrl(s)`; применение компонентов, директив и пайпов в inline-`template` |
-| template | `.html` | компоненты и директивы по `selector` (элемент, `[атрибут]`, `tag[атрибут]`, `.класс`), пайпы по имени; `<link rel="stylesheet">` |
+| template | .html | компоненты и директивы по selector (элемент, [атрибут], tag[атрибут], .класс), пайпы по имени; <link rel="stylesheet">; корневой index.html входит в граф |
 | style | `.css`, `.scss`, `.sass`, `.less` | `@use`, `@forward`, `@import`, `@plugin`; партиалы (`_name`), `index`, `includePaths` из angular.json; пакеты (`@angular/material`, `~pkg`) попадают в `external` |
 
 Направление ребра — «A зависит от B», поэтому:
