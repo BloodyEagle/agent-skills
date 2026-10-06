@@ -1,0 +1,46 @@
+services:
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: hindsight-embeddings
+    restart: unless-stopped
+    command:
+      - --model-id
+      - intfloat/multilingual-e5-small
+      - --default-prompt
+      - "query: "
+      - --port
+      - "8080"
+    volumes:
+      - tei-cache:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 300s   # первый старт скачивает ~470 МБ
+
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight-api:latest-slim
+    container_name: hindsight
+    restart: unless-stopped
+    depends_on:
+      embeddings:
+        condition: service_healthy
+    ports:
+      - "8888:8888"
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+    environment:
+      HINDSIGHT_API_DATABASE_URL: pg0
+      HINDSIGHT_API_EMBEDDINGS_PROVIDER: tei
+      HINDSIGHT_API_EMBEDDINGS_TEI_URL: http://embeddings:8080
+      HINDSIGHT_API_RERANKER_PROVIDER: rrf
+      HINDSIGHT_API_LLM_PROVIDER: ${PROVIDER}
+      HINDSIGHT_API_LLM_BASE_URL: ${BASE_URL}
+      HINDSIGHT_API_LLM_API_KEY: ${API_KEY}
+      HINDSIGHT_API_LLM_MODEL: deepseek-chat
+      HINDSIGHT_API_SKIP_LLM_VERIFICATION: "true"
+
+volumes:
+  hindsight-data:
+  tei-cache:
