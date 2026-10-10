@@ -1,14 +1,14 @@
 ---
-name: token-economy
+name: token-economy-ts
 description: Четыре скрипта, которые экономят токены при каждом вызове — поиск, оглавление файла, граф зависимостей (TS, HTML, стили) и генерация Angular-сущностей через CLI. Все команды — PowerShell.
 ---
 
-# Skill: token-economy
+# Skill: token-economy-ts
 
 ## Декларация инструментов (Kilo Code Agent Tool Schema)
 ```json
 {
-  "name": "token-economy",
+  "name": "token-economy-ts",
   "description": "Запускает скрипты для минимизации контекста ИИ.",
   "parameters": {
     "type": "object",
@@ -80,9 +80,9 @@ generate — обёртка над локальным Angular CLI (`node_modules
 
 Варианты пути `$TE`:
 
-    глобально на Windows: "$env:USERPROFILE\.kilocode\skills\token-economy\scripts"
-    локально в репозитории: ".kilo\skills\token-economy\scripts"
-    pwsh на Linux/macOS: "$HOME/.config/kilo/skills/token-economy/scripts"
+    глобально на Windows: "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"
+    локально в репозитории: ".kilo\skills\token-economy-ts\scripts"
+    pwsh на Linux/macOS: "$HOME/.config/kilo/skills/token-economy-ts/scripts"
 
 В Windows PowerShell 5.1 при кириллице в payload добавляй в начало команды `$OutputEncoding=[Text.Encoding]::UTF8;` (в PowerShell 7 кодировка UTF-8 по умолчанию).
 
@@ -90,14 +90,14 @@ generate — обёртка над локальным Angular CLI (`node_modules
 
 ### search
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"query":"ИскомыйТекст","ext":".ts"}' | node "$TE\code-searcher.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"query":"app-profile","ext":".html"}' | node "$TE\code-searcher.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"query":"ИскомыйТекст","ext":".ts"}' | node "$TE\code-searcher.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"query":"app-profile","ext":".html"}' | node "$TE\code-searcher.js"
 
 Параметры: `query` (обязательный), `ext` (по умолчанию `.ts`), `root` (по умолчанию `src`).
 
 ### outline
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"file":"src/app/modules/ais/appeals/appeal-subservices.service.ts"}' | node "$TE\symbol-index.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"file":"src/app/modules/ais/appeals/appeal-subservices.service.ts"}' | node "$TE\symbol-index.js"
 
 ### graph
 
@@ -105,24 +105,24 @@ generate — обёртка над локальным Angular CLI (`node_modules
 
 Где определён символ (класс, интерфейс, пайп по имени, `$переменная`, миксин, `--custom-prop`):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"op":"symbol","name":"UserService"}' | node "$TE\graph-tool.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"op":"symbol","name":"$primary"}' | node "$TE\graph-tool.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"op":"symbol","name":"UserService"}' | node "$TE\graph-tool.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"op":"symbol","name":"$primary"}' | node "$TE\graph-tool.js"
 
 Селектор компонента или директивы → файл и шаблоны, где он применён (`[appHighlight]` можно писать как `appHighlight`):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"op":"selector","selector":"app-profile"}' | node "$TE\graph-tool.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"op":"selector","selector":"app-profile"}' | node "$TE\graph-tool.js"
 
 Кто использует файл (обязательно перед правкой общего файла):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"op":"rdeps","file":"src/app/services/auth.service.ts","depth":2}' | node "$TE\graph-tool.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"op":"rdeps","file":"src/app/services/auth.service.ts","depth":2}' | node "$TE\graph-tool.js"
 
 Что использует файл:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"op":"deps","file":"src/app/profile/profile.component.html"}' | node "$TE\graph-tool.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"op":"deps","file":"src/app/profile/profile.component.html"}' | node "$TE\graph-tool.js"
 
 Цепочка связей между двумя файлами:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"op":"path","from":"src/app/app.component.ts","to":"src/styles/_variables.scss"}' | node "$TE\graph-tool.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"op":"path","from":"src/app/app.component.ts","to":"src/styles/_variables.scss"}' | node "$TE\graph-tool.js"
 
 Прочие операции: `node` (сводка по файлу: сущности, импорты, потребители), `cycles` (циклические группы; большие показываются выборкой), `stats` (размер графа и самые востребованные файлы), `build` (принудительная пересборка).
 
@@ -130,4 +130,4 @@ generate — обёртка над локальным Angular CLI (`node_modules
 
 ### generate
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy\scripts"; '{"type":"component","name":"components/profile"}' | node "$TE\scaffold-helper.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"; '{"type":"component","name":"components/profile"}' | node "$TE\scaffold-helper.js"
