@@ -379,6 +379,7 @@ function parsePhp(src) {
   for (const r of traitNames) addRef(r);
   for (const [full] of out.imports) { const c = full.toLowerCase(); if (!seenRef.has(c)) { seenRef.add(c); out.refs.push(c); } }
   for (const d of out.decls) for (const x of d.ext.concat(d.impl)) addRef(x);
+  for (const d of out.decls) d.extc = d.ext.map((x) => cands(x).join('|')); // предки с учётом namespace и use
 
   const callArgs = (open) => { // диапазоны токенов аргументов вызова
     const close = match[open];
@@ -411,6 +412,11 @@ function parsePhp(src) {
       if (!p.length) return null;
       const t0 = p[0];
       if (p.length === 1 && t0.k === 'str') { rel += t0.v; continue; }
+      // константы старого API: BX_ROOT, SITE_DIR, SITE_TEMPLATE_PATH
+      const cname = p.length === 1 && t0.k === 'name' ? t0.v.toUpperCase() : '';
+      if (cname === 'BX_ROOT' || cname === 'BX_PERSONAL_ROOT') { if (si === 0) base = 'doc'; rel += '/bitrix'; continue; }
+      if (cname === 'SITE_DIR') { if (si === 0) base = 'doc'; rel += '/'; continue; }
+      if (cname === 'SITE_TEMPLATE_PATH') { if (si === 0) base = 'doc'; rel += '{TPL}'; continue; }
       if (si > 0) return null;
       if (p.length === 1 && t0.k === 'name' && /^__dir__$/i.test(t0.v)) { base = 'dir'; continue; }
       if (t0.k === 'name' && /^dirname$/i.test(t0.v)) {
@@ -457,9 +463,24 @@ function parsePhp(src) {
     if (isOp(next, '(')) {
       const args = callArgs(i + 1);
       const fn = bare;
-      if (fn === 'includecomponent' && args.length) {
+      if (fn === 'includefile' && args.length) { // $APPLICATION->IncludeFile(SITE_DIR."include/x.php")
+        const pr = evalPath(args[0][0], args[0][1]);
+        if (pr) out.incs.push({ b: pr.b, r: pr.r, l: t.l });
+      } else if (fn === 'includecomponent' && args.length) {
         const id = argStr(args[0]);
         out.comps.push([id || '?', args[1] ? (argStr(args[1]) !== null ? argStr(args[1]) : '?') : '', t.l]);
+        if (id && id.toLowerCase() === 'bitrix:main.include' && args[2]) { // включаемая область: параметр PATH
+          const r2 = args[2];
+          for (let k = r2[0]; k < r2[1]; k++) {
+            if (T[k].k === 'str' && T[k].v === 'PATH' && isOp(T[k + 1], '=>')) {
+              let j = k + 2;
+              while (j < r2[1] && !isOp(T[j], ',')) { if (T[j].k === 'op' && OPEN[T[j].v] && match[j] > j) j = match[j]; j++; }
+              const pr = j - 1 >= k + 2 ? evalPath(k + 2, j - 1) : null;
+              if (pr) out.incs.push({ b: pr.b, r: pr.r, l: t.l });
+              break;
+            }
+          }
+        }
       } else if (['includemodule', 'requiremodule', 'includesharewaremodule', 'isinstalled'].includes(fn) && args.length && argStr(args[0]) && fn !== 'isinstalled') {
         out.mods.push([argStr(args[0]), t.l]);
       } else if (['addeventhandler', 'addeventhandlercompatible'].includes(fn) && args.length >= 3) {

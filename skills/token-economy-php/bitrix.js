@@ -43,7 +43,7 @@ function classify(p) {
     if (/\/install\/index\.php$/.test(p)) r.tag = 'module-install ' + r.module.id;
     else if (/\/include\.php$/.test(p)) r.tag = 'module-include ' + r.module.id;
     else r.tag = 'module ' + r.module.id;
-  } else if (/\/php_interface\/init\.php$/.test(p)) r.tag = 'init';
+  } else if (/^\/(bitrix|local)\/php_interface\/(?:[^/]+\/)?(?:init|after_connect|dbconn)\.php$/.test(p)) r.tag = 'init';
   else if (/\/php_interface\//.test(p)) r.tag = 'php_interface';
   else if (/^\/(bitrix|local)\/templates\/[^/]+\/(header|footer)\.php$/.test(p)) r.tag = 'site-template';
   return r;
@@ -55,6 +55,11 @@ function classify(p) {
  * @param {string} fileDocRel - путь файла относительно корня сайта.
  */
 function resolveInclude(inc, fileDocRel) {
+  if (inc.r.includes('{TPL}')) { // SITE_TEMPLATE_PATH: шаблон, в каталоге которого лежит сам файл
+    const tm = /^(\/(?:bitrix|local)\/templates\/[^/]+)\//.exec(fileDocRel);
+    if (!tm) return null;
+    inc = { b: inc.b, r: inc.r.replace('{TPL}', tm[1]) };
+  }
   const dir = fileDocRel.replace(/\/[^/]*$/, '');
   const up = dir.replace(/\/[^/]*$/, '');
   let base;

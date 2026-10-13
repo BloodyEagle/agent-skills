@@ -1,6 +1,6 @@
 ---
 name: token-economy-php
-description: Экономия токенов в PHP-проектах и на 1С-Битрикс: поиск определений, граф связей (классы, include, компоненты, шаблоны, события, языковые файлы), оглавление файла, сводка по компоненту, обработчики событий, языковые сообщения, маршрут по URL, безопасное чтение и правка файлов в cp1251. Все команды — PowerShell.
+description: Экономия токенов в PHP-проектах и на 1С-Битрикс, включая старое API (до D7) и D7: поиск определений, граф связей (классы, include, компоненты, шаблоны, модули, события, языковые файлы), оглавление файла с наследованием, сводка по компоненту, обработчики событий, языковые сообщения, схема таблиц БД, маршрут по URL, безопасное чтение и правка файлов в cp1251. Все команды — PowerShell.
 ---
 
 # Skill: token-economy-php
@@ -15,7 +15,7 @@ description: Экономия токенов в PHP-проектах и на 1С
     "properties": {
       "op": {
         "type": "string",
-        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | read | patch | create | build"
+        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | read | patch | create | build"
       },
       "payload": {
         "type": "object",
@@ -34,13 +34,14 @@ description: Экономия токенов в PHP-проектах и на 1С
 1. Один раз за разговор, прежде чем читать или править файлы, вызови `info`: он покажет корень сайта, кодировку файлов, шаблоны, свои модули и компоненты.
 2. Если `info` показал файлы в cp1251, любые файлы с кириллицей читай только операцией `read`, правь только `patch`, создавай только `create`. Штатные инструменты чтения и записи портят cp1251 (кириллица превращается в мусор, и файл ломается).
 3. Файл меньше 300 строк читай напрямую (в cp1251 — через `read`). Файл от 300 строк — сначала `outline`, затем точечное чтение диапазона (`read` с `offset` и `limit` либо Read(offset, limit)).
-4. Где определён класс, метод, функция, константа или таблица ORM — `symbol`. Где встречается текст — `search`.
+4. Где определён класс, метод, функция, константа или таблица ORM — `symbol`. Метод ищется и в базовых классах: `CIBlockElement::GetList` вернёт `CAllIBlockElement::GetList`. Где встречается текст — `search`.
 5. Перед правкой общего файла (класс модуля, помощник из init.php, шаблон, который могут использовать страницы) вызови `rdeps`: он покажет, кто использует файл (страницы через IncludeComponent, require, классы, обработчики событий).
 6. Вопросы про Битрикс решай профильными операциями, а не чтением каталогов:
    - компонент (файлы, параметры, шаблоны, переопределения в шаблоне сайта, где вызывается) — `component`;
    - кто обрабатывает событие или какие события есть — `events`;
    - где задан или используется текст сообщения — `lang` (ищет и по ключу, и по самому тексту);
-   - какой файл обслуживает URL — `route`.
+   - какой файл обслуживает URL — `route`;
+   - таблица БД (колонки, ключи, где встречается в коде) — `table`.
 7. Ядро Битрикса (`bitrix/modules/main`, `bitrix/components/bitrix` и т. п.) по умолчанию в индекс не входит. Сигнатуру класса ядра или параметры штатного компонента смотри с `"core":true` через `outline` / `symbol` / `component`. Файлы ядра целиком не читай.
 8. Файл шаблона компонента целиком не читай, пока не понадобилась его вёрстка: `outline` покажет, какие ключи `$arResult` и `$arParams` он использует и какие компоненты вызывает.
 9. Правки штатным инструментом разрешены только в файлах UTF-8 (по `info`). Файл длиннее 50 строк при правке менее 30% целиком не перезаписывай: используй `patch` или штатную точечную замену.
@@ -56,7 +57,7 @@ info — профиль проекта: корень сайта, версия Б
 
 search — поиск подстроки или регулярки с учётом кодировки (кириллица находится и в cp1251). Результат сгруппирован по файлам, до 30 совпадений.
 
-outline — оглавление: классы с диапазонами строк, методы с сигнатурами, таблица и поля ORM-классов (`getTableName` / `getMap`), функции, константы. Для страниц и шаблонов — вызванные компоненты, подключённые модули, ключи `$arResult` и `$arParams`, обработчики событий. Принимает путь, имя класса или идентификатор компонента.
+outline — оглавление: классы с диапазонами строк, методы с сигнатурами, таблица и поля ORM-классов (`getTableName` / `getMap`), функции, константы. С `"inherit":true` добавляет методы предков (в старом API основные методы лежат в `CAll*`-классах). Для страниц и шаблонов — вызванные компоненты, подключённые модули, ключи `$arResult` и `$arParams`, обработчики событий. Принимает путь, имя класса или идентификатор компонента.
 
 read — чтение файла с номерами строк с учётом кодировки (`offset`, `limit`).
 
@@ -70,10 +71,11 @@ deps / rdeps / path / node / stats — граф связей. Типы связ�
 |---|---|
 | class | `new`, `X::`, `extends`, `implements`, `use` (трейты и импорты) |
 | function | вызов функции, объявленной в проекте |
-| include | `require` / `include`, путь которых вычисляется статически (`__DIR__`, `$_SERVER["DOCUMENT_ROOT"]`, `dirname(__FILE__)`) |
+| include | `require` / `include`, `$APPLICATION->IncludeFile(...)` и параметр `PATH` компонента `bitrix:main.include`, если путь вычисляется статически (`__DIR__`, `dirname(__FILE__)`, `$_SERVER["DOCUMENT_ROOT"]`, `BX_ROOT`, `SITE_DIR`, `SITE_TEMPLATE_PATH`) |
 | component | `IncludeComponent("ns:name", …)` → файл компонента (`class.php` / `component.php`) |
 | template | тот же вызов → `template.php` из компонента или переопределение в шаблоне сайта |
-| event handler | класс, указанный строкой или `X::class` в `AddEventHandler`, `registerEventHandler`, `RegisterModuleDependences` |
+| event handler | класс или функция, указанные строкой (`"CClass"`, `"CClass::Method"`, `"имя_функции"`), `X::class` или массивом в `AddEventHandler`, `registerEventHandler`, `RegisterModuleDependences` |
+| module | `CModule::IncludeModule("x")` / `Loader::includeModule('x')` → `include.php` модуля |
 | lang | языковой файл `lang/ru/<тот же путь>` |
 
 ### Битрикс
@@ -85,6 +87,12 @@ events — обработчики событий и вызовы `GetModuleEvent
 lang — по ключу (`CAT_LIST_TITLE`) или по тексту (`список товаров`): значения во всех языках, файлы и места использования.
 
 route — какой файл обслуживает URL: физический файл или подходящие правила `urlrewrite.php`.
+
+table — имя таблицы БД: D7-класс и поля (`getTableName` / `getMap`), схема из `install/db/mysql/install.sql` модулей (колонки и ключи), файлы, где имя таблицы встречается. Без точного совпадения подскажет похожие имена.
+
+### Старое API (до D7) и D7
+
+Оба стиля поддерживаются в одном индексе. Для старого API учтено: глобальные классы без `namespace` (`CIBlockElement`), методы в базовых `CAll*`-классах, варианты классов под разные СУБД (`classes/mysql`, `mssql`, `oracle`: основным считается не-mssql/oracle, остальные скрыты, `"all":true` в `symbol` показывает все), синтаксис PHP 5 (`Array()`, `var`, `&`-возвраты, конструкторы по имени класса, альтернативный синтаксис `if: endif;`, короткие теги `<? ?>`), модули с `include.php`, подключаемые области сайта.
 
 ### Изменение
 
@@ -133,6 +141,15 @@ outline:
 
     $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"outline","file":"local/components/vendor/cat.list/class.php"}' | node "$TE\bx.js"
     $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"outline","file":"Bitrix\\Main\\Loader","core":true}' | node "$TE\bx.js"
+
+symbol и outline для старого API (метод из базового класса, с предками):
+
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"symbol","name":"CIBlockElement::GetList","core":true}' | node "$TE\bx.js"
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"outline","file":"CIBlockElement","inherit":true,"core":true}' | node "$TE\bx.js"
+
+table:
+
+    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"table","name":"b_acme_item"}' | node "$TE\bx.js"
 
 component / events / lang / route:
 

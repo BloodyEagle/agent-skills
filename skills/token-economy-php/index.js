@@ -4,7 +4,8 @@
 //   c  класс/интерфейс/трейт (new, ::, extends, implements, use)     f  функция, объявленная в проекте
 //   i  require/include со статически вычисляемым путём               x  вызов IncludeComponent → файл компонента
 //   t  шаблон компонента (по имени шаблона из вызова)                l  языковой файл (lang/ru/<тот же путь>)
-//   e  класс-обработчик события, указанный строкой в AddEventHandler / registerEventHandler
+//   e  обработчик события, указанный строкой (класс, функция, 'Класс::метод') в AddEventHandler / registerEventHandler
+//   m  модуль: CModule::IncludeModule('x') / Loader::includeModule('x') → include.php модуля
 
 const fs = require('fs');
 const path = require('path');
@@ -14,7 +15,7 @@ const { classify, resolveInclude } = require('./bitrix');
 
 const VERSION = 1; // формат кэша и индекса; при смене разбора увеличить
 const CACHE_DIR = '.bx-cache';
-const KIND_ORDER = ['x', 't', 'i', 'c', 'e', 'f', 'l'];
+const KIND_ORDER = ['x', 't', 'i', 'c', 'e', 'm', 'f', 'l'];
 
 function loadJson(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } }
 
@@ -90,6 +91,9 @@ function buildIndex(ctx) {
     if (o && !n.cl.lang && o.part === 'template.php') put(comp(o.id).tpl, o.tpl.toLowerCase(), n.id);
   }
 
+  // у классов, объявленных под разные СУБД (classes/mysql, mssql, oracle), берём основной вариант
+  const prefer = (ids) => { const f = ids.filter((id) => !/\/classes\/(mssql|oracle)\//.test(nodes[id - 1].p)); return f.length ? f : ids; };
+
   // связи
   for (const n of nodes) {
     const r = n.raw, edges = new Map();
@@ -99,19 +103,24 @@ function buildIndex(ctx) {
       if (!cur || KIND_ORDER.indexOf(k) < KIND_ORDER.indexOf(cur)) edges.set(id, k);
     };
     if (!n.cl.lang) {
-      for (const ref of r.refs || []) { for (const cand of ref.split('|')) { const ids = classIdx.get(cand); if (ids) { ids.slice(0, 3).forEach((id) => add(id, 'c')); break; } } }
+      for (const ref of r.refs || []) { for (const cand of ref.split('|')) { const ids = classIdx.get(cand); if (ids) { prefer(ids).slice(0, 3).forEach((id) => add(id, 'c')); break; } } }
       for (const call of r.calls || []) { for (const cand of call) { const ids = funcIdx.get(cand); if (ids) { ids.slice(0, 2).forEach((id) => add(id, 'f')); break; } } }
       for (const inc of r.incs || []) {
         const target = resolveInclude(inc, n.d);
         if (target) add(pathIdx.get(target.toLowerCase()), 'i');
       }
-      for (const ev of r.events || []) { // обработчики задаются строкой: 'Vendor\\Mod\\Class' или Class::class
+      for (const ev of r.events || []) { // обработчик строкой: 'Vendor\\Mod\\Class', Class::class, "Class::method", "имя_функции"
         const names = [];
-        for (const m of String(ev.c).matchAll(/([A-Za-z_\\][\w\\]*)::class|['"]([A-Za-z_\\][\w\\]*)['"]|([A-Za-z_\\][\w\\]*)::\w+$/g)) names.push(m[1] || m[2] || m[3]);
+        for (const m of String(ev.c).matchAll(/([A-Za-z_\\][\w\\]*)::class|['"]([A-Za-z_\\][\w\\]*)(?:::\w+)?['"]|([A-Za-z_\\][\w\\]*)::\w+$/g)) names.push(m[1] || m[2] || m[3]);
         for (const nm of names) {
-          const ids = classIdx.get(nm.replace(/\\+/g, '\\').replace(/^\\/, '').toLowerCase());
-          if (ids) { ids.slice(0, 2).forEach((id) => add(id, 'e')); break; }
+          const key = nm.replace(/\\+/g, '\\').replace(/^\\/, '').toLowerCase();
+          const ids = classIdx.get(key) || funcIdx.get(key);
+          if (ids) { prefer(ids).slice(0, 2).forEach((id) => add(id, 'e')); break; }
         }
+      }
+      for (const [mid] of r.mods || []) { // подключение модуля → его include.php
+        const low = String(mid).toLowerCase();
+        add(pathIdx.get('/local/modules/' + low + '/include.php') || pathIdx.get('/bitrix/modules/' + low + '/include.php'), 'm');
       }
       for (const [cid, tpl] of r.comps || []) {
         if (cid === '?') continue;

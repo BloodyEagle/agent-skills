@@ -2,7 +2,7 @@
 'use strict';
 // bx.js — token-economy для PHP и 1С-Битрикс. Принимает JSON из stdin (или аргументы key=value),
 // отвечает компактным текстом. Операции: info, search, symbol, deps, rdeps, path, node, stats,
-// outline, component, events, lang, route, read, patch, create, build.
+// outline, component, events, lang, route, table, read, patch, create, build.
 
 const fs = require('fs');
 const path = require('path');
@@ -34,7 +34,7 @@ const ctx = makeCtx({ root: args.root, core: truthy(args.core) });
 function fail(msg) { console.log('Ошибка: ' + msg); process.exit(1); }
 const out = (...lines) => console.log(lines.join('\n'));
 const short = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
-const EDGE = { x: 'component', t: 'template', i: 'include', c: 'class', f: 'function', l: 'lang', e: 'event handler' };
+const EDGE = { x: 'component', t: 'template', i: 'include', c: 'class', f: 'function', l: 'lang', e: 'event handler', m: 'module' };
 
 function safeAbs(rel) {
   const abs = path.resolve(ctx.root, rel);
@@ -67,7 +67,11 @@ function findNode(idx, q, allowList) {
   }
   const bare = clsQ;
   const byClass = nodes.filter((n) => (n.decls || []).some((d) => d.fqn.toLowerCase() === bare || d.name.toLowerCase() === bare));
-  if (byClass.length) { r = pick(byClass); if (r) return r; }
+  if (byClass.length) {
+    const main = byClass.filter((n) => !dbVariant(n.p)); // варианты под MSSQL/Oracle отбрасываем
+    r = pick(main.length ? main : byClass);
+    if (r) return r;
+  }
   r = pick(nodes.filter((n) => n.p.toLowerCase().endsWith('/' + lq) || n.d.toLowerCase().endsWith('/' + lq)));
   if (r) return r;
   r = pick(nodes.filter((n) => path.posix.basename(n.p).toLowerCase() === lq));
@@ -110,6 +114,33 @@ const fmtEdges = (items, limit) => {
   return lines;
 };
 
+// ---------- наследование (в старом API методы часто в базовых CAll*-классах) ----------
+const dbVariant = (p) => /\/classes\/(mssql|oracle)\//.test(p);
+
+function declMap(idx) {
+  const m = new Map();
+  for (const n of idx.nodes) for (const d of n.decls || []) { const k = d.fqn.toLowerCase(); if (!m.has(k)) m.set(k, []); m.get(k).push([n, d]); }
+  return m;
+}
+function pickDecl(list) {
+  if (!list) return null;
+  const f = list.filter(([n]) => !dbVariant(n.p));
+  return (f.length ? f : list)[0];
+}
+function ancestors(dm, d) { // цепочка предков [[узел, объявление], …] до 6 уровней
+  const res = [], seen = new Set();
+  let cur = d;
+  for (let i = 0; i < 6; i++) {
+    let b = null;
+    for (const c of cur.extc || []) { for (const cand of c.split('|')) { b = pickDecl(dm.get(cand)); if (b) break; } if (b) break; }
+    if (!b || seen.has(b[1])) break;
+    seen.add(b[1]);
+    res.push(b);
+    cur = b[1];
+  }
+  return res;
+}
+
 // ---------- операции ----------
 const ops = {
   build() {
@@ -142,6 +173,9 @@ const ops = {
       const s = fs.readFileSync(path.join(dr, 'bitrix/php_interface/dbconn.php'), 'latin1');
       if (/define\s*\(\s*["']BX_UTF["']\s*,\s*true/i.test(s)) lines.push('BX_UTF: true  (dbconn.php)');
     } catch (e) { /* нет файла */ }
+    let withNs = 0, legacy = 0;
+    for (const n of cust) { if ((n.decls || []).length) { if (n.ns) withNs++; else legacy++; } }
+    lines.push(`стиль кода: файлов с классами в namespace (D7) ${withNs}, с глобальными классами (старое API) ${legacy}`);
     lines.push(`кодировка PHP-файлов проекта: utf8 ${enc.utf8}, cp1251 ${enc.cp1251}, только ASCII ${enc.ascii}`);
     if (enc.cp1251 > 0) lines.push('ВНИМАНИЕ: есть файлы в cp1251. Читай их операцией read, правь операцией patch: штатные инструменты испортят кириллицу.');
     const ls = (dir) => { try { return fs.readdirSync(path.join(dr, dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch (e) { return []; } };
@@ -203,20 +237,33 @@ const ops = {
     const q = q0.replace(/^\\/, '').toLowerCase();
     const [qc, qm] = q.includes('::') ? q.split('::') : [null, null];
     const idx = ensureIndex(ctx);
-    const hits = [];
+    const dm = qc ? declMap(idx) : null;
+    let hits = [];
     for (const n of idx.nodes) {
       for (const d of n.decls || []) {
         const fq = d.fqn.toLowerCase(), nm = d.name.toLowerCase();
         if (!qc && (fq === q || nm === q || fq.endsWith('\\' + q))) hits.push([d.fqn, d.kind, n.p, d.line, d.end]);
         if (d.table && d.table.toLowerCase() === q) hits.push([d.fqn + ' (таблица ' + d.table + ')', d.kind, n.p, d.line, d.end]);
-        for (const m of d.members || []) {
-          const mn = m.n.toLowerCase();
-          if (qc ? (nm === qc || fq === qc || fq.endsWith('\\' + qc)) && mn === qm : (mn === q && !q.includes('\\'))) hits.push([d.name + '::' + m.n, m.k, n.p, m.l, m.e]);
+        if (qc) {
+          if (!(nm === qc || fq === qc || fq.endsWith('\\' + qc))) continue;
+          const own = (d.members || []).find((m) => m.n.toLowerCase() === qm);
+          if (own) { hits.push([d.name + '::' + own.n, own.k, n.p, own.l, own.e]); continue; }
+          for (const [bn, bd] of ancestors(dm, d)) { // метод унаследован от базового класса
+            const m = (bd.members || []).find((x) => x.n.toLowerCase() === qm);
+            if (m) { hits.push([`${bd.name}::${m.n}  (унаследован классом ${d.name})`, m.k, bn.p, m.l, m.e]); break; }
+          }
+        } else if (!q.includes('\\')) {
+          for (const m of d.members || []) if (m.n.toLowerCase() === q) hits.push([d.name + '::' + m.n, m.k, n.p, m.l, m.e]);
         }
       }
       for (const f of n.funcs || []) if (!qc && (f.n.toLowerCase() === q || f.f.toLowerCase() === q)) hits.push([f.f, 'function', n.p, f.l, f.e]);
       for (const [c, l] of n.consts || []) if (!qc && c.toLowerCase() === q) hits.push([c, 'const', n.p, l, l]);
     }
+    if (!truthy(args.all)) { // варианты под MSSQL/Oracle скрываем, если есть основной
+      const main = hits.filter((h) => !dbVariant(h[2]));
+      if (main.length) hits = main;
+    }
+    hits = hits.filter((h, i) => hits.findIndex((x) => x[0] === h[0] && x[2] === h[2] && x[3] === h[3]) === i); // без повторов
     if (!hits.length) return out(`${q0}: не найдено` + (ctx.core ? '' : ' (ядро Битрикса не индексируется; "core":true включит его)'));
     hits.slice(0, 20).forEach(([name, kind, p, l, e]) => console.log(`${name}  ${kind}  ${p}:${l}-${e}`));
     if (hits.length > 20) console.log(`… ещё ${hits.length - 20}`);
@@ -288,6 +335,15 @@ const ops = {
       if (d.table) lines.push('          таблица ' + d.table + (d.fields ? '; поля: ' + d.fields.join(', ') : ''));
       for (const m of d.members || []) {
         lines.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + (m.k === 'method' ? short(m.sig, 150) : m.k === 'const' ? 'const ' + m.n : 'case ' + m.n));
+      }
+      if (truthy(args.inherit)) { // методы предков: в старом API основные методы лежат в CAll*-классах
+        const dm = declMap(idx);
+        for (const [bn, bd] of ancestors(dm, d)) {
+          lines.push(`  -- унаследовано от ${bd.name} (${bn.p}:${bd.line})`);
+          const ms = (bd.members || []).filter((m) => m.k === 'method' && m.v !== 'private');
+          ms.slice(0, 40).forEach((m) => lines.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + short(m.sig, 150)));
+          if (ms.length > 40) lines.push(`  … ещё ${ms.length - 40}`);
+        }
       }
     }
     for (const f of n.funcs || []) lines.push(`L${f.l}-${f.e}`.padEnd(10) + short(f.sig, 150));
@@ -435,6 +491,67 @@ const ops = {
     const lim = Number(args.limit) || 200;
     const part = ls.slice(off - 1, off - 1 + lim);
     out(`${posix(path.relative(ctx.root, abs))}  (${ls.length} строк, ${enc})`, ...part.map((l, i) => `${off + i}: ${l}`), ...(off - 1 + lim < ls.length ? [`… ещё строк: ${ls.length - (off - 1 + lim)}`] : []));
+  },
+
+  table() {
+    const q = String(args.name || args.query || '').trim();
+    if (!q) fail('укажите name: имя таблицы БД');
+    const lq = q.toLowerCase();
+    const idx = ensureIndex(ctx);
+    const lines = [];
+    for (const n of idx.nodes) for (const d of n.decls || []) {
+      if (d.table && d.table.toLowerCase() === lq) lines.push(`${d.table}  (D7 ORM: ${d.fqn}, ${n.p}:${d.line}-${d.end})`, '  поля: ' + (d.fields || []).join(', '));
+    }
+    // старое API: схема в install/db/<СУБД>/install.sql модулей
+    const sqlFiles = listFiles(ctx.root, ctx.docroot, ['.sql'])
+      .filter((rel) => /\/install\/db\//i.test('/' + rel) && (ctx.core || classify(docPath(ctx, rel)).origin !== 'core'))
+      .sort((a, b) => (/\/mysql\//i.test(b) ? 1 : 0) - (/\/mysql\//i.test(a) ? 1 : 0) || a.localeCompare(b));
+    const names = new Set();
+    let found = false;
+    for (const rel of sqlFiles) {
+      if (found && !/\/mysql\//i.test(rel)) break;
+      const text = readText(path.join(ctx.root, rel)).text;
+      const re = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"\[]?(\w+)[`"\]]?\s*\(/gi;
+      let m;
+      while ((m = re.exec(text))) {
+        names.add(m[1]);
+        if (m[1].toLowerCase() !== lq) continue;
+        let depth = 1, i = re.lastIndex;
+        const start = i;
+        while (i < text.length && depth > 0) { if (text[i] === '(') depth++; else if (text[i] === ')') depth--; i++; }
+        const body = text.slice(start, i - 1);
+        const parts = [];
+        let d = 0, cur = '';
+        for (const ch of body) { if (ch === '(') d++; if (ch === ')') d--; if (ch === ',' && d === 0) { parts.push(cur); cur = ''; } else cur += ch; }
+        parts.push(cur);
+        const cols = [], keys = [];
+        for (const p of parts.map((x) => x.trim()).filter(Boolean)) {
+          if (/^(PRIMARY|UNIQUE|KEY|INDEX|CONSTRAINT|FOREIGN|FULLTEXT)\b/i.test(p)) keys.push(short(p.replace(/\s+/g, ' '), 70));
+          else { const c = /^[`"\[]?(\w+)[`"\]]?\s+([A-Za-z]+(?:\([^)]*\))?)/.exec(p); if (c) cols.push(c[1] + ' ' + c[2]); }
+        }
+        const ln = text.slice(0, m.index).split('\n').length;
+        lines.push(`${m[1]}  (SQL: ${rel}:${ln})`, '  колонки: ' + cols.join(', '));
+        if (keys.length) lines.push('  ключи: ' + keys.slice(0, 12).join('; '));
+        found = true;
+      }
+    }
+    if (!lines.length) {
+      const like = [...names].filter((n) => n.toLowerCase().includes(lq));
+      for (const n of idx.nodes) for (const d of n.decls || []) if (d.table && d.table.toLowerCase().includes(lq)) like.push(d.table);
+      return out(`таблица ${q}: схема не найдена` + (like.length ? '; похожие: ' + [...new Set(like)].slice(0, 15).join(', ') : ''));
+    }
+    // где таблица встречается в коде (SQL-запросы старого API)
+    const hits = [];
+    for (const rel of listFiles(ctx.root, ctx.docroot, ['.php'])) {
+      if (!ctx.core && classify(docPath(ctx, rel)).origin === 'core') continue;
+      let text;
+      try { text = readText(path.join(ctx.root, rel)).text; } catch (e) { continue; }
+      const pos = text.toLowerCase().indexOf(lq);
+      if (pos >= 0) hits.push(`${rel}:${text.slice(0, pos).split('\n').length}`);
+      if (hits.length >= 8) break;
+    }
+    if (hits.length) lines.push('встречается в: ' + hits.join(', '));
+    out(...lines);
   },
 
   create() {
