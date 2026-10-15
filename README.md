@@ -4,10 +4,11 @@
 
 ## rules - правила для агента
 
-## token-economy-ts - скилл для экономии токенов для проектов на TypeScript/JavaScript, ограничения указаны, в том числе, в rules.
-## token-economy-py - скилл для экономии токенов для проектов на Python.
+## token-economy-ts - скилл для экономии токенов для проектов на TypeScript/JavaScript/Angular, ограничения указаны, в том числе, в rules.
 
 ## token-economy-py - скилл для экономии токенов для проектов на Python.
+
+## token-economy-java - скилл для экономии токенов для проектов на Java/Spring.
 
 ## token-economy-php - скилл для экономии токенов для проектов на PHP/bitrix.
 
