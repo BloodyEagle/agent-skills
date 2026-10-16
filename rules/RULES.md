@@ -17,7 +17,7 @@
 
 # Порядок работы с кодом (обязательный)
 
-Навигация, поиск и создание сущностей — ТОЛЬКО через скилл token-economy-ts (search / outline / graph / generate). Синтаксис команд: .kilocode/skills/token-economy-ts/SKILL.md — открой перед первой командой сессии.
+Навигация, поиск и создание сущностей — ТОЛЬКО через скилл token-economy по стеку проекта: TypeScript / Angular / Angular — token-economy-ts (search / outline / graph / generate), PHP / 1С-Битрикс — token-economy-php, Java / Spring Boot — token-economy-java, Python — token-economy-py. Синтаксис команд: .kilocode/skills/<имя-скилла>/SKILL.md — открой перед первой командой сессии.
 Штатные инструменты — только Read и точечные правки. Отступление — только с моего разрешения.
 
 ## Выбор источника
