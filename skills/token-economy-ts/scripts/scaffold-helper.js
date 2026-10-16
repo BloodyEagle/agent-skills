@@ -5,9 +5,27 @@ const path = require('path');
 const {execSync} = require('child_process');
 
 let args = {};
-try {
-    args = JSON.parse(fs.readFileSync(0, 'utf-8').trim() || '{}');
-} catch (e) {
+// Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin → env.
+const first = process.argv[2];
+if (first && first.startsWith('{')) {
+    try {
+        Object.assign(args, JSON.parse(first));
+    } catch (e) {
+        // невалидный JSON — продолжаем со следующими источниками
+    }
+}
+for (const a of process.argv.slice(2)) {
+    const i = a.indexOf('=');
+    if (i !== -1 && a.slice(0, i)) args[a.slice(0, i)] = a.slice(i + 1);
+}
+if (!Object.keys(args).length && process.stdin.isTTY !== true) {
+    try {
+        Object.assign(args, JSON.parse(fs.readFileSync(0, 'utf-8').trim() || '{}'));
+    } catch (e) {
+        // невалидный stdin — остаёмся на argv/env
+    }
+}
+if (!Object.keys(args).length) {
     args = {type: process.env.GEN_TYPE, name: process.env.GEN_NAME};
 }
 

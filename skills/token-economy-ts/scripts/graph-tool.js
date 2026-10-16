@@ -17,20 +17,33 @@ const fs = require('fs');
 const path = require('path');
 
 let args = {};
-// CLI-режим: node graph-tool.js build file=src/app/a.ts depth=2
+// Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
+const first = process.argv[2];
+if (first && first.startsWith('{')) {
+    try {
+        Object.assign(args, JSON.parse(first));
+    } catch (e) {
+        // невалидный JSON — продолжаем со следующими источниками
+    }
+}
+// CLI-режим: node graph-tool.js build file=src/app/a.ts depth=2; голый аргумент без = заполняет op
 for (const a of process.argv.slice(2)) {
+    if (a.startsWith('{')) continue; // argv-JSON уже разобран выше
     const i = a.indexOf('=');
     if (i === -1) {
         if (!args.op) args.op = a;
     } else if (a.slice(0, i)) args[a.slice(0, i)] = a.slice(i + 1);
 }
-// stdin-режим (команды скилла) — читаем пайп, только если op не задан аргументами
-if (!args.op && process.stdin.isTTY !== true) {
+// stdin-режим (обратная совместимость) — читаем пайп, только если аргументы не заданы вовсе
+if (!Object.keys(args).length && process.stdin.isTTY !== true) {
     try {
         Object.assign(args, JSON.parse(fs.readFileSync(0, 'utf-8').trim() || '{}'));
     } catch (e) {
     }
 }
+// argv передаёт значения строками: приводим типы (stdin-JSON приходит нативным)
+args.depth = Number(args.depth) || 1;
+args.specs = args.specs === true || args.specs === 'true' || args.specs === '1';
 
 const cwd = process.cwd();
 const ROOT = path.resolve(cwd, args.root || 'src');
@@ -1016,7 +1029,7 @@ if (op === 'node' || op === 'deps' || op === 'rdeps') {
         process.exit(0);
     }
 
-    const depth = Math.min(Math.max(args.depth || 1, 1), 5);
+    const depth = Math.min(Math.max(args.depth, 1), 5);
     const list = walk(graph, n.id, depth, op === 'rdeps').slice(0, 60);
     emit(op === 'deps'
         ? {

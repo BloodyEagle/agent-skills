@@ -2,10 +2,25 @@ const fs = require('fs');
 const path = require('path');
 
 let args = {};
-try {
-    args = JSON.parse(fs.readFileSync(0, 'utf-8').trim() || '{}');
-} catch (e) {
-    args = {};
+// Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
+const first = process.argv[2];
+if (first && first.startsWith('{')) {
+    try {
+        Object.assign(args, JSON.parse(first));
+    } catch (e) {
+        // невалидный JSON — продолжаем со следующими источниками
+    }
+}
+for (const a of process.argv.slice(2)) {
+    const i = a.indexOf('=');
+    if (i !== -1 && a.slice(0, i)) args[a.slice(0, i)] = a.slice(i + 1);
+}
+if (!Object.keys(args).length && process.stdin.isTTY !== true) {
+    try {
+        Object.assign(args, JSON.parse(fs.readFileSync(0, 'utf-8').trim() || '{}'));
+    } catch (e) {
+        // невалидный stdin — работаем с пустыми аргументами
+    }
 }
 
 const file = path.resolve(process.cwd(), args.file || '');
