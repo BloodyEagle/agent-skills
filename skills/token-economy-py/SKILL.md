@@ -2,17 +2,17 @@
 name: token-economy-py
 description: Навигация по Python-проекту с минимумом токенов. Используй при работе с Python-кодом, когда нужно найти, где определена функция или класс, кто импортирует модуль, какие тесты заденет правка, прочитать крупный файл (оглавление вместо целого файла), найти текст по проекту или узнать сигнатуру функции установленной библиотеки без чтения её исходников.
 version: 1.1.0
-metadata:
-  hermes:
-    tags: [python, tokens, code-navigation, imports, search]
-    category: software-development
 ---
 
 # token-economy-py
 
 Один скрипт `te.py` (только стандартная библиотека, Python 3.9+) с командами `graph`, `outline`, `search` и `sig` (плюс `selftest` для самопроверки скрипта). Вывод — короткий текст. Запускай из корня проекта; иначе добавь `--root ПУТЬ`. На Windows вместо `python3` — `python`.
 
-Вызов: python3 "${HERMES_SKILL_DIR}/scripts/te.py" <команда> …
+Вызов: python "<путь>\scripts\te.py" <команда> … . Варианты пути до скрипта:
+
+    глобально на Windows: %USERPROFILE%\.kilocode\skills\token-economy-py\scripts
+    локально в репозитории: .kilo\skills\token-economy-py\scripts
+    Linux и macOS: ~/.config/kilo/skills/token-economy-py/scripts
 
 Общие параметры `--root` и `--src` можно указывать как до команды, так и после неё.
 
@@ -30,7 +30,7 @@ metadata:
 
 ## Команды
 
-Ниже TE = python3 "${HERMES_SKILL_DIR}/scripts/te.py". Глубина --depth ограничена 5.
+Ниже TE = python "<путь>\scripts\te.py". Глубина --depth ограничена 5.
 
 | Задача | Команда |
 |---|---|

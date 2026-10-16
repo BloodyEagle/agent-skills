@@ -19,7 +19,7 @@ description: Экономия токенов в проектах на Java 17+ �
       },
       "payload": {
         "type": "object",
-        "description": "JSON-объект с параметрами операции, передаётся через stdin (поле op входит в него)."
+        "description": "JSON-объект с параметрами операции; при вызове передаётся argv-аргументами ключ=значение (универсально), одним JSON-аргументом (pwsh 7.3+) или @файлом с JSON."
       }
     },
     "required": [
@@ -101,52 +101,56 @@ create — новый файл; кодировка по умолчанию UTF-8
 
 ## Выполнение команд (PowerShell)
 
-Каждая команда самодостаточна: сначала определи `$TE`, затем вызови скрипт. Параметры передаются через stdin в JSON, поле `op` входит в JSON.
+Команда — одна строка, параметры передаются argv-аргументами `ключ=значение` (разделитель значения — первый `=`), обязательный параметр каждой операции — `op`:
 
-Варианты пути `$TE`:
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=info
+
+Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<путь>\jv.js" ключ=значение…`.
+
+Варианты пути до скриптов:
 
     глобально на Windows: "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"
     локально в репозитории: ".kilo\skills\token-economy-java\scripts"
     pwsh на Linux/macOS: "$HOME/.config/kilo/skills/token-economy-java/scripts"
 
-В Windows PowerShell 5.1 при кириллице в payload добавляй в начало команды `$OutputEncoding=[Text.Encoding]::UTF8;` (в PowerShell 7 UTF-8 по умолчанию). Для многострочных правок и кириллицы надёжнее файл параметров: запиши JSON штатным инструментом в `.jv-cache/payload.json` (папка вне git) и передай его через `"@..."`.
+Значения аргументов: с пробелами — в одинарных кавычках; апостроф внутри значения удваивается (`''`); значения, начинающиеся с `$`, тоже бери в одинарные кавычки, иначе PowerShell раскроет их как переменные; двойные кавычки `"` внутри значений не используй — PowerShell 5.1 их портит. Кириллица через argv не портится: node читает командную строку через Unicode API Windows. Для многострочных payload (`patch`/`create`) — файл параметров: запиши JSON штатным инструментом в `.jv-cache/payload.json` (папка вне git) и передай его через `@.jv-cache/payload.json`.
 
 Общий параметр: `root` (корень проекта, по умолчанию текущая папка; для многомодульных проектов запускай из корня репозитория).
 
 info:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"info"}' | node "$TE\jv.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=info
 
 symbol / outline / rdeps / impls:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"symbol","name":"UserService"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"symbol","name":"UserController#get"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"outline","file":"UserController"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"rdeps","file":"UserService","depth":2}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"impls","name":"UserService"}' | node "$TE\jv.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=symbol name=UserService
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=symbol name=UserController#get
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=outline file=UserController
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=rdeps file=UserService depth=2
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=impls name=UserService
 
 search (для ресурсов — `ext`):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"search","query":"findByEmail","path":"src/main"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"search","query":"user-events","ext":".java,.yml,.properties"}' | node "$TE\jv.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=search query=findByEmail path=src/main
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=search query=user-events ext=.java,.yml,.properties
 
 Spring:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"endpoints","query":"/api/users"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"beans","query":"Security"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"config","query":"app.mail"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"entities","query":"User"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"table","name":"users"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"listeners","query":"UserCreatedEvent"}' | node "$TE\jv.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=endpoints query=/api/users
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=beans query=Security
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=config query=app.mail
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=entities query=User
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=table name=users
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=listeners query=UserCreatedEvent
 
 sig:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"sig","name":"org.springframework.web.client.RestClient"}' | node "$TE\jv.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; '{"op":"sig","name":"org.springframework.web.client.RestClient#get"}' | node "$TE\jv.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=sig name=org.springframework.web.client.RestClient
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=sig name=org.springframework.web.client.RestClient#get
 
-read / patch / create (только для файлов не в UTF-8; для patch и create — файл параметров):
+read / patch / create (только для файлов не в UTF-8; для patch и create — `@`-файл параметров, единственный способ: многострочные значения в argv не передать):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"; node "$TE\jv.js" "@.jv-cache/payload.json"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" @.jv-cache/payload.json
 
 Содержимое `.jv-cache/payload.json` для правки:
 

@@ -19,7 +19,7 @@ description: Экономия токенов в PHP-проектах и на 1С
       },
       "payload": {
         "type": "object",
-        "description": "JSON-объект с параметрами операции, передаётся через stdin (поле op входит в него)."
+        "description": "JSON-объект с параметрами операции; при вызове передаётся argv-аргументами ключ=значение (универсально), одним JSON-аргументом (pwsh 7.3+) или @файлом с JSON."
       }
     },
     "required": [
@@ -102,69 +102,77 @@ create — новый файл; кодировка по умолчанию — �
 
 ## Выполнение команд (PowerShell)
 
-Каждая команда самодостаточна: сначала определи `$TE`, затем вызови скрипт. Параметры передаются через stdin в JSON, поле `op` входит в JSON.
+Команда — одна строка, параметры передаются argv-аргументами `ключ=значение` (разделитель значения — первый `=`), обязательный параметр каждой операции — `op`:
 
-Варианты пути `$TE`:
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=info
+
+Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<путь>\bx.js" ключ=значение…`.
+
+Варианты пути до скриптов:
 
     глобально на Windows: "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"
     локально в репозитории: ".kilo\skills\token-economy-php\scripts"
     pwsh на Linux/macOS: "$HOME/.config/kilo/skills/token-economy-php/scripts"
 
-В Windows PowerShell 5.1 при кириллице в payload добавляй в начало команды `$OutputEncoding=[Text.Encoding]::UTF8;` (в PowerShell 7 UTF-8 по умолчанию). Для многострочных правок и кириллицы надёжнее файл параметров: запиши JSON штатным инструментом в `.bx-cache/payload.json` (папка вне git) и передай его через `"@..."`.
+Значения аргументов: с пробелами — в одинарных кавычках; апостроф внутри значения удваивается (`''`); значения, начинающиеся с `$`, тоже бери в одинарные кавычки, иначе PowerShell раскроет их как переменные; двойные кавычки `"` внутри значений не используй — PowerShell 5.1 их портит. Кириллица через argv не портится: node читает командную строку через Unicode API Windows. Для многострочных payload (`patch`/`create`) — файл параметров: запиши JSON штатным инструментом в `.bx-cache/payload.json` (папка вне git) и передай его через `@.bx-cache/payload.json`.
 
 Общие параметры: `root` (рабочая папка, по умолчанию текущая), `core` (`true` — включить ядро Битрикса в индекс). Корень сайта определяется сам (папка с `bitrix/` или `local/`, в том числе `www`, `public_html`, `httpdocs`).
 
 info:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"info"}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=info
 
 search (`ext` — по умолчанию `.php`; `regex`, `ignoreCase`, `path`, `limit` — по желанию):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"search","query":"OnAfterIBlockElementAdd","path":"local"}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=search query=OnAfterIBlockElementAdd path=local
 
 symbol:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"symbol","name":"Vendor\\Catalog\\ProductTable"}' | node "$TE\bx.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"symbol","name":"Handlers::onAdd"}' | node "$TE\bx.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"symbol","name":"b_vendor_product"}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name=Vendor\Catalog\ProductTable
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name=Handlers::onAdd
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name=b_vendor_product
 
 rdeps / deps (`file` — путь, часть пути, имя класса или идентификатор компонента; `depth` 1–5):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"rdeps","file":"local/php_interface/include/helpers.php","depth":2}' | node "$TE\bx.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"deps","file":"index.php"}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=rdeps file=local/php_interface/include/helpers.php depth=2
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=deps file=index.php
 
 path / node / stats:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"path","from":"index.php","to":"Vendor\\Catalog\\ProductTable"}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=path from=index.php to=Vendor\Catalog\ProductTable
 
 outline:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"outline","file":"local/components/vendor/cat.list/class.php"}' | node "$TE\bx.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"outline","file":"Bitrix\\Main\\Loader","core":true}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=local/components/vendor/cat.list/class.php
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=Bitrix\Main\Loader core=true
 
 symbol и outline для старого API (метод из базового класса, с предками):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"symbol","name":"CIBlockElement::GetList","core":true}' | node "$TE\bx.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"outline","file":"CIBlockElement","inherit":true,"core":true}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name='CIBlockElement::GetList' core=true
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=CIBlockElement inherit=true core=true
 
 table:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"table","name":"b_acme_item"}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=table name=b_acme_item
 
 component / events / lang / route:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"component","id":"bitrix:news.list"}' | node "$TE\bx.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"events","query":"OnSaleOrderSaved"}' | node "$TE\bx.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"lang","query":"Добавить в корзину"}' | node "$TE\bx.js"
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"route","url":"/catalog/item-1/"}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=component id=bitrix:news.list
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=events query=OnSaleOrderSaved
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=lang query='Добавить в корзину'
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=route url=/catalog/item-1/
 
 read:
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; '{"op":"read","file":"local/php_interface/init.php","offset":1,"limit":120}' | node "$TE\bx.js"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=read file=local/php_interface/init.php offset=1 limit=120
 
-patch и create (файл параметров; перевод строки внутри JSON-строк — `\n`):
+build (принудительная перестройка индекса):
 
-    $TE="$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"; node "$TE\bx.js" "@.bx-cache/payload.json"
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=build
+
+patch и create (`@`-файл параметров — единственный способ: многострочные значения в argv не передать; перевод строки внутри JSON-строк — `\n`):
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" @.bx-cache/payload.json
 
 Содержимое `.bx-cache/payload.json` для правки:
 
