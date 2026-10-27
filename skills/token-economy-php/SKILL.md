@@ -15,7 +15,7 @@ description: Экономия токенов в PHP-проектах и на 1С
     "properties": {
       "op": {
         "type": "string",
-        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | read | patch | create | build"
+        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | read | patch | create | build | selftest"
       },
       "payload": {
         "type": "object",
@@ -183,3 +183,8 @@ patch и create (`@`-файл параметров — единственный 
     {"op":"create","file":"local/php_interface/include/helpers2.php","text":"<?php\nfunction hello() {}\n"}
 
 Подробности про устройство индекса, классификацию файлов и ограничения: `references/bitrix.md`.
+
+Самопроверка скрипта (индекс проекта не нужен):
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=selftest
+

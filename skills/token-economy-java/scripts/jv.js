@@ -576,6 +576,75 @@ function relations(reverse) {
   out(`${n.p} [${n.kind}]: ${reverse ? 'используют' : 'использует'} — ${items.length} (глубина ${depth})`, ...fmtEdges(items, 60));
 }
 
+// ---------- самопроверка ----------
+// selftest — проверки чистых функций на встроенных примерах; индекс проекта не нужен: jv.js selftest
+ops.selftest = function () {
+  const bad = [];
+  let total = 0;
+  const chk = (name, cond, extra) => {
+    total++;
+    console.log((cond ? 'ok    ' : 'FAIL  ') + name + (cond ? '' : '  [' + String(extra === undefined ? '' : extra).replace(/\s+/g, ' ').slice(0, 300) + ']'));
+    if (!cond) bad.push(name);
+  };
+  const { parseJava } = require('./lib/java');
+
+  // конфигурация: yaml/properties/секреты
+  const yml = parseYaml([
+    'spring:',
+    '  datasource:',
+    '    url: jdbc:postgresql://db/app',
+    '    password: s3cret',
+    '---',
+    'spring:',
+    '  config.activate.on-profile: dev',
+    '  datasource.url: jdbc:h2:mem:dev',
+    ''
+  ].join('\n'));
+  const base = (yml[0] && yml[0].entries) || [];
+  chk('yaml: вложенные ключи', base.some((e) => e.key === 'spring.datasource.url' && e.value === 'jdbc:postgresql://db/app'), JSON.stringify(yml));
+  chk('yaml: второй документ с профилем', yml.length === 2 && yml[1].profile === 'dev', JSON.stringify(yml));
+  const props = parseProperties('a.b=1\nc.d: два\n');
+  chk('properties: «=» и «:»', props[0].entries.length === 2 && props[0].entries[1].value === 'два', JSON.stringify(props));
+  chk('секреты: маскирование', show('spring.datasource.password', 's3cret') === '***' && show('spring.datasource.password', '${DB_PASS}') === '${DB_PASS}');
+  chk('norm: relaxed binding', norm('spring.datasource.password') === 'spring.datasource.password' && norm('TRACE-ID') === 'traceid' && norm('my-key') === 'mykey');
+
+  // разбор Java
+  const src = [
+    'package demo;',
+    '',
+    '@RestController',
+    '@RequestMapping("/api/users")',
+    'public class UserController {',
+    '    private final UserService service;',
+    '',
+    '    @GetMapping("/{id}")',
+    '    public User get(@PathVariable Long id) { return service.find(id); }',
+    '',
+    '    @PostMapping',
+    '    public User create(@RequestBody User u) { return service.save(u); }',
+    '}'
+  ].join('\n');
+  const j = parseJava(src);
+  const js = JSON.stringify(j);
+  const d = (j.decls || []).find((x) => x.n === 'UserController');
+  chk('java: класс с аннотациями', !!d && S.hasAnn(d.ann, 'RestController') && S.annArg((S.ann(d.ann, 'RequestMapping') || [])[1] || '', 'value') === '"/api/users"', js.slice(0, 300));
+  chk('java: методы с аннотациями', !!d && d.mem.some((m) => m.n === 'get' && S.hasAnn(m.ann, 'GetMapping')) && d.mem.some((m) => m.n === 'create' && S.hasAnn(m.ann, 'PostMapping')), js.slice(0, 300));
+  chk('java: поле', !!d && d.mem.some((m) => m.n === 'service' && m.k === 'field'), js.slice(0, 300));
+
+  // spring-хелперы
+  const sa = S.splitArgs('value = "/api", produces = "application/json"');
+  chk('spring: splitArgs', sa.length === 2 && sa[0].k === 'value' && sa[0].v === '"/api"' && sa[1].k === 'produces', JSON.stringify(sa));
+  chk('spring: annArg', S.annArg('"/api/{id}"', 'value') === '"/api/{id}"' && S.annArg('path = "/x"', 'value', 'path') === '"/x"');
+  chk('spring: evalExpr/evalStrings', S.evalExpr('"api" + "/users"', '', new Map()) === 'api/users' && S.evalStrings('{ "a", "b" }', '', new Map()).join('|') === 'a|b');
+  chk('spring: baseName', S.baseName('List<org.foo.User>') === 'List' && S.baseName('org.foo.User...') === 'org.foo.User');
+
+  if (bad.length) {
+    console.log('\nпровалено: ' + bad.join(', '));
+    process.exit(1);
+  }
+  console.log('\nвсе проверки пройдены (' + total + ')');
+};
+
 if (!args.op) fail('укажите op: ' + Object.keys(ops).join(' | '));
 if (!ops[args.op]) fail('неизвестный op: ' + args.op);
 try { ops[args.op](); } catch (e) { fail(e.message); }

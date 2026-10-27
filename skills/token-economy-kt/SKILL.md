@@ -13,7 +13,7 @@ description: Экономия токенов в Android-проектах на Ko
 "properties": {
 "op": {
 "type": "string",
-"description": "info | search | symbol | deps | rdeps | path | node | stats | outline | impls | manifest | room | di | nav | res | api | sig | read | patch | create"
+"description": "info | search | symbol | deps | rdeps | path | node | stats | outline | impls | manifest | room | di | nav | res | api | sig | read | patch | create | selftest"
 },
 "payload": {
 "type": "object",
@@ -126,3 +126,8 @@ node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" @.kt-cac
 Содержимое `.kt-cache/payload.json` для правки:
 {"op":"patch","file":"app/src/main/java/com/acme/Foo.kt","old":"return 1;","new":"return 2;"}
 Подробности про индекс, определение ролей, кодировки и ограничения: `references/android.md`.
+
+Самопроверка скрипта (индекс проекта не нужен):
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=selftest
+

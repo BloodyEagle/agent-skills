@@ -3096,6 +3096,67 @@ function opCreate(data, p, out) {
   out.push(`Создан ${p.file} (${enc}, ${eol}, ${Buffer.byteLength(finalText, enc === 'utf-8' ? 'utf8' : 'binary')} байт)`);
 }
 
+// ---------- самопроверка ----------
+// selftest — проверки чистых функций на встроенных примерах; индекс проекта не нужен: kt.js selftest
+
+function opSelftest() {
+  const bad = [];
+  let total = 0;
+  const chk = (name, cond, extra) => {
+    total++;
+    process.stdout.write((cond ? 'ok    ' : 'FAIL  ') + name + (cond ? '' : '  [' + String(extra === undefined ? '' : extra).replace(/\s+/g, ' ').slice(0, 300) + ']') + '\n');
+    if (!cond) bad.push(name);
+  };
+
+  // кодировки
+  const cyr = 'Привет, мир! Ёё йЙ №3';
+  chk('cp1251: encode→decode', decodeCp1251(encodeCp1251(cyr)) === cyr, decodeCp1251(encodeCp1251(cyr)));
+  chk('utf8: валидный UTF-8 распознаётся', isValidUtf8(Buffer.from(cyr, 'utf8')));
+  chk('utf8: cp1251-байты не UTF-8', !isValidUtf8(encodeCp1251(cyr)));
+
+  // аргументы и gradle
+  const p = parseArgs(['op=outline', 'file=Foo.kt', 'flat']);
+  chk('args: ключ=значение и флаг', p.op === 'outline' && p.file === 'Foo.kt' && p.flat === true);
+  chk('args: pbool/pint', pbool({x: '1'}, 'x', false) === true && pbool({}, 'x', true) === true && pint({n: '42'}, 'n', 0) === 42 && pint({}, 'n', 7) === 7);
+  chk('gradle: имя модуля → каталог', gradleModuleDir(':feature:login') === 'feature/login');
+  const sg = parseSettingsGradle('rootProject.name = "demo"\ninclude(":app", ":core")\ninclude(":feature:login")');
+  chk('settings.gradle: модули и имя', sg.rootName === 'demo' && sg.modules.join('|') === ':app|:core|:feature:login', JSON.stringify(sg));
+  const toml = parseToml('[versions]\nkotlin = "2.0.0"\n\n[libraries]\nrx = { group = "io.reactivex.rxjava3", name = "rxjava", version.ref = "kotlin" }\n\n[plugins]\nandroid-app = { id = "com.android.application", version.ref = "kotlin" }');
+  chk('toml: versions/libraries/plugins', toml.versions.kotlin === '2.0.0' && toml.libraries.rx.group === 'io.reactivex.rxjava3' && toml.libraries.rx.versionRef === 'kotlin' && toml.plugins['android-app'].id === 'com.android.application', JSON.stringify(toml));
+  const gradle = parseModuleGradle('android {\n    namespace = "com.demo"\n    compileSdk = 34\n    buildFeatures { compose = true }\n}\ndependencies {\n    implementation(project(":core"))\n}\n');
+  chk('module.gradle: namespace/sdk/compose/project', gradle.namespace === 'com.demo' && String(gradle.compileSdk) === '34' && gradle.compose === true && gradle.projectDeps.join('|') === ':core', JSON.stringify(gradle));
+
+  // xml
+  const man = parseManifestXml('<?xml version="1.0"?>\n<manifest package="com.demo">\n  <uses-permission android:name="android.permission.INTERNET"/>\n  <application>\n    <activity android:name=".MainActivity" android:exported="true">\n      <intent-filter>\n        <action android:name="android.intent.action.MAIN"/>\n      </intent-filter>\n    </activity>\n  </application>\n</manifest>');
+  chk('manifest: разрешения', man.permissions.length === 1 && man.permissions[0] === 'android.permission.INTERNET', JSON.stringify(man));
+  chk('manifest: компонент и intent-filter', man.components.length === 1 && man.components[0].attrs['android:name'] === '.MainActivity' && man.components[0].filters[0].actions[0] === 'android.intent.action.MAIN' && man.components[0].line === 5, JSON.stringify(man));
+  const lay = parseLayoutXml('<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android">\n  <Button android:id="@+id/btn_submit" android:text="@string/title"/>\n  <TextView android:text="@string/title"/>\n</LinearLayout>');
+  chk('layout: корень, id, строки', lay.root === 'LinearLayout' && lay.ids.join('|') === 'btn_submit' && lay.strings.join('|') === 'title', JSON.stringify(lay));
+  const vals = parseValuesXml('<resources>\n  <string name="title">Привет</string>\n  <string name="hint" translatable="false">подсказка</string>\n</resources>');
+  chk('values: строки и translatable', vals.strMap.title.value === 'Привет' && vals.strMap.title.translatable === true && vals.strMap.hint.translatable === false, JSON.stringify(vals));
+  chk('unescapeRes: сущности и переносы', unescapeRes('&lt;b&gt;a&lt;/b&gt;\n  вторая') === '<b>a</b> вторая', unescapeRes('&lt;b&gt;a&lt;/b&gt;\n  вторая'));
+  chk('locale: values-ru → ru', localeOfValuesRel('res/values-ru/strings.xml') === 'ru' && localeOfValuesRel('res/values/strings.xml') === 'default');
+  chk('locale: квалификаторы', isLocaleQualifier('en-rGB') && isLocaleQualifier('ru') && !isLocaleQualifier('night') && !isLocaleQualifier('w600dp'));
+  const nav = parseNavXml('<navigation app:startDestination="@+id/home">\n  <fragment android:id="@+id/home" android:name="com.demo.HomeFragment">\n    <action android:id="@+id/go" app:destination="@+id/details"/>\n  </fragment>\n  <fragment android:id="@+id/details" android:name="com.demo.DetailsFragment"/>\n  <deepLink android:id="@+id/link" app:uri="demo://item/{id}"/>\n</navigation>');
+  chk('nav: старт, переходы, deepLink', String(nav.start).replace(/^@\+?id\//, '') === 'home' && nav.destinations.length === 2 && nav.destinations[0].actions[0].dest === 'details' && nav.deepLinks.length === 1, JSON.stringify(nav));
+  chk('viewbinding: имя класса', layoutBindingClass('activity_main') === 'ActivityMainBinding' && layoutBindingClass('fragment_user_details') === 'FragmentUserDetailsBinding');
+
+  // Kotlin-парсер
+  const kt = 'package com.demo\n\nimport kotlinx.coroutines.launch\n\nclass UserService(private val repo: Repo) : BaseService() {\n    fun load(id: String): String { // комментарий\n        return "привет" // строка не попадает в санитайзер\n    }\n    suspend fun save(user: User) = repo.save(user)\n}\n';
+  const parsed = parseKotlin(kt);
+  const cls = parsed.decls.find((d) => d.name === 'UserService');
+  chk('kotlin: package и класс', parsed.package === 'com.demo' && !!cls && cls.kind === 'class', JSON.stringify(parsed.decls).slice(0, 300));
+  chk('kotlin: методы внутри класса', !!cls && ['load', 'save'].every((n) => (cls.members || []).some((d) => d.name === n)), JSON.stringify(parsed.decls).slice(0, 300));
+  chk('sanitize: позиции сохранены, строки/комментарии убраны', parsed.sanitized.length === kt.length && !parsed.sanitized.includes('привет') && !parsed.sanitized.includes('комментарий') && parsed.sanitized.includes('load'));
+  chk('splitTop: разделение верхнего уровня', splitTop('a, b(c, d), e', ',').length === 3 && splitTop('Map<K, V>, other', ',').length === 2);
+
+  if (bad.length) {
+    process.stdout.write('\nпровалено: ' + bad.join(', ') + '\n');
+    process.exit(1);
+  }
+  process.stdout.write('\nвсе проверки пройдены (' + total + ')\n');
+}
+
 // ---------- диспетчер ----------
 
 const OPS = {
@@ -3103,7 +3164,8 @@ const OPS = {
   deps: opDeps, rdeps: opRdeps, path: opPath, node: opNode, stats: opStats,
   impls: opImpls, manifest: opManifest, sig: opSig,
   room: opRoom, di: opDi, nav: opNav, res: opRes, api: opApi,
-  read: opRead, patch: opPatch, create: opCreate
+  read: opRead, patch: opPatch, create: opCreate,
+  selftest: () => opSelftest()
 };
 
 function main() {
@@ -3115,6 +3177,7 @@ function main() {
     return;
   }
   if (!OPS[op]) die('неизвестная операция: ' + op + ' (доступны: ' + Object.keys(OPS).sort().join(', ') + ')');
+  if (op === 'selftest') { opSelftest(); return; } // индекс проекта не нужен
   const root = p.root ? path.resolve(String(p.root)) : process.cwd();
   if (!fs.existsSync(root)) die('корень не найден: ' + root);
   const data = loadIndex(root);
