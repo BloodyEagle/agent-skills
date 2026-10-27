@@ -50,7 +50,8 @@ const cwd = process.cwd();
 const ROOT = path.resolve(cwd, args.root || 'src');
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
-const GRAPH_VERSION = 3; // формат graph-deps.json и кэша; смена версии пересобирает всё (3: линии импортов для why)
+const GRAPH_VERSION = 4; // формат graph-deps.json и кэша; смена версии пересобирает всё
+// (4: линии импортов для why и члены классов/интерфейсов в entities)
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const EXCLUDE = new Set(['node_modules', '.git', 'dist', '.kilocode', '.angular', 'coverage', 'build']);
 const NG_KINDS = {
@@ -462,6 +463,103 @@ function parseHtml(content) {
 // ---------- разбор TS ----------
 
 /**
+ * Первая '{' после from (строки пропускаются) или -1.
+ */
+function nextBrace(text, from) {
+    let str = null;
+    for (let i = from; i < text.length; i++) {
+        const c = text[i];
+        if (str) {
+            if (c === '\\') i++;
+            else if (c === str) str = null;
+            continue;
+        }
+        if (c === '"' || c === "'" || c === '`') str = c;
+        else if (c === '{') return i;
+    }
+    return -1;
+}
+
+/**
+ * Закрывающая '{' из позиции open (строки пропускаются) или -1.
+ */
+function matchBrace(text, open) {
+    let depth = 0, str = null;
+    for (let i = open; i < text.length; i++) {
+        const c = text[i];
+        if (str) {
+            if (c === '\\') i++;
+            else if (c === str) str = null;
+            continue;
+        }
+        if (c === '"' || c === "'" || c === '`') str = c;
+        else if (c === '{') depth++;
+        else if (c === '}') {
+            depth--;
+            if (depth === 0) return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Члены тела класса/интерфейса (методы и свойства с номерами строк): куски до ';' на нулевой
+ * глубине (свойства, абстрактные методы) либо до '}', закрывающего тело метода.
+ */
+function extractMembersTs(body, lineAt) {
+    const out = [];
+    let start = -1, opened = false, str = null, depth = 0;
+    const push = (end) => {
+        if (start === -1) return;
+        const raw = body.slice(start, end);
+        const line = lineAt(start);
+        start = -1;
+        let t = raw.replace(/\s+/g, ' ').trim(), m;
+        while ((m = t.match(/^(public|private|protected|static|readonly|abstract|override|async|declare|get|set)\s+/))) t = t.slice(m[0].length);
+        m = t.match(/^([A-Za-z_$][\w$]*)/);
+        if (!m) return;
+        const rest = t.slice(m[0].length).replace(/^\s+/, '');
+        const isMethod = /^\??\(/.test(rest) || rest.startsWith('<');
+        out.push({name: m[1], kind: isMethod ? 'method' : 'property', line});
+    };
+    for (let i = 0; i < body.length; i++) {
+        const c = body[i];
+        if (start === -1) {
+            if (/\s/.test(c)) continue;
+            start = i;
+        }
+        if (str) {
+            if (c === '\\') {
+                i++;
+                continue;
+            }
+            if (c === str) str = null;
+            continue;
+        }
+        if (c === '"' || c === "'" || c === '`') {
+            str = c;
+            continue;
+        }
+        if (c === '{') {
+            depth++;
+            opened = true;
+            continue;
+        }
+        if (c === '}') {
+            depth--;
+            if (depth === 0 && opened) {
+                push(i + 1);
+                opened = false;
+            }
+            continue;
+        }
+        if (c === ';' && !opened && depth === 0) push(i + 1);
+    }
+    if (start !== -1) push(body.length);
+    return out;
+}
+
+/**
  * Разбирает содержимое .ts: импорты, экспорты, объявления с номерами строк,
  * а для @Component — templateUrl, styleUrl(s) и использование в inline-template.
  */
@@ -495,13 +593,25 @@ function parseTs(content) {
         const kind = m[2] === 'let' || m[2] === 'var' ? 'const' : m[2];
         entities.push({name: m[3], kind, line: lineAt(m.index)});
         if (m[1]) exports.push(m[3]);
+        // члены класса/интерфейса — для graph symbol по методам и свойствам
+        if (kind === 'class' || kind === 'interface') {
+            const brace = nextBrace(content, m.index + m[0].length);
+            if (brace !== -1) {
+                const close = matchBrace(content, brace);
+                if (close !== -1)
+                    entities[entities.length - 1].members =
+                        extractMembersTs(content.slice(brace + 1, close), (off) => lineAt(brace + 1 + off));
+            }
+        }
     }
 
     // Angular-декораторы: вид сущности, selector / имя пайпа, шаблон и стили
     const reNg = /@(Component|Directive|Pipe|Injectable|NgModule)\s*\(([\s\S]{0,30000}?)\)\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/g;
     while ((m = reNg.exec(content))) {
         const body = m[2];
-        const entity = {name: m[3], kind: NG_KINDS[m[1]], line: lineAt(m.index)};
+        // members собраны в reDecl-сущности «class» — переносим: дедупликация ниже оставит только эту
+        const prev = entities.find((e) => e.name === m[3] && e.kind === 'class');
+        const entity = {name: m[3], kind: NG_KINDS[m[1]], line: lineAt(m.index), ...(prev && prev.members ? {members: prev.members} : {})};
         const sel = body.match(/\bselector\s*:\s*['"`]([^'"`]+)['"`]/);
         if (sel) entity.selector = sel[1];
         if (m[1] === 'Pipe') {
@@ -1008,7 +1118,27 @@ if (op === 'symbol') {
     if (!args.name) fail('Укажите payload.name');
     const ids = has(graph.symbols, args.name) ? graph.symbols[args.name] : null;
     if (!ids) {
-        emit({name: args.name, definedIn: []});
+        // Член класса/интерфейса: метод, свойство, getter/setter; in=ИмяКласса сужает поиск
+        const owner = args.in ? String(args.in) : null;
+        const hits = [];
+        for (const f of graph.files) {
+            for (const e of f.entities || []) {
+                if (!e.members || (owner && e.name !== owner)) continue;
+                for (const mm of e.members)
+                    if (mm.name === args.name)
+                        hits.push({file: f.path, kind: mm.kind, owner: e.name, line: mm.line});
+            }
+        }
+        emit({
+            name: args.name,
+            ...(owner ? {in: owner} : {}),
+            ...(hits.length
+                ? {
+                    definedIn: hits.slice(0, 30),
+                    ...(hits.length > 30 ? {total: hits.length, hint: 'совпадений больше 30 — уточните in=ИмяКласса'} : {})
+                }
+                : {definedIn: []})
+        });
         process.exit(0);
     }
     emit({
@@ -1092,10 +1222,12 @@ if (op === 'node' || op === 'deps' || op === 'rdeps') {
 
     if (op === 'node') {
         const rev = reverseIndex(graph);
+        // члены не выводим: их задача — поиск в op=symbol, в node они только раздули бы ответ
+        const bare = n.entities.map(({members, ...rest}) => rest);
         emit({
             file: n.path, id: n.id, kind: n.kind, loc: n.loc,
-            entities: n.entities.slice(0, 50),
-            ...(n.entities.length > 50 ? {entitiesTruncated: n.entities.length - 50} : {}),
+            entities: bare.slice(0, 50),
+            ...(bare.length > 50 ? {entitiesTruncated: bare.length - 50} : {}),
             ...(n.reexportAll ? {reexportAll: true} : {}),
             imports: n.imports.map((id) => {
                 const ln = args.why ? (n.importLines || {})[id] : null;
