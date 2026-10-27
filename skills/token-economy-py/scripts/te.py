@@ -7,6 +7,7 @@
     te.py outline FILE [--docs]
     te.py search QUERY [--ext .py,.yaml] [--re] [-i] [-l] [--path DIR] [--limit N]
     te.py sig dotted.name [--doc]
+    te.py info
     te.py selftest
 
 Общие параметры --root DIR и --src DIR (повторяемый) можно указывать до или после команды.
@@ -24,6 +25,11 @@ import sys
 from collections import deque
 from importlib.machinery import EXTENSION_SUFFIXES, PathFinder
 from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except ImportError:  # 3.9–3.10: pyproject.toml разбирается упрощённо (см. _pyproject_deps)
+    tomllib = None
 
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -671,6 +677,105 @@ def cmd_graph(a):
                   + ", ".join(f"{k}({v})" for k, v in sorted(ext.items(), key=lambda x: -x[1])[:15]))
         return
     fail("неизвестная операция графа")
+
+
+# ---------- info (паспорт проекта одним вызовом) ----------
+
+def _deps_name(req):
+    return re.split(r"[<>=!~;\[\s]", req.strip(), maxsplit=1)[0]
+
+
+def _pyproject_deps(root):
+    """Зависимости и requires-python из pyproject.toml; без tomllib (3.9–3.10) — упрощённый разбор."""
+    p = os.path.join(root, "pyproject.toml")
+    if not os.path.exists(p):
+        return None
+    if tomllib is not None:
+        try:
+            with open(p, "rb") as f:
+                proj = tomllib.load(f).get("project") or {}
+        except Exception:
+            return {"deps": [], "requires": None, "parsed": False}
+        reqs = list(proj.get("dependencies") or [])
+        for v in (proj.get("optional-dependencies") or {}).values():
+            reqs.extend(v or [])
+        return {"deps": sorted({_deps_name(r) for r in reqs if _deps_name(r)}),
+                "requires": proj.get("requires-python"), "parsed": True}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = re.search(r'^dependencies\s*=\s*\[(.*?)\]', text, re.S | re.M)
+    reqs = re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
+    m = re.search(r'^requires-python\s*=\s*["\']([^"\']+)["\']', text, re.M)
+    return {"deps": sorted({_deps_name(r) for r in reqs if _deps_name(r)}),
+            "requires": m.group(1) if m else None, "parsed": True}
+
+
+def _requirements_deps(root):
+    names, files = [], []
+    try:
+        files = sorted(f for f in os.listdir(root) if f.startswith("requirements") and f.endswith(".txt"))
+    except OSError:
+        return names, files
+    for fn in files:
+        try:
+            with open(os.path.join(root, fn), "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith(("#", "-")):
+                        continue
+                    name = _deps_name(line)
+                    if name:
+                        names.append(name)
+        except OSError:
+            continue
+    return sorted(set(names)), files
+
+
+def cmd_info(a):
+    root = os.path.abspath(a.root)
+    g = ensure_graph(root, a.src)
+    nodes = g["nodes"]
+    print(f"корень: {posix(root)}")
+    venv = " (в venv)" if sys.prefix != getattr(sys, "base_prefix", sys.prefix) else ""
+    print(f"python: {sys.version.split()[0]}{venv}  {sys.executable}")
+    pp = _pyproject_deps(root)
+    req_deps, req_files = _requirements_deps(root)
+    if pp:
+        deps = pp["deps"]
+        tail = f"  требуется: {pp['requires']}" if pp.get("requires") else ""
+        mark = "" if pp.get("parsed") else "  (файл не разобран)"
+        print(f"зависимости: {len(deps)} из pyproject.toml{mark}{tail}")
+    elif req_deps:
+        deps = req_deps
+        print(f"зависимости: {len(deps)} из {', '.join(req_files)}")
+    else:
+        deps = []
+        print("зависимости: не найдены (нет pyproject.toml и requirements*.txt)")
+    if deps:
+        print("  " + ", ".join(deps[:15]) + (f" … ещё {len(deps) - 15}" if len(deps) > 15 else ""))
+    kinds = {}
+    for n in nodes:
+        kinds[n["kind"]] = kinds.get(n["kind"], 0) + 1
+    print(f"файлов: {len(nodes)}  строк: {sum(n['loc'] for n in nodes)}  "
+          + "  ".join(f"{k}: {v}" for k, v in sorted(kinds.items())))
+    roots = source_roots(root, a.src)[:-1]
+    print("src-корни: " + (", ".join(roots) if roots else ". (корень проекта)"))
+    ext = {}
+    for n in nodes:
+        for e in n["ext"]:
+            ext[e] = ext.get(e, 0) + 1
+    if ext:
+        print(f"внешние пакеты ({len(ext)}): "
+              + ", ".join(f"{k}({v})" for k, v in sorted(ext.items(), key=lambda x: -x[1])[:15]))
+    print("крупнейшие файлы:")
+    for n in sorted(nodes, key=lambda n: -n["loc"])[:10]:
+        print(f"  {n['loc']:>5}  {n['path']}" + ("  [test]" if n["kind"] == "test" else ""))
+    bad = [n["path"] for n in nodes if n["err"]]
+    if bad:
+        print(f"ВНИМАНИЕ: не разобраны ({len(bad)}): " + ", ".join(bad[:8]) + (" …" if len(bad) > 8 else ""))
 
 
 # ---------- outline ----------
@@ -1357,6 +1462,8 @@ def main():
     si.add_argument("target")
     si.add_argument("--doc", action="store_true")
 
+    sp.add_parser("info", parents=[common])
+
     sp.add_parser("selftest", parents=[common])
 
     a = ap.parse_args()
@@ -1364,7 +1471,7 @@ def main():
     a.src = getattr(a, "src", None)
     try:
         {"graph": cmd_graph, "outline": cmd_outline, "search": cmd_search,
-         "sig": cmd_sig, "selftest": cmd_selftest}[a.cmd](a)
+         "sig": cmd_sig, "info": cmd_info, "selftest": cmd_selftest}[a.cmd](a)
         sys.stdout.flush()
     except BrokenPipeError:  # читатель закрыл канал (например, `| head`) — это не ошибка
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
