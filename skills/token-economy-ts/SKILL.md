@@ -57,7 +57,7 @@ description: Обязательный навык для этого Angular-пр�
 
 ### Чтение и поиск
 
-search — поиск по проекту: имена файлов, номера строк и короткие сниппеты (до 30 совпадений, строка до 100 символов) вместо файлов целиком. Поиск по подстроке с учётом регистра, одно расширение за вызов (по умолчанию `.ts`, корень `src`).
+search — поиск по проекту: имена файлов, номера строк и короткие сниппеты (по умолчанию до 30 совпадений, строка до 100 символов) вместо файлов целиком. Поиск по подстроке или регулярному выражению, несколько расширений за вызов (по умолчанию `.ts`, корень `src`).
 
 outline — оглавление .ts файла: классы, методы, свойства с номерами строк (~10–20% объёма файла). Для файлов от 300 строк, дальше — точечное чтение.
 
@@ -109,7 +109,16 @@ generate — обёртка над локальным Angular CLI (`node_modules
     node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=ИскомыйТекст ext=.ts
     node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=app-profile ext=.html
 
-Параметры: `query` (обязательный), `ext` (по умолчанию `.ts`), `root` (по умолчанию `src`).
+Параметры: `query` (обязательный), `ext` (по умолчанию `.ts`; несколько через запятую — `ext=.ts,.html`), `root` (по умолчанию `src`), `i=1` (без учёта регистра), `regex=1` (`query` — регулярное выражение), `limit` (по умолчанию 30), `files=1` (только список файлов со счётчиком совпадений).
+
+Без учёта регистра и по нескольким расширениям сразу:
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=userName ext=.ts,.html i=1
+
+Регулярное выражение и только файлы:
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=app-[a-z-]+ ext=.html regex=1 files=1
+
 
 ### outline
 
