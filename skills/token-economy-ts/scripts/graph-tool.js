@@ -900,7 +900,7 @@ function walk(graph, startId, depth, reverse) {
 
 // ---------- диспетчер ----------
 const op = args.op;
-if (!op) fail('Укажите op: build | node | deps | rdeps | symbol | selector | path | cycles | stats');
+if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats');
 
 if (op === 'build') {
     const {graph, reparsed, ms} = buildGraph(null);
@@ -918,6 +918,61 @@ if (op === 'stats') {
         topImported: graph.files
             .map((f) => ({file: f.path, kind: f.kind, importers: (rev.get(f.id) || []).length}))
             .sort((a, b) => b.importers - a.importers).slice(0, 10)
+    });
+    process.exit(0);
+}
+
+if (op === 'info') {
+    // Паспорт проекта одним вызовом вместо чтения package.json/tsconfig/angular.json вручную.
+    const readJson = (name) => {
+        try {
+            return JSON.parse(fs.readFileSync(path.join(cwd, name), 'utf8'));
+        } catch (e) {
+            return null;
+        }
+    };
+    const warnings = [];
+    const pkg = readJson('package.json');
+    if (!pkg) warnings.push('package.json не найден в ' + cwd);
+    if (pkg && !fs.existsSync(path.join(cwd, 'node_modules'))) warnings.push('node_modules не найден — выполните npm install');
+    const deps = {...(pkg && pkg.dependencies || {}), ...(pkg && pkg.devDependencies || {})};
+    const KEY_DEPS = ['@angular/core', '@angular/cli', '@angular/material', '@angular/cdk', 'typescript', 'rxjs', 'zone.js',
+        '@ngrx/store', '@ngrx/effects', '@ngrx/component-store', 'jest', 'karma', 'cypress', 'playwright', 'eslint', 'prettier'];
+    const key = {};
+    for (const k of KEY_DEPS) if (deps[k]) key[k] = deps[k];
+    const shown = new Set(Object.keys(key));
+    const others = Object.keys(deps).filter((k) => !shown.has(k)).sort();
+    const pm = [['package-lock.json', 'npm'], ['yarn.lock', 'yarn'], ['pnpm-lock.yaml', 'pnpm']]
+        .find(([f]) => fs.existsSync(path.join(cwd, f)));
+    let tc = null;
+    try {
+        tc = parseJsonc(fs.readFileSync(path.join(cwd, 'tsconfig.json'), 'utf8')).compilerOptions || {};
+    } catch (e) { /* нет или не разобран — будет предупреждение */
+    }
+    if (!tc) warnings.push('tsconfig.json не найден или не разобран');
+    const paths = tc && tc.paths ? Object.keys(tc.paths).slice(0, 10) : [];
+    const aj = ['angular.json', '.angular.json'].some((f) => fs.existsSync(path.join(cwd, f)));
+    if (!aj) warnings.push('angular.json не найден (это не Angular CLI проект?)');
+    let gi = '';
+    try {
+        gi = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8');
+    } catch (e) { /* нет .gitignore */
+    }
+    for (const f of ['graph-deps.json', '.graph-deps-cache.json'])
+        if (!gi.includes(f)) warnings.push(f + ' не в .gitignore — добавь');
+    const largest = [...graph.files].sort((a, b) => (b.loc || 0) - (a.loc || 0)).slice(0, 10)
+        .map((f) => ({file: f.path, kind: f.kind, loc: f.loc}));
+    emit({
+        ...(pkg ? {project: {name: pkg.name || null, version: pkg.version || null}} : {}),
+        ...(pm ? {packageManager: pm[1]} : {}),
+        angular: deps['@angular/core'] || null,
+        keyDeps: key,
+        otherDeps: {count: others.length, ...(others.length ? {names: others.slice(0, 15)} : {})},
+        tsconfig: {strict: tc ? !!tc.strict : null, ...(tc && tc.target ? {target: tc.target} : {}), ...(paths.length ? {paths} : {})},
+        angularJson: aj,
+        stats: graph.stats,
+        largest,
+        ...(warnings.length ? {warnings} : {})
     });
     process.exit(0);
 }
