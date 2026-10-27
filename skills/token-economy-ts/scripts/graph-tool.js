@@ -44,12 +44,13 @@ if (!Object.keys(args).length && process.stdin.isTTY !== true) {
 // argv передаёт значения строками: приводим типы (stdin-JSON приходит нативным)
 args.depth = Number(args.depth) || 1;
 args.specs = args.specs === true || args.specs === 'true' || args.specs === '1';
+args.why = args.why === true || args.why === 'true' || args.why === '1';
 
 const cwd = process.cwd();
 const ROOT = path.resolve(cwd, args.root || 'src');
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
-const GRAPH_VERSION = 2; // формат graph-deps.json и кэша; смена версии пересобирает всё
+const GRAPH_VERSION = 3; // формат graph-deps.json и кэша; смена версии пересобирает всё (3: линии импортов для why)
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const EXCLUDE = new Set(['node_modules', '.git', 'dist', '.kilocode', '.angular', 'coverage', 'build']);
 const NG_KINDS = {
@@ -471,14 +472,15 @@ function parseTs(content) {
     const decorated = new Set();
     const lineAt = (idx) => content.slice(0, idx).split('\n').length;
 
-    // Импорты и реэкспорты (включая динамические import()); многострочные поддержаны
+    // Импорты и реэкспорты (включая динамические import()); многострочные поддержаны.
+    // Для ts-файлов specifiers хранятся объектами {m, line} — line нужна для rdeps --why.
     const reImps = [
         /import\s+[^;'"]*?from\s*['"]([^'"]+)['"]/g,
         /import\s*['"]([^'"]+)['"]/g,
         /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
         /export\s+[^;'"]*?from\s*['"]([^'"]+)['"]/g
     ];
-    for (const re of reImps) while ((m = re.exec(content))) specifiers.push(m[1]);
+    for (const re of reImps) while ((m = re.exec(content))) specifiers.push({m: m[1], line: lineAt(m.index)});
     if (/export\s*\*\s*from/.test(content)) reexportAll = true;
 
     const reExp = /export\s*\{([^}]*)\}/g;
@@ -713,9 +715,16 @@ function buildGraph(files) {
         const abs = path.join(cwd, n.path);
         const type = fileType(n.path);
         for (const spec of n.specifiers || []) {
-            const r = type === 'style' ? resolveStyleSpec(spec, abs, fileSet, includePaths) : resolveSpec(spec, abs, fileSet, alias);
-            if (r && r.file) n.imports.push(idByAbs.get(r.file));
-            else if (r && r.external) {
+            // ts-спецификаторы приходят объектами {m, line}; стили — строками
+            const isObj = spec && typeof spec === 'object';
+            const s = isObj ? spec.m : spec;
+            const r = type === 'style' ? resolveStyleSpec(s, abs, fileSet, includePaths) : resolveSpec(s, abs, fileSet, alias);
+            if (r && r.file) {
+                const id = idByAbs.get(r.file);
+                n.imports.push(id);
+                if (isObj && type === 'ts')
+                    (n.importPairs = n.importPairs || []).push([id, spec.line]);
+            } else if (r && r.external) {
                 n.external.push(r.external);
                 externals.add(r.external);
             }
@@ -781,7 +790,13 @@ function buildGraph(files) {
     for (const n of nodes) {
         n.imports = [...new Set(n.imports)].sort((a, b) => a - b);
         n.external = [...new Set(n.external)].sort();
-        for (const k of ['specifiers', 'fileRefs', 'templateUrl', 'usages']) delete n[k];
+        // линия импорта для rdeps/deps --why: id → минимальный номер строки
+        if (n.importPairs) {
+            n.importLines = {};
+            for (const [id, ln] of n.importPairs)
+                if (!(id in n.importLines) || ln < n.importLines[id]) n.importLines[id] = ln;
+        }
+        for (const k of ['specifiers', 'fileRefs', 'templateUrl', 'usages', 'importPairs']) delete n[k];
         const type = fileType(n.path);
         n.kind = type === 'html' ? 'template' : type === 'style' ? 'style' : nodeKind(n);
         byKind[n.kind] = (byKind[n.kind] || 0) + 1;
@@ -877,8 +892,9 @@ function reverseIndex(graph) {
 
 /**
  * BFS по графу до depth: список {file, kind, level} без повторов.
+ * why=true добавляет via — номер строки импорта этого ребра (для ts-связей).
  */
-function walk(graph, startId, depth, reverse) {
+function walk(graph, startId, depth, reverse, why) {
     const rev = reverse ? reverseIndex(graph) : null;
     const children = (id) => (reverse ? rev.get(id) || [] : graph.files[id - 1].imports);
     const seen = new Set([startId]);
@@ -891,7 +907,11 @@ function walk(graph, startId, depth, reverse) {
             if (seen.has(c)) continue;
             seen.add(c);
             const f = graph.files[c - 1];
-            out.push({file: f.path, kind: f.kind, level: d + 1});
+            const lines = why
+                ? (reverse ? graph.files[c - 1].importLines : graph.files[id - 1].importLines) || {}
+                : {};
+            const ln = why ? lines[reverse ? id : c] : null;
+            out.push({file: f.path, kind: f.kind, level: d + 1, ...(ln ? {via: 'L' + ln} : {})});
             frontier.push([c, d + 1]);
         }
     }
@@ -1077,15 +1097,21 @@ if (op === 'node' || op === 'deps' || op === 'rdeps') {
             entities: n.entities.slice(0, 50),
             ...(n.entities.length > 50 ? {entitiesTruncated: n.entities.length - 50} : {}),
             ...(n.reexportAll ? {reexportAll: true} : {}),
-            imports: n.imports.map((id) => ({file: byId(id).path, kind: byId(id).kind})),
-            importedBy: (rev.get(n.id) || []).slice(0, 30).map((id) => ({file: byId(id).path, kind: byId(id).kind})),
+            imports: n.imports.map((id) => {
+                const ln = args.why ? (n.importLines || {})[id] : null;
+                return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
+            }),
+            importedBy: (rev.get(n.id) || []).slice(0, 30).map((id) => {
+                const ln = args.why ? ((byId(id).importLines || {})[n.id]) : null;
+                return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
+            }),
             ...(n.external.length ? {external: n.external} : {})
         });
         process.exit(0);
     }
 
     const depth = Math.min(Math.max(args.depth, 1), 5);
-    const list = walk(graph, n.id, depth, op === 'rdeps').slice(0, 60);
+    const list = walk(graph, n.id, depth, op === 'rdeps', args.why).slice(0, 60);
     emit(op === 'deps'
         ? {
             file: n.path,

@@ -126,7 +126,7 @@ generate — обёртка над локальным Angular CLI (`node_modules
 
 ### graph
 
-Общий вид: `node "<путь>\graph-tool.js" op=symbol name=UserService`. Параметры: `op` (обязательный), `root` (по умолчанию `src`), `depth` (1–5, для `deps`/`rdeps`), `specs` (`true` — включить `.spec.ts`).
+Общий вид: `node "<путь>\graph-tool.js" op=symbol name=UserService`. Параметры: `op` (обязательный), `root` (по умолчанию `src`), `depth` (1–5, для `deps`/`rdeps`), `specs` (`true` — включить `.spec.ts`), `why` (`true` — добавить `via`: номер строки импорта в `deps`/`rdeps`/`node`).
 
 Где определён символ (класс, интерфейс, пайп по имени, `$переменная`, миксин, `--custom-prop`):
 
@@ -137,9 +137,11 @@ generate — обёртка над локальным Angular CLI (`node_modules
 
     node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=selector selector=app-profile
 
-Кто использует файл (обязательно перед правкой общего файла):
+Кто использует файл (обязательно перед правкой общего файла); `why=1` добавляет `via` — номер строки импорта (только для ts-связей):
 
     node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=rdeps file=src/app/services/auth.service.ts depth=2
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=rdeps file=src/app/services/auth.service.ts why=1
+
 
 Что использует файл:
 
