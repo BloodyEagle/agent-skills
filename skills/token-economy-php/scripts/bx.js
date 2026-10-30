@@ -8,8 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const { posix, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
 const { makeCtx, ensureIndex, buildIndex, docPath, CACHE_DIR } = require('./lib/index');
-const { classify, pcreToRegExp } = require('./lib/bitrix');
-const { parseUrlRewrite, parseComponentParams } = require('./lib/php');
+const { classify, pcreToRegExp, resolveInclude } = require('./lib/bitrix');
+const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams } = require('./lib/php');
 
 try { process.stdout.setDefaultEncoding('utf8'); } catch (e) { /* ignore */ }
 
@@ -625,6 +625,70 @@ function relations(reverse) {
   out(`${n.p} [${n.kind}]: ${reverse ? 'используют' : 'использует'} — ${items.length} (глубина ${depth})`, ...fmtEdges(items, 60));
   if (!reverse && n.mods) console.log('модули: ' + n.mods.map(([id]) => id).join(', '));
 }
+
+// ---------- самопроверка ----------
+// selftest — проверки чистых функций на встроенных примерах; индекс проекта не нужен: bx.js selftest
+ops.selftest = function () {
+  const bad = [];
+  let total = 0;
+  const chk = (name, cond, extra) => {
+    total++;
+    console.log((cond ? 'ok    ' : 'FAIL  ') + name + (cond ? '' : '  [' + String(extra === undefined ? '' : extra).replace(/\s+/g, ' ').slice(0, 300) + ']'));
+    if (!cond) bad.push(name);
+  };
+
+  // разбор PHP
+  const php = [
+    '<?php',
+    'namespace Demo\\Mod;',
+    '',
+    'use Bitrix\\Main\\Loader;',
+    '',
+    'class Api',
+    '{',
+    '    public static function run(int $id): string',
+    '    {',
+    '        Loader::includeModule("iblock"); // комментарий',
+    '        return "ок";',
+    '    }',
+    '',
+    '    private function hidden()',
+    '    {',
+    '        return 1;',
+    '    }',
+    '}'
+  ].join('\n');
+  const p = parsePhp(php);
+  const js = JSON.stringify(p);
+  const api = (p.decls || []).find((d) => d.name === 'Api');
+  chk('php: namespace и use', p.ns === 'Demo\\Mod' && (p.imports || []).length === 1, js.slice(0, 300));
+  chk('php: класс и fqn', !!api && api.kind === 'class' && api.fqn === 'Demo\\Mod\\Api', js.slice(0, 300));
+  chk('php: методы', !!api && ['run', 'hidden'].every((n) => (api.members || []).some((m) => m.n === n && m.k === 'method')), js.slice(0, 300));
+
+  // Битрикс-структуры
+  const lang = parseLang('<?php $MESS["WELCOME"] = "Привет, мир!";');
+  chk('lang: ключи MESS', lang.length === 1 && lang[0][0] === 'WELCOME' && lang[0][1] === 'Привет, мир!', JSON.stringify(lang));
+  const rules = parseUrlRewrite('<?php $arUrlRewrite = array(array("CONDITION" => "#^/catalog/(.*)#i", "RULE" => "/catalog/index.php", "ID" => "", "PATH" => "/catalog/index.php"));');
+  chk('urlrewrite: правило', rules.length === 1 && rules[0].c === '#^/catalog/(.*)#i' && rules[0].p === '/catalog/index.php', JSON.stringify(rules));
+  const params = parseComponentParams('<?php $arParameters = array("PARAMETERS" => array("SHOW_TITLE" => array("NAME" => "Показывать заголовок"), "CACHE_TIME" => array("DEFAULT" => 3600)));');
+  chk('parameters: ключи верхнего уровня', params.join(',') === 'SHOW_TITLE,CACHE_TIME', JSON.stringify(params));
+
+  // классификация путей и вспомогательные
+  const c1 = classify('/local/components/demo/list/templates/.default/template.php');
+  chk('bitrix: компонент и шаблон', c1.origin === 'custom' && c1.comp && c1.comp.id === 'demo:list' && c1.comp.tpl === '.default', JSON.stringify(c1));
+  const c2 = classify('/bitrix/modules/main/classes/general/version.php');
+  const c3 = classify('/local/news/lang/ru/detail.php');
+  chk('bitrix: ядро и языковой файл', c2.origin === 'core' && c3.lang && c3.lang.code === 'ru', JSON.stringify([c2, c3]));
+  chk('bitrix: resolveInclude', resolveInclude({b: 'dir', r: 'include.php'}, '/local/news/list.php') === '/local/news/include.php');
+  const rx = pcreToRegExp('#^/catalog/(.*)#i');
+  chk('bitrix: pcre → RegExp', !!rx && rx.test('/Catalog/12') && !rx.test('/other'));
+
+  if (bad.length) {
+    console.log('\nпровалено: ' + bad.join(', '));
+    process.exit(1);
+  }
+  console.log('\nвсе проверки пройдены (' + total + ')');
+};
 
 if (!args.op) fail('укажите op: ' + Object.keys(ops).join(' | '));
 if (!ops[args.op]) fail('неизвестный op: ' + args.op);

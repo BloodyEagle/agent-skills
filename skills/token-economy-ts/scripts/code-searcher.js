@@ -31,13 +31,35 @@ if (!Object.keys(args).length) {
 }
 
 const query = args.query;
-const ext = args.ext || '.ts';
 const root = args.root || 'src';
 
 if (!query) {
     console.log(JSON.stringify({error: "Не указан поисковый запрос (query)"}));
     process.exit(1);
 }
+
+// Несколько расширений за вызов: ext=.ts,.html
+const exts = String(args.ext || '.ts').split(',').map(s => s.trim()).filter(Boolean)
+    .map(s => s.startsWith('.') ? s : '.' + s);
+// i=1 — без учёта регистра; regex=1 — query как регулярное выражение;
+// limit — максимум показанных совпадений (по умолчанию 30); files=1 — только файлы со счётчиками.
+const truthy = (v) => v === true || v === '1' || v === 'true';
+const ignoreCase = truthy(args.i) || truthy(args.ignoreCase);
+const filesOnly = truthy(args.files);
+const limit = Math.max(1, Number(args.limit) || 30);
+let rx = null;
+if (truthy(args.regex)) {
+    try {
+        rx = new RegExp(query, ignoreCase ? 'i' : '');
+    } catch (e) {
+        console.log(JSON.stringify({error: "Некорректное регулярное выражение: " + e.message}));
+        process.exit(1);
+    }
+}
+const needle = ignoreCase ? query.toLowerCase() : null;
+const match = (line) => rx
+    ? rx.test(line)
+    : needle ? line.toLowerCase().includes(needle) : line.includes(query);
 
 // Правило 11 скилла: пути вне рабочей директории отклоняются.
 // root="." допустим (relRoot === ''); точечная проверка ".." не задевает папки вида "..foo".
@@ -58,10 +80,10 @@ function searchInDir(dir, results = []) {
         const filePath = path.join(dir, file);
         if (fs.statSync(filePath).isDirectory()) {
             if (!EXCLUDE_DIRS.has(file)) searchInDir(filePath, results);
-        } else if (file.endsWith(ext)) {
+        } else if (exts.some(e => file.endsWith(e))) {
             const lines = fs.readFileSync(filePath, 'utf8').replace(/\r\n?/g, '\n').split('\n');
             lines.forEach((line, index) => {
-                if (line.includes(query)) {
+                if (match(line)) {
                     results.push({
                         file: path.relative(process.cwd(), filePath),
                         line: index + 1,
@@ -75,4 +97,17 @@ function searchInDir(dir, results = []) {
 }
 
 const matches = searchInDir(rootAbs);
-console.log(JSON.stringify({count: matches.length, matches: matches.slice(0, 30)}));
+if (filesOnly) {
+    const byFile = new Map();
+    for (const m of matches) byFile.set(m.file, (byFile.get(m.file) || 0) + 1);
+    console.log(JSON.stringify({
+        count: matches.length,
+        filesTotal: byFile.size,
+        files: [...byFile.entries()]
+            .map(([file, count]) => ({file, count}))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, limit)
+    }));
+} else {
+    console.log(JSON.stringify({count: matches.length, matches: matches.slice(0, limit)}));
+}

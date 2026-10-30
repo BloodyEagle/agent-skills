@@ -15,7 +15,7 @@ description: Экономия токенов в проектах на Java 17+ �
     "properties": {
       "op": {
         "type": "string",
-        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | impls | beans | endpoints | config | entities | table | listeners | sig | read | patch | create | build"
+        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | impls | beans | endpoints | config | entities | table | listeners | sig | read | patch | create | build | selftest"
       },
       "payload": {
         "type": "object",
@@ -157,3 +157,8 @@ read / patch / create (только для файлов не в UTF-8; для pa
     {"op":"patch","file":"src/main/java/com/acme/Foo.java","old":"return 1;","new":"return 2;"}
 
 Подробности про индекс, определение ролей и ограничения: `references/spring.md`.
+
+Самопроверка скрипта (индекс проекта не нужен):
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=selftest
+
