@@ -583,4 +583,4 @@ function parseComponentParams(src) {
   return [];
 }
 
-module.exports = { lex, parsePhp, parseLang, parseUrlRewrite, parseComponentParams, collapse };
+module.exports = { lex, matchBrackets, parsePhp, parseLang, parseUrlRewrite, parseComponentParams, collapse };

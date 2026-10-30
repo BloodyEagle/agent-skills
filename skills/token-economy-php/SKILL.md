@@ -1,6 +1,6 @@
 ---
 name: token-economy-php
-description: Экономия токенов в PHP-проектах и на 1С-Битрикс, включая старое API (до D7) и D7: поиск определений, граф связей (классы, include, компоненты, шаблоны, модули, события, языковые файлы), оглавление файла с наследованием, сводка по компоненту, обработчики событий, языковые сообщения, схема таблиц БД, маршрут по URL, безопасное чтение и правка файлов в cp1251. Все команды — PowerShell.
+description: Экономия токенов в PHP-проектах, на 1С-Битрикс (включая старое API до D7 и D7) и в Laravel 8–12: поиск определений, граф связей, маршруты (каталог и URL), модели Eloquent с таблицами и связями, привязки контейнера, Blade-шаблоны, команды и расписание, компоненты, события, языковые сообщения, схема таблиц БД, безопасное чтение и правка файлов в cp1251. Все команды — PowerShell.
 ---
 
 # Skill: token-economy-php
@@ -9,13 +9,13 @@ description: Экономия токенов в PHP-проектах и на 1С
 ```json
 {
   "name": "token-economy-php",
-  "description": "Запускает скрипт bx.js для минимизации контекста ИИ в PHP / 1С-Битрикс проектах.",
+  "description": "Запускает скрипт bx.js для минимизации контекста ИИ в PHP / 1С-Битрикс / Laravel проектах.",
   "parameters": {
     "type": "object",
     "properties": {
       "op": {
         "type": "string",
-        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | read | patch | create | build | selftest"
+        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | routes | model | container | blade | console | read | patch | create | build | selftest"
       },
       "payload": {
         "type": "object",
@@ -42,18 +42,24 @@ description: Экономия токенов в PHP-проектах и на 1С
    - где задан или используется текст сообщения — `lang` (ищет и по ключу, и по самому тексту);
    - какой файл обслуживает URL — `route`;
    - таблица БД (колонки, ключи, где встречается в коде) — `table`.
-7. Ядро Битрикса (`bitrix/modules/main`, `bitrix/components/bitrix` и т. п.) по умолчанию в индекс не входит. Сигнатуру класса ядра или параметры штатного компонента смотри с `"core":true` через `outline` / `symbol` / `component`. Файлы ядра целиком не читай.
-8. Файл шаблона компонента целиком не читай, пока не понадобилась его вёрстка: `outline` покажет, какие ключи `$arResult` и `$arParams` он использует и какие компоненты вызывает.
-9. Правки штатным инструментом разрешены только в файлах UTF-8 (по `info`). Файл длиннее 50 строк при правке менее 30% целиком не перезаписывай: используй `patch` или штатную точечную замену.
-10. Индекс строится и обновляется сам при каждом вызове — это анализ, не запуск проекта; запускать можно всегда. Папку `.bx-cache` не читай.
-11. Не запускай `php -l`, composer, тесты и сборку — проверки выполняет пользователь.
-12. Скрипт работает только с путями внутри рабочей директории; пути вне проекта отклоняй.
+7. Вопросы про Laravel решай профильными операциями, а не чтением каталогов и не запуском artisan:
+   - каталог маршрутов и их имена — `routes` (фильтры `uri`, `name`, `controller`); какой контроллер обслуживает URL — `route`;
+   - модель Eloquent: таблица, колонки из миграций, `fillable`, связи и обратные связи, кто использует — `model`;
+   - привязки контейнера (`bind`/`singleton`/`scoped`/`instance`, контекстные `when…needs…give`) и инжекции через конструктор — `container`;
+   - Blade-шаблон: директивы, переменные, кто расширяет и откуда рендерится — `blade`;
+   - artisan-команды и расписание — `console`.
+8. Ядро Битрикса (`bitrix/modules/main`, `bitrix/components/bitrix` и т. п.) по умолчанию в индекс не входит. Сигнатуру класса ядра или параметры штатного компонента смотри с `"core":true` через `outline` / `symbol` / `component`. Файлы ядра целиком не читай.
+9. Файл шаблона компонента целиком не читай, пока не понадобилась его вёрстка: `outline` покажет, какие ключи `$arResult` и `$arParams` он использует и какие компоненты вызывает.
+10. Правки штатным инструментом разрешены только в файлах UTF-8 (по `info`). Файл длиннее 50 строк при правке менее 30% целиком не перезаписывай: используй `patch` или штатную точечную замену.
+11. Индекс строится и обновляется сам при каждом вызове — это анализ, не запуск проекта; запускать можно всегда. Папку `.bx-cache` не читай.
+12. Не запускай `php -l`, `composer`, `artisan`, тесты и сборку — проверки выполняет пользователь.
+13. Скрипт работает только с путями внутри рабочей директории; пути вне проекта отклоняй.
 
 ## Инструменты
 
 ### Обзор и чтение
 
-info — профиль проекта: корень сайта, версия Битрикса, `utf_mode`, число файлов в UTF-8 и cp1251, шаблоны сайта, свои модули и пространства компонентов.
+info — профиль проекта: корень сайта, версия Битрикса, `utf_mode`, число файлов в UTF-8 и cp1251, шаблоны сайта, свои модули и пространства компонентов. В Laravel — версия из `composer.json`, структура каркаса (8–10 или 11+), пространство имён, число маршрутов, моделей, миграций и локалей.
 
 search — поиск подстроки или регулярки с учётом кодировки (кириллица находится и в cp1251). Результат сгруппирован по файлам, до 30 совпадений.
 
@@ -89,6 +95,22 @@ lang — по ключу (`CAT_LIST_TITLE`) или по тексту (`спис�
 route — какой файл обслуживает URL: физический файл или подходящие правила `urlrewrite.php`.
 
 table — имя таблицы БД: D7-класс и поля (`getTableName` / `getMap`), схема из `install/db/mysql/install.sql` модулей (колонки и ключи), файлы, где имя таблицы встречается. Без точного совпадения подскажет похожие имена.
+
+### Laravel (8–12)
+
+Проект распознаётся по `artisan` или `laravel/framework` в `composer.json`. Оба каркаса — 8–10 (`app/Http/Kernel.php`, `resources/lang/`) и 11+ (`bootstrap/app.php`, `routes/console.php`, `lang/`) — разбираются одинаково, ничего запускать не нужно.
+
+routes — каталог маршрутов из `routes/*.php`: группы с `prefix`/`middleware`/`name`/`namespace`/`domain` (включая `Route::controller(...)->group(...)`), `resource`/`apiResource` с `only`/`except`, `match`, `Route::view`, `Route::redirect`, замыкания. Фильтры: `uri`, `name`, `controller` (подстрока).
+
+model — модели Eloquent: таблица (явная `$table` или по соглашению), `primaryKey`, `fillable`, `casts`, `hidden`, `appends`, связи (`belongsTo`…`morphToMany` с внешними ключами и файлами моделей), обратные связи, локальные scopes, миграции таблицы с колонками и ключами, кто использует модель. `name=` — по классу, `table=` — по таблице; без параметра — список всех моделей.
+
+container — привязки контейнера из `app/Providers` и `bootstrap/app.php`: `bind`/`singleton`/`scoped`/`instance`/`extend`, контекстные `when(A)->needs(B)->give(C)`. `type=` — по абстракции: где привязана, кому инжектируется через конструктор.
+
+blade — обзор `resources/views` (самые расширяемые шаблоны, не используемые нигде) или `name=` — конкретный шаблон: `@extends`, `@include`, `@component`, `@each`, `@yield`, `@section`, `@lang`, переменные `{{ $x }}`, кто расширяет и из каких контроллеров рендерится.
+
+console — artisan-команды (`$signature`, `Artisan::command`) и расписание (`Schedule::command/job/exec/call`, `Kernel::schedule`, `routes/console.php`) с частотами.
+
+Общие операции в Laravel-проекте дополняются: `route` для URL показывает маршрут → контроллер и метод с сигнатурой → рендеримый view; `lang` ищет ключи `lang/<код>/<группа>.php` (и `__('…')` в коде, `@lang` в Blade) по ключу и по тексту во всех локалях; `table` показывает Eloquent-модель и миграции; `outline` — директивы Blade и связи модели; `symbol`/`deps`/`rdeps`/`path`/`node`/`stats` работают как в Битриксе.
 
 ### Старое API (до D7) и D7
 
@@ -162,6 +184,17 @@ component / events / lang / route:
     node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=lang query='Добавить в корзину'
     node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=route url=/catalog/item-1/
 
+Laravel (routes, model, container, blade, console, route по URL):
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=routes name=users
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=routes controller=PostController
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=model name=Post
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=model table=order_items
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=container type=App\Contracts\PaymentGateway
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=blade name=layouts.app
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=console
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=route url=/users/5
+
 read:
 
     node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=read file=local/php_interface/init.php offset=1 limit=120
@@ -182,7 +215,7 @@ patch и create (`@`-файл параметров — единственный 
 
     {"op":"create","file":"local/php_interface/include/helpers2.php","text":"<?php\nfunction hello() {}\n"}
 
-Подробности про устройство индекса, классификацию файлов и ограничения: `references/bitrix.md`.
+Подробности про устройство индекса, классификацию файлов и ограничения: `references/bitrix.md` (Битрикс) и `references/laravel.md` (Laravel).
 
 Самопроверка скрипта (индекс проекта не нужен):
 

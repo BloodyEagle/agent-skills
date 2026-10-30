@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-// bx.js — token-economy для PHP и 1С-Битрикс. Принимает JSON из stdin (или аргументы key=value),
-// отвечает компактным текстом. Операции: info, search, symbol, deps, rdeps, path, node, stats,
-// outline, component, events, lang, route, table, read, patch, create, build.
+// bx.js — token-economy для PHP, 1С-Битрикс и Laravel (8 … 12). Принимает JSON из stdin (или аргументы key=value),
+// отвечает компактным текстом. Операции: info, search, symbol, deps, rdeps, path, node, stats, outline,
+// component, events, lang, route, table, routes, model, container, blade, console, read, patch, create, build.
 
 const fs = require('fs');
 const path = require('path');
@@ -10,6 +10,9 @@ const { posix, listFiles, readText, encodeText, writeAtomic } = require('./lib/f
 const { makeCtx, ensureIndex, buildIndex, docPath, CACHE_DIR } = require('./lib/index');
 const { classify, pcreToRegExp, resolveInclude } = require('./lib/bitrix');
 const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams } = require('./lib/php');
+const {
+  composerFramework, composerNamespace, structureVersion, modelTable, viewNameToDoc, routeUriToRegExp,
+} = require('./lib/laravel');
 
 try { process.stdout.setDefaultEncoding('utf8'); } catch (e) { /* ignore */ }
 
@@ -60,6 +63,8 @@ function findNode(idx, q, allowList) {
     return null;
   };
   let r = pick(nodes.filter((n) => n.p.toLowerCase() === lq || n.d.toLowerCase() === lq));
+  if (r) return r;
+  r = pick(nodes.filter((n) => n.view && n.view.name.toLowerCase() === lq)); // Blade: layouts.app
   if (r) return r;
   if (/^[\w.-]+:[\w.-]+$/.test(q)) { // идентификатор компонента ns:name
     r = pick(nodes.filter((n) => n.comp && n.comp.id.toLowerCase() === lq && !n.lang && (n.comp.part === 'class.php' || n.comp.part === 'component.php')));
@@ -141,6 +146,42 @@ function ancestors(dm, d) { // цепочка предков [[узел, объ�
   return res;
 }
 
+// ---------- Laravel: вспомогательные ----------
+
+// сбор всех Laravel-данных индекса с привязкой к файлам
+function laravelScan(idx) {
+  const routes = [], models = [], binds = [], ctxBinds = [], migs = [], cmds = [], sched = [], views = [];
+  for (const n of idx.nodes) {
+    if (n.routes) for (const r of n.routes) routes.push({ ...r, p: n.p });
+    if (n.models) for (const m of n.models) models.push({ ...m, node: n });
+    if (n.binds) for (const b of n.binds) binds.push({ ...b, p: n.p });
+    if (n.ctxBinds) for (const b of n.ctxBinds) ctxBinds.push({ ...b, p: n.p });
+    if (n.migs) for (const m of n.migs) migs.push({ ...m, p: n.p });
+    if (n.cmds) for (const c of n.cmds) cmds.push({ ...c, p: n.p });
+    if (n.sched) for (const s of n.sched) sched.push({ ...s, p: n.p });
+    if (n.views) for (const v of n.views) views.push({ name: v[0], line: v[1], ctx: v[2] || '', p: n.p });
+  }
+  return { routes, models, binds, ctxBinds, migs, cmds, sched, views };
+}
+
+// имя класса «как написано» (Comment) → [узел, объявление]: импорты файла, namespace, глобально
+function resolveClassNode(idx, fromNode, asWritten) {
+  if (!asWritten || asWritten === '?') return null;
+  const shortName = asWritten.split('\\').pop().toLowerCase();
+  const cands = new Set();
+  if (asWritten.includes('\\')) cands.add(asWritten.replace(/^\\/, '').toLowerCase());
+  if (fromNode && fromNode.imports) for (const [full] of fromNode.imports) {
+    if (full.split('\\').pop().toLowerCase() === shortName) cands.add(full.toLowerCase());
+  }
+  if (fromNode && fromNode.ns) cands.add((fromNode.ns + '\\' + asWritten).toLowerCase());
+  cands.add(asWritten.toLowerCase());
+  for (const n of idx.nodes) for (const d of n.decls || []) if (cands.has(d.fqn.toLowerCase())) return [n, d];
+  for (const n of idx.nodes) for (const d of n.decls || []) if (d.name.toLowerCase() === shortName) return [n, d];
+  return null;
+}
+
+const keysOnly = (arr) => (arr || []).map((x) => (Array.isArray(x) ? x[0] : x));
+
 // ---------- операции ----------
 const ops = {
   build() {
@@ -156,7 +197,21 @@ const ops = {
     for (const n of cust) enc[n.enc] = (enc[n.enc] || 0) + 1;
     const lines = [];
     const isBx = fs.existsSync(path.join(dr, 'bitrix')) || fs.existsSync(path.join(dr, 'local'));
-    lines.push(`корень сайта: ${ctx.docroot || '.'}${isBx ? '' : '  (признаков Битрикса нет: bitrix/ и local/ не найдены)'}`);
+    if (ctx.laravel) {
+      const fw = composerFramework(ctx.root);
+      const sv = structureVersion(ctx.root);
+      lines.push(`проект Laravel${fw ? ' ' + fw : ''} (composer.json)${sv ? ', структура ' + sv + (sv === '11+' ? ' (bootstrap/app.php)' : ' (app/Http/Kernel.php)') : ''}`);
+      lines.push('пространство имён: ' + composerNamespace(ctx.root));
+      const d = laravelScan(idx);
+      const rf = new Map();
+      for (const r of d.routes) rf.set(r.p, (rf.get(r.p) || 0) + 1);
+      lines.push(`маршруты: ${d.routes.length}` + (rf.size ? ' (' + [...rf.entries()].map(([p, c]) => p.replace('routes/', '') + ': ' + c).join(', ') + ')' : ''));
+      const locales = [...new Set(idx.nodes.filter((n) => n.langlv).map((n) => n.langlv.code))];
+      lines.push(`модели: ${d.models.length}, миграций: ${d.migs.length}, views: ${idx.nodes.filter((n) => n.view).length}, провайдеры: ${idx.nodes.filter((n) => n.kind === 'provider').length}, локали: ${locales.join(', ') || 'нет'}`);
+      if (d.cmds.length || d.sched.length) lines.push(`команды: ${d.cmds.length}, расписание: ${d.sched.length} (op=console)`);
+    } else {
+      lines.push(`корень сайта: ${ctx.docroot || '.'}${isBx ? '' : '  (признаков Битрикса нет: bitrix/ и local/ не найдены)'}`);
+    }
     let ver = null;
     try {
       const v = fs.readFileSync(path.join(dr, 'bitrix/modules/main/classes/general/version.php'), 'latin1');
@@ -175,7 +230,8 @@ const ops = {
     } catch (e) { /* нет файла */ }
     let withNs = 0, legacy = 0;
     for (const n of cust) { if ((n.decls || []).length) { if (n.ns) withNs++; else legacy++; } }
-    lines.push(`стиль кода: файлов с классами в namespace (D7) ${withNs}, с глобальными классами (старое API) ${legacy}`);
+    if (ctx.laravel) lines.push(`стиль кода: файлов с классами в namespace ${withNs}, глобальные классы ${legacy}`);
+    else lines.push(`стиль кода: файлов с классами в namespace (D7) ${withNs}, с глобальными классами (старое API) ${legacy}`);
     lines.push(`кодировка PHP-файлов проекта: utf8 ${enc.utf8}, cp1251 ${enc.cp1251}, только ASCII ${enc.ascii}`);
     if (enc.cp1251 > 0) lines.push('ВНИМАНИЕ: есть файлы в cp1251. Читай их операцией read, правь операцией patch: штатные инструменты испортят кириллицу.');
     const ls = (dir) => { try { return fs.readdirSync(path.join(dr, dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch (e) { return []; } };
@@ -190,7 +246,11 @@ const ops = {
     if (nsList.length) lines.push('свои компоненты: ' + nsList.join(', '));
     const files = ['local/php_interface/init.php', 'bitrix/php_interface/init.php', 'local/php_interface/dbconn.php', 'bitrix/php_interface/dbconn.php', 'urlrewrite.php', 'local/routes']
       .filter((f) => fs.existsSync(path.join(dr, f)));
-    if (files.length) lines.push('найдено: ' + files.join(', '));
+    if (ctx.laravel) {
+      const lf = ['routes/web.php', 'routes/api.php', 'routes/console.php', 'app/Models', 'app/Providers', 'app/Console/Kernel.php', 'app/Http/Kernel.php', 'bootstrap/app.php', 'database/migrations', 'resources/views', 'lang', 'config/app.php', 'composer.json']
+        .filter((f) => fs.existsSync(path.join(ctx.root, f)));
+      if (lf.length) lines.push('найдено: ' + lf.join(', '));
+    } else if (files.length) lines.push('найдено: ' + files.join(', '));
     lines.push(`в индексе файлов: ${idx.nodes.length} (${cust.length} своих)${ctx.core ? '' : '; ядро не индексируется ("core":true включит его)'}`);
     out(...lines);
   },
@@ -298,7 +358,22 @@ const ops = {
     if (n.comps) lines.push('  компоненты: ' + n.comps.map(([id, t, l]) => `${id}${t ? '/' + t : ''}@${l}`).join(', '));
     if (n.mods) lines.push('  модули: ' + n.mods.map(([id]) => id).join(', '));
     if (n.events) lines.push(`  обработчиков событий: ${n.events.length}`);
-    if (n.langs) lines.push('  lang: ' + n.langs.join(','));
+    if (n.langs) lines.push('  lang: ' + keysOnly(n.langs).join(','));
+    if (n.view) {
+      lines.push('  view: ' + n.view.name);
+      if (n.ext) lines.push('  extends: ' + keysOnly(n.ext).join(', '));
+      if (n.inc) lines.push('  includes: ' + keysOnly(n.inc).join(', '));
+      if (n.comp) lines.push('  components: ' + keysOnly(n.comp).join(', '));
+      if (n.yld) lines.push('  yield: ' + keysOnly(n.yld).join(', '));
+      if (n.vars) lines.push('  vars: ' + n.vars.join(', '));
+    }
+    if (n.routes) lines.push('  маршрутов: ' + n.routes.length + ' (op=routes)');
+    if (n.binds) lines.push('  привязок контейнера: ' + n.binds.length + (n.ctxBinds ? ', контекстных: ' + n.ctxBinds.length : '') + ' (op=container)');
+    if (n.models) lines.push('  модели: ' + n.models.map((m) => m.cls).join(', ') + ' (op=model)');
+    if (n.migs) lines.push('  миграции: ' + n.migs.map((m) => m.op + ' ' + m.t).join('; ') + ' (op=model)');
+    if (n.cmds) lines.push('  команды: ' + n.cmds.map((c) => c.sig).join(', '));
+    if (n.sched) lines.push('  расписание: ' + n.sched.length + ' (op=console)');
+    if (n.views) lines.push('  рендерит views: ' + n.views.slice(0, 8).map((v) => v[0]).join(', '));
     lines.push('использует:', ...(fmtEdges(bfs(idx, n.id, 1, false), 40).length ? fmtEdges(bfs(idx, n.id, 1, false), 40) : ['  -']));
     lines.push('используют его:', ...(fmtEdges(bfs(idx, n.id, 1, true), 40).length ? fmtEdges(bfs(idx, n.id, 1, true), 40) : ['  -']));
     out(...lines);
@@ -321,6 +396,10 @@ const ops = {
     [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).forEach(([id, c]) => lines.push(`  ${c}  ${idx.nodes[id - 1].p}`));
     const ev = idx.nodes.reduce((s, n) => s + (n.events ? n.events.length : 0), 0);
     if (ev) lines.push(`обработчиков событий: ${ev} (операция events)`);
+    if (ctx.laravel) {
+      const d = laravelScan(idx);
+      lines.push(`Laravel: маршрутов ${d.routes.length}, моделей ${d.models.length}, views ${idx.nodes.filter((n) => n.view).length}, миграций ${d.migs.length}, команд ${d.cmds.length}, расписание ${d.sched.length}`);
+    }
     out(...lines);
   },
 
@@ -354,7 +433,43 @@ const ops = {
     if (n.ark) lines.push('$arResult: ' + n.ark.join(', '));
     if (n.apk) lines.push('$arParams: ' + n.apk.join(', '));
     if (n.events) lines.push('события: ' + n.events.map((e) => `${e.m}:${e.e} L${e.l}`).join('; '));
-    if (n.langs) lines.push('lang: ' + n.langs.join(', '));
+    if (n.langs && !n.view) lines.push('lang: ' + n.langs.join(', '));
+    // Laravel
+    if (n.view) {
+      lines.push('view ' + n.view.name);
+      if (n.ext) lines.push('  extends: ' + n.ext.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.inc) lines.push('  includes: ' + n.inc.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.comp) lines.push('  components: ' + n.comp.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.each) lines.push('  @each: ' + n.each.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.yld) lines.push('  yield: ' + keysOnly(n.yld).join(', '));
+      if (n.sec) lines.push('  section: ' + keysOnly(n.sec).join(', '));
+      if (n.vars) lines.push('  vars: ' + n.vars.join(', '));
+      if (n.langs) lines.push('  @lang: ' + keysOnly(n.langs).join(', '));
+    }
+    if (n.routes) {
+      lines.push('маршруты (' + n.routes.length + '):');
+      for (const r of n.routes.slice(0, 30)) lines.push(`  L${r.l}  ${r.v} ${r.u} → ${r.a}${r.n ? ' [' + r.n + ']' : ''}${r.mw && r.mw.length ? ' (' + r.mw.join(',') + ')' : ''}`);
+      if (n.routes.length > 30) lines.push('  … ещё ' + (n.routes.length - 30));
+    }
+    if (n.binds || n.ctxBinds) {
+      for (const b of n.binds || []) lines.push(`  L${b.l}  ${b.k} ${b.a} → ${b.i}`);
+      for (const b of n.ctxBinds || []) lines.push(`  L${b.l}  when ${b.a} needs ${b.need} → ${b.give}`);
+    }
+    if (n.models) for (const m of n.models) {
+      lines.push(`модель ${m.fqn} — таблица ${m.table || modelTable(m.cls)}${m.table ? '' : ' (по соглашению)'}`);
+      if (m.fillable.length) lines.push('  fillable: ' + m.fillable.join(', '));
+      for (const rl of m.rels) lines.push(`  L${rl.l}  ${rl.t} ${rl.m} → ${rl.r}`);
+    }
+    if (n.migs) for (const m of n.migs) {
+      lines.push(`миграция ${m.op} ${m.t}  L${m.l}`);
+      if (m.cols.length) lines.push('  колонки: ' + m.cols.slice(0, 20).join(', '));
+      if (m.fks.length) lines.push('  ключи: ' + m.fks.join('; '));
+    }
+    if (n.cmds) for (const c of n.cmds) lines.push(`команда ${c.sig}${c.desc ? ' — ' + short(c.desc, 60) : ''}  L${c.l}`);
+    if (n.sched) for (const s of n.sched) lines.push(`расписание ${s.cmd} ${s.freq}  L${s.l}`);
+    if (n.views) lines.push('рендерит views: ' + n.views.map(([v, l]) => v + ' L' + l).slice(0, 10).join(', '));
+    if (n.routeRefs) lines.push('ссылки на маршруты: ' + keysOnly(n.routeRefs).slice(0, 10).join(', '));
+    if (n.langRefs) lines.push('lang-ключи: ' + keysOnly(n.langRefs).slice(0, 10).join(', '));
     out(...lines);
   },
 
@@ -432,7 +547,10 @@ const ops = {
     const used = new Map();
     for (const n of idx.nodes) {
       if (n.lang) for (const [k, v, l] of n.mess || []) { if (!defs.has(k)) defs.set(k, []); defs.get(k).push([n.lang.code, v, n.p, l]); }
+      if (n.langlv) for (const [k, v, l] of n.mess || []) { const key = n.langlv.group + '.' + k; if (!defs.has(key)) defs.set(key, []); defs.get(key).push([n.langlv.code, v, n.p, l]); } // Laravel: lang/<код>/<group>.php
       for (const [k, l] of n.msgs || []) { if (!used.has(k)) used.set(k, []); used.get(k).push(`${n.p}:${l}`); }
+      for (const [k, l] of n.langRefs || []) { if (!used.has(k)) used.set(k, []); used.get(k).push(`${n.p}:${l}`); } // __('key') в коде
+      if (n.view) for (const [k, l] of n.langs || []) { if (!used.has(k)) used.set(k, []); used.get(k).push(`${n.p}:${l}`); } // @lang в Blade
     }
     let keys = [...defs.keys()].filter((k) => k.toLowerCase() === lq);
     if (!keys.length) keys = [...defs.entries()].filter(([, v]) => v.some((x) => x[1].toLowerCase().includes(lq))).map(([k]) => k);
@@ -455,6 +573,40 @@ const ops = {
   route() {
     let url = String(args.url || '').trim();
     if (!url) fail('укажите url');
+    if (ctx.laravel) { // Laravel: URL → маршрут → контроллер → view
+      const idx = ensureIndex(ctx);
+      const d = laravelScan(idx);
+      url = url.replace(/^https?:\/\/[^/]+/i, '').split('?')[0].split('#')[0];
+      if (!url.startsWith('/')) url = '/' + url;
+      const lines = [url];
+      const hits = [];
+      for (const r of d.routes) { const rx = routeUriToRegExp(r.u); if (rx && rx.test(url)) hits.push(r); }
+      if (!hits.length) {
+        lines.push('маршрут не найден (просмотрено ' + d.routes.length + '); каталог — op=routes');
+        out(...lines);
+        return;
+      }
+      const r = hits[0];
+      lines.push(`маршрут: ${r.v} ${r.u} → ${r.a}${r.n ? '  [' + r.n + ']' : ''}${r.mw && r.mw.length ? '  (' + r.mw.join(',') + ')' : ''}  (${r.p}:${r.l})`);
+      if (hits.length > 1) lines.push('  … также подходят: ' + hits.slice(1, 4).map((h) => h.v + ' ' + h.u).join('; '));
+      const am = /^(.*)@(.+)$/.exec(r.a || '');
+      const ctrlName = am ? am[1] : (/^[A-Z]/.test(r.a || '') ? r.a : null); // invokable-контроллер без метода
+      if (ctrlName) {
+        const methodName = am ? am[2] : '__invoke';
+        const ctrlShort = ctrlName.split('\\').pop();
+        for (const n of idx.nodes) {
+          if (!(n.decls || []).some((x) => x.name === ctrlShort)) continue;
+          const dd = n.decls.find((x) => x.name === ctrlShort);
+          const meth = (dd.members || []).find((m) => m.n === methodName);
+          lines.push(`контроллер: ${dd.fqn} (${n.p}:${meth ? meth.l + '-' + meth.e : dd.line})`);
+          if (meth) lines.push('  ' + short(meth.sig, 150));
+          for (const v of d.views) if (v.ctx === ctrlShort + '::' + methodName) lines.push(`  рендерит view: ${v.name}  →  ${viewNameToDoc(v.name).slice(1)}  (${v.p}:${v.line})`);
+          break;
+        }
+      }
+      out(...lines);
+      return;
+    }
     url = url.replace(/^https?:\/\/[^/]+/i, '').split('?')[0].split('#')[0];
     if (!url.startsWith('/')) url = '/' + url;
     const dr = path.join(ctx.root, ctx.docroot);
@@ -501,6 +653,16 @@ const ops = {
     const lines = [];
     for (const n of idx.nodes) for (const d of n.decls || []) {
       if (d.table && d.table.toLowerCase() === lq) lines.push(`${d.table}  (D7 ORM: ${d.fqn}, ${n.p}:${d.line}-${d.end})`, '  поля: ' + (d.fields || []).join(', '));
+    }
+    if (ctx.laravel) { // Eloquent-модель и миграции
+      const d = laravelScan(idx);
+      for (const m of d.models.filter((x) => (x.table || modelTable(x.cls)).toLowerCase() === lq)) {
+        lines.push(`${q}  (Eloquent: ${m.fqn}, ${m.node.p}:${m.l})`, '  fillable: ' + (m.fillable.join(', ') || '—'), '  связей: ' + m.rels.length + ' (op=model name=' + m.cls + ')');
+      }
+      for (const mg of d.migs.filter((x) => x.t.toLowerCase() === lq).sort((a, b) => (a.p < b.p ? -1 : 1))) {
+        lines.push(`${mg.t}  (${mg.op === 'create' ? 'создание' : mg.op === 'alter' ? 'изменение' : mg.op}, ${mg.p}:${mg.l})`, '  колонки: ' + (mg.cols.join(', ') || '—'));
+        if (mg.fks.length) lines.push('  внешние ключи: ' + mg.fks.join('; '));
+      }
     }
     // старое API: схема в install/db/<СУБД>/install.sql модулей
     const sqlFiles = listFiles(ctx.root, ctx.docroot, ['.sql'])
@@ -551,6 +713,210 @@ const ops = {
       if (hits.length >= 8) break;
     }
     if (hits.length) lines.push('встречается в: ' + hits.join(', '));
+    out(...lines);
+  },
+
+  // ---------- Laravel ----------
+
+  routes() {
+    if (!ctx.laravel) fail('routes: операция для Laravel-проектов');
+    const idx = ensureIndex(ctx);
+    const d = laravelScan(idx);
+    if (!d.routes.length) return out('маршруты не найдены (routes/*.php)');
+    let sel = d.routes;
+    const u = args.uri ? String(args.uri).toLowerCase() : null;
+    const nm = args.name ? String(args.name).toLowerCase() : null;
+    const cl = args.controller ? String(args.controller).toLowerCase() : null;
+    if (u) sel = sel.filter((r) => r.u.toLowerCase().includes(u));
+    if (nm) sel = sel.filter((r) => (r.n || '').toLowerCase().includes(nm));
+    if (cl) sel = sel.filter((r) => (r.a || '').toLowerCase().includes(cl));
+    const flt = [u && 'uri', nm && 'name', cl && 'controller'].filter(Boolean).join(', ');
+    const lines = [`маршруты: ${d.routes.length}, показано ${sel.length}` + (flt ? ' (фильтры: ' + flt + ')' : '')];
+    let cur = null;
+    for (const r of sel.slice(0, 100)) {
+      if (r.p !== cur) { cur = r.p; lines.push(r.p + ':'); }
+      lines.push(`  ${r.v.padEnd(7)} ${r.u}  ${r.a}` + (r.n ? `  [${r.n}]` : '') + (r.mw && r.mw.length ? `  (${r.mw.join(',')})` : '') + `  L${r.l}`);
+    }
+    if (sel.length > 100) lines.push(`… ещё ${sel.length - 100}; уточните uri=, name=, controller=`);
+    if (!sel.length) lines.push('  по фильтру ничего не найдено');
+    out(...lines);
+  },
+
+  model() {
+    if (!ctx.laravel) fail('model: операция для Laravel-проектов');
+    const idx = ensureIndex(ctx);
+    const d = laravelScan(idx);
+    const tableOf = (m) => m.table || modelTable(m.cls);
+    const lines = [];
+    if (args.name || args.table) {
+      const q = String(args.name || args.table);
+      const lq = q.toLowerCase();
+      let found = d.models.filter((m) => m.cls.toLowerCase() === lq || m.fqn.toLowerCase() === lq || m.fqn.toLowerCase().endsWith('\\' + lq));
+      if (!found.length || args.table) {
+        const byTable = d.models.filter((m) => tableOf(m).toLowerCase() === lq);
+        if (byTable.length) found = byTable;
+      }
+      if (!found.length) {
+        const like = [...new Set(d.models.map(tableOf).filter((t) => t.includes(lq)).concat(d.models.map((m) => m.cls).filter((c) => c.toLowerCase().includes(lq))))];
+        return out(`модель «${q}» не найдена` + (like.length ? '; похожие: ' + like.slice(0, 10).join(', ') : ''));
+      }
+      for (const m of found.slice(0, 3)) {
+        const n = m.node;
+        lines.push(`${m.fqn}${m.ext ? ' extends ' + m.ext : ''}  (${n.p}:${m.l})`);
+        lines.push(`  таблица: ${tableOf(m)}${m.table ? ' (явно $table)' : ' (по соглашению)'}`);
+        for (const mg of d.migs.filter((x) => x.t === tableOf(m)).sort((a, b) => (a.p < b.p ? -1 : 1))) {
+          lines.push(`  ${mg.op === 'create' ? 'создание' : mg.op === 'alter' ? 'изменение' : mg.op}: ${mg.p.replace(/^.*\//, '')}:${mg.l}`);
+          if (mg.cols.length) lines.push('    колонки: ' + mg.cols.slice(0, 30).join(', ') + (mg.cols.length > 30 ? ' …' : ''));
+          if (mg.fks.length) lines.push('    внешние ключи: ' + mg.fks.join('; '));
+        }
+        if (m.pk) lines.push('  primaryKey: ' + m.pk);
+        if (m.fillable.length) lines.push('  fillable: ' + m.fillable.join(', '));
+        if (Object.keys(m.casts).length) lines.push('  casts: ' + Object.entries(m.casts).map(([k, v]) => k + '=' + v).join(', '));
+        if (m.hidden.length) lines.push('  hidden: ' + m.hidden.join(', '));
+        if (m.appends.length) lines.push('  appends: ' + m.appends.join(', '));
+        if (m.rels.length) {
+          lines.push('  связи:');
+          for (const rl of m.rels) {
+            const res = resolveClassNode(idx, n, rl.r);
+            lines.push(`    ${rl.t.padEnd(13)} ${rl.m} → ${rl.r}${res ? '  (' + res[0].p + ')' : ''}${rl.fk ? '  fk: ' + rl.fk : ''}  L${rl.l}`);
+          }
+        }
+        const back = [];
+        for (const m2 of d.models) {
+          if (m2 === m) continue;
+          for (const rl of m2.rels) {
+            const res = resolveClassNode(idx, m2.node, rl.r);
+            if (res && res[1].fqn.toLowerCase() === m.fqn.toLowerCase()) back.push(`${m2.cls}::${rl.m} (${rl.t})  (${m2.node.p}:${rl.l})`);
+          }
+        }
+        if (back.length) { lines.push('  обратные связи:'); for (const b of back.slice(0, 20)) lines.push('    ' + b); }
+        if (m.scopes.length) lines.push('  scopes: ' + m.scopes.join(', '));
+        const ritems = bfs(idx, n.id, 1, true);
+        if (ritems.length) lines.push('  используется из: ' + ritems.slice(0, 8).map(([, nn]) => nn.p).join(', ') + (ritems.length > 8 ? ' …' : ''));
+      }
+      out(...lines);
+      return;
+    }
+    if (!d.models.length) return out('модели Eloquent не найдены (app/Models, extends Model)');
+    lines.push(`модели Eloquent: ${d.models.length}`);
+    for (const m of d.models.slice(0, 60)) {
+      lines.push(`  ${m.fqn} — таблица ${tableOf(m)}${m.table ? '' : ' (по соглашению)'}, связей ${m.rels.length}, fillable ${m.fillable.length}  (${m.node.p}:${m.l})`);
+    }
+    if (d.models.length > 60) lines.push(`… ещё ${d.models.length - 60}`);
+    out(...lines);
+  },
+
+  container() {
+    if (!ctx.laravel) fail('container: операция для Laravel-проектов');
+    const idx = ensureIndex(ctx);
+    const d = laravelScan(idx);
+    const lines = [];
+    const matchType = (x, q) => { const s = String(x).toLowerCase(); return s === q || s.split('\\').pop() === q; };
+    if (args.type) {
+      const q = String(args.type).replace(/^\\/, '').toLowerCase();
+      lines.push(`${args.type} в контейнере:`);
+      let any = false;
+      for (const b of d.binds.filter((b) => matchType(b.a, q))) { any = true; lines.push(`  ${b.k}: ${b.a} → ${b.i}  (${b.p}:${b.l})`); }
+      for (const b of d.ctxBinds.filter((b) => matchType(b.a, q))) { any = true; lines.push(`  контекстно: when ${b.a} needs ${b.need} → give ${b.give}  (${b.p}:${b.l})`); }
+      const qShort = String(args.type).split('\\').pop().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const injectors = [];
+      for (const n of idx.nodes) for (const dd of n.decls || []) {
+        const ctor = (dd.members || []).find((m) => m.n === '__construct');
+        if (!ctor) continue;
+        if (new RegExp('(?:^|[(,|\\s?])' + qShort + '\\s*\\$').test(ctor.sig)) injectors.push(`${dd.fqn}  (${n.p}:${ctor.l})`);
+      }
+      if (injectors.length) {
+        lines.push('  получают через конструктор:');
+        for (const x of injectors.slice(0, 25)) lines.push('    ' + x);
+        if (injectors.length > 25) lines.push(`    … ещё ${injectors.length - 25}`);
+      }
+      if (!any && !injectors.length) lines.push('  явных привязок и инжекций не найдено (разрешится автосвязыванием, если класс конкретный)');
+      out(...lines);
+      return;
+    }
+    if (!d.binds.length && !d.ctxBinds.length) return out('привязок контейнера не найдено (app/Providers, bootstrap/app.php)');
+    const byFile = new Map();
+    for (const b of d.binds) { if (!byFile.has(b.p)) byFile.set(b.p, []); byFile.get(b.p).push(b); }
+    lines.push(`Laravel-контейнер: привязок ${d.binds.length}, контекстных ${d.ctxBinds.length}`);
+    for (const [p, bs] of byFile) {
+      lines.push(p + ':');
+      for (const b of bs.slice(0, 30)) lines.push(`  ${b.k} ${b.a} → ${b.i}  L${b.l}`);
+      if (bs.length > 30) lines.push(`  … ещё ${bs.length - 30}`);
+    }
+    for (const b of d.ctxBinds.slice(0, 20)) lines.push(`when ${b.a} needs ${b.need} → ${b.give}  (${b.p}:${b.l})`);
+    out(...lines);
+  },
+
+  blade() {
+    if (!ctx.laravel) fail('blade: операция для Laravel-проектов');
+    const idx = ensureIndex(ctx);
+    if (args.name) {
+      const n = findNode(idx, args.name);
+      const lines = [`${n.view ? n.view.name : args.name} — ${n.p}  [${n.kind}]  (${n.loc} строк, ${n.enc})`];
+      if (n.ext) lines.push('расширяет: ' + n.ext.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.inc) lines.push('включает: ' + n.inc.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.comp) lines.push('компоненты: ' + n.comp.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.each) lines.push('@each: ' + n.each.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.yld) lines.push('@yield: ' + keysOnly(n.yld).join(', '));
+      if (n.sec) lines.push('@section: ' + keysOnly(n.sec).join(', '));
+      if (n.vars) lines.push('переменные: ' + n.vars.join(', '));
+      if (n.langs) lines.push('@lang: ' + keysOnly(n.langs).join(', '));
+      const kids = idx.nodes.filter((x) => (x.ext || []).some(([v]) => v === (n.view ? n.view.name : args.name)));
+      if (kids.length) lines.push('расширяют (' + kids.length + '): ' + kids.slice(0, 12).map((k) => (k.view ? k.view.name : k.p)).join(', ') + (kids.length > 12 ? ' …' : ''));
+      const renders = [];
+      for (const x of idx.nodes) for (const v of x.views || []) if (v[0] === (n.view ? n.view.name : args.name)) renders.push(`${x.p}:${v[1]}${v[2] ? '  (' + v[2] + ')' : ''}`);
+      if (renders.length) {
+        lines.push('рендерится из (' + renders.length + '):');
+        for (const r0 of renders.slice(0, 20)) lines.push('  ' + r0);
+        if (renders.length > 20) lines.push('  … ещё ' + (renders.length - 20));
+      } else lines.push('вызовов view() не найдено');
+      out(...lines);
+      return;
+    }
+    const views = idx.nodes.filter((n) => n.view);
+    if (!views.length) return out('Blade-шаблоны не найдены (resources/views/**/*.blade.php)');
+    const lines = [`views: ${views.length}`];
+    const extCount = new Map(), rendered = new Set(), extended = new Set(), included = new Set();
+    for (const n of idx.nodes) {
+      for (const [v] of n.ext || []) extCount.set(v, (extCount.get(v) || 0) + 1);
+      for (const [v] of n.ext || []) extended.add(v);
+      for (const arr of [n.inc, n.comp, n.each]) for (const [v] of arr || []) included.add(v);
+      for (const v of n.views || []) rendered.add(v[0]);
+    }
+    const top = [...extCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (top.length) {
+      lines.push('самые расширяемые:');
+      for (const [v, c] of top) lines.push(`  ${v} — ${c}`);
+    }
+    const orphans = views.filter((n) => !rendered.has(n.view.name) && !extended.has(n.view.name) && !included.has(n.view.name));
+    if (orphans.length) {
+      lines.push('нигде не используются (' + orphans.length + '): ' + orphans.slice(0, 15).map((n) => n.view.name).join(', ') + (orphans.length > 15 ? ' …' : ''));
+      lines.push('  (мусор или рендер через Route::view/return view() в неиндексируемых местах)');
+    }
+    out(...lines);
+  },
+
+  console() {
+    if (!ctx.laravel) fail('console: операция для Laravel-проектов');
+    const idx = ensureIndex(ctx);
+    const d = laravelScan(idx);
+    const lines = [];
+    if (!d.cmds.length && !d.sched.length) return out('команды и расписание не найдены (app/Console/Commands, routes/console.php, Kernel::schedule)');
+    if (d.cmds.length) {
+      lines.push(`команды (${d.cmds.length}):`);
+      for (const c of d.cmds) lines.push(`  ${c.sig}  ${c.cls ? c.cls + '  (' + c.p + ':' + c.l + ')' : '(' + c.p + ':' + c.l + ')'}${c.desc ? '  — ' + short(c.desc, 60) : ''}`);
+    }
+    if (d.sched.length) {
+      lines.push(`расписание (${d.sched.length}):`);
+      for (const s of d.sched) {
+        let cmd = s.cmd;
+        if (/::class$/.test(cmd)) {
+          const cc = d.cmds.find((x) => x.cls === cmd.replace(/::class$/, ''));
+          if (cc) cmd = cc.sig;
+        }
+        lines.push(`  ${cmd}  ${s.freq}  (${s.p}:${s.l})`);
+      }
+    }
     out(...lines);
   },
 
@@ -682,6 +1048,69 @@ ops.selftest = function () {
   chk('bitrix: resolveInclude', resolveInclude({b: 'dir', r: 'include.php'}, '/local/news/list.php') === '/local/news/include.php');
   const rx = pcreToRegExp('#^/catalog/(.*)#i');
   chk('bitrix: pcre → RegExp', !!rx && rx.test('/Catalog/12') && !rx.test('/other'));
+
+  // Laravel
+  const lv = require('./lib/laravel');
+  const routesSrc = [
+    '<?php',
+    'use App\\Http\\Controllers\\UserController;',
+    'Route::get("/", function () { return view("welcome"); });',
+    'Route::middleware(["auth"])->prefix("admin")->group(function () {',
+    '    Route::get("/users", [UserController::class, "index"])->name("users.index");',
+    '    Route::resource("posts", \\App\\Http\\Controllers\\PostController::class)->only(["index", "show"]);',
+    '});',
+  ].join('\n');
+  const lr = lv.parseLaravelPhp(routesSrc);
+  const rs = JSON.stringify(lr);
+  chk('laravel: маршрут с группой', (lr.routes || []).some((r) => r.u === '/admin/users' && r.a === 'UserController@index' && r.n === 'users.index' && r.mw.includes('auth')), rs.slice(0, 300));
+  const ctrlSrc = [
+    '<?php',
+    'Route::controller(UserController::class)->group(function () {',
+    "    Route::get('/profile', 'edit')->name('profile.edit');",
+    '});',
+  ].join('\n');
+  const lcc = lv.parseLaravelPhp(ctrlSrc);
+  chk('laravel: Route::controller()', (lcc.routes || []).some((r) => r.a === 'UserController@edit' && r.n === 'profile.edit'), JSON.stringify(lcc).slice(0, 300));
+  chk('laravel: resource only', (lr.routes || []).filter((r) => r.res === 'posts').length === 2 && (lr.routes || []).some((r) => r.u === '/admin/posts/{post}'), rs.slice(0, 300));
+  chk('laravel: view() в действии-замыкании', (lr.views || []).some((v) => v[0] === 'welcome'), rs.slice(0, 300));
+  const modelSrc = [
+    '<?php',
+    'namespace App\\Models;',
+    'use Illuminate\\Database\\Eloquent\\Model;',
+    'class Category extends Model {',
+    '    protected $fillable = ["name", "slug"];',
+    '    public function posts() { return $this->hasMany(Post::class); }',
+    '    public function scopeActive($q) {}',
+    '}',
+  ].join('\n');
+  const lm = lv.parseLaravelPhp(modelSrc);
+  chk('laravel: модель', (lm.models || []).length === 1 && lm.models[0].table === null && lm.models[0].fillable.join(',') === 'name,slug' && lm.models[0].rels.length === 1 && lm.models[0].rels[0].r === 'Post' && lm.models[0].scopes.join(',') === 'active', JSON.stringify(lm).slice(0, 300));
+  chk('laravel: имя таблицы по соглашению', lv.modelTable('OrderItem') === 'order_items' && lv.modelTable('Category') === 'categories' && lv.modelTable('Person') === 'people');
+  const migSrc = [
+    '<?php',
+    'Schema::create("posts", function (Blueprint $table) {',
+    '    $table->id();',
+    '    $table->string("title");',
+    '    $table->foreignId("user_id")->constrained();',
+    '});',
+  ].join('\n');
+  const lmg = lv.parseLaravelPhp(migSrc);
+  chk('laravel: миграция', (lmg.migs || []).length === 1 && lmg.migs[0].t === 'posts' && lmg.migs[0].cols.some((c) => c.startsWith('title string')) && lmg.migs[0].fks.length === 1, JSON.stringify(lmg).slice(0, 300));
+  const bl = lv.parseBlade("@extends('layouts.app')\n@include('partials.nav')\n@section('content'){{ $user->name }}@endsection\n@lang('auth.failed')");
+  chk('laravel: blade', bl.ext[0][0] === 'layouts.app' && bl.inc[0][0] === 'partials.nav' && bl.vars.includes('user') && bl.langs[0][0] === 'auth.failed', JSON.stringify(bl));
+  const ll = lv.parseLaravelLang('<?php return ["failed" => "Неверный логин", "nested" => ["k" => "v"]];');
+  chk('laravel: языковой файл', ll.length === 2 && ll[0][0] === 'failed' && ll[1][0] === 'nested.k', JSON.stringify(ll));
+  const bindSrc = '<?php $this->app->singleton(PaymentGateway::class, StripeGateway::class); $this->app->when(ReportBuilder::class)->needs("$limit")->give(10);';
+  const lb = lv.parseLaravelPhp(bindSrc);
+  chk('laravel: контейнер', (lb.binds || []).length === 1 && lb.binds[0].k === 'singleton' && lb.binds[0].a === 'PaymentGateway' && lb.binds[0].i === 'StripeGateway' && (lb.ctxBinds || []).length === 1, JSON.stringify(lb).slice(0, 300));
+  const lrx = lv.routeUriToRegExp('/users/{user}/posts/{post?}');
+  chk('laravel: сопоставление URL', !!lrx && lrx.test('/users/5/posts') && lrx.test('/users/5/posts/9') && !lrx.test('/users/5/x/9'));
+  const lv2 = lv.laravelClassify('/app/Http/Controllers/Admin/UserController.php');
+  const lv3 = lv.laravelClassify('/resources/views/layouts/app.blade.php');
+  const lv4 = lv.laravelClassify('/lang/ru/auth.php');
+  chk('laravel: классификация путей', lv2.tag === 'controller' && lv3.tag === 'view' && lv3.view.name === 'layouts.app' && lv4.tag === 'lang-lv' && lv4.langlv.group === 'auth', JSON.stringify([lv2, lv3, lv4]));
+  const sch = lv.parseLaravelPhp('<?php Schedule::command("app:sync")->dailyAt("02:00")->withoutOverlapping();');
+  chk('laravel: расписание', (sch.sched || []).length === 1 && sch.sched[0].cmd === 'app:sync' && sch.sched[0].freq.includes("dailyAt('02:00')"), JSON.stringify(sch).slice(0, 300));
 
   if (bad.length) {
     console.log('\nпровалено: ' + bad.join(', '));

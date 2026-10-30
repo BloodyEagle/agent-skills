@@ -10,7 +10,8 @@ const MAX_BYTES = 2 * 1024 * 1024;
 const SKIP_DIRS = new Set(['.git', '.idea', '.vscode', 'node_modules', '.bx-cache', '.token-economy']);
 // каталоги Битрикса со сгенерированным или не относящимся к коду содержимым (пути относительно корня сайта)
 // vendor/ исключаем только в местах composer: имя «vendor» бывает пространством имён компонентов
-const SKIP_PREFIXES = ['vendor/', 'local/vendor/', 'bitrix/vendor/', 'upload/', 'bitrix/cache/', 'bitrix/managed_cache/', 'bitrix/stack_cache/', 'bitrix/backup/', 'bitrix/updates/',
+// storage/ и bootstrap/cache/ — служебные каталоги Laravel (в Битриксе таких путей нет)
+const SKIP_PREFIXES = ['vendor/', 'local/vendor/', 'bitrix/vendor/', 'upload/', 'storage/', 'bootstrap/cache/', 'bitrix/cache/', 'bitrix/managed_cache/', 'bitrix/stack_cache/', 'bitrix/backup/', 'bitrix/updates/',
   'bitrix/tmp/', 'bitrix/html_pages/', 'bitrix/js/', 'bitrix/images/', 'bitrix/fonts/', 'bitrix/wizards/', 'bitrix/themes/', 'bitrix/gadgets/'];
 
 const posix = (p) => String(p).replace(/\\/g, '/');
