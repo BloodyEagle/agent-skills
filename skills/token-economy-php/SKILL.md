@@ -1,6 +1,6 @@
 ---
 name: token-economy-php
-description: Экономия токенов в PHP-проектах, на 1С-Битрикс (включая старое API до D7 и D7) и в Laravel 8–12: поиск определений, граф связей, маршруты (каталог и URL), модели Eloquent с таблицами и связями, привязки контейнера, Blade-шаблоны, команды и расписание, компоненты, события, языковые сообщения, схема таблиц БД, безопасное чтение и правка файлов в cp1251. Все команды — PowerShell.
+description: Экономия токенов в PHP-проектах, на 1С-Битрикс (включая старое API до D7 и D7) и в Laravel 8–13: поиск определений, граф связей, маршруты (каталог и URL), модели Eloquent с таблицами и связями, привязки контейнера, Blade-шаблоны, команды и расписание, компоненты, события, языковые сообщения, схема таблиц БД, безопасное чтение и правка файлов в cp1251. Все команды — PowerShell.
 ---
 
 # Skill: token-economy-php
@@ -96,9 +96,9 @@ route — какой файл обслуживает URL: физический �
 
 table — имя таблицы БД: D7-класс и поля (`getTableName` / `getMap`), схема из `install/db/mysql/install.sql` модулей (колонки и ключи), файлы, где имя таблицы встречается. Без точного совпадения подскажет похожие имена.
 
-### Laravel (8–12)
+### Laravel (8–13)
 
-Проект распознаётся по `artisan` или `laravel/framework` в `composer.json`. Оба каркаса — 8–10 (`app/Http/Kernel.php`, `resources/lang/`) и 11+ (`bootstrap/app.php`, `routes/console.php`, `lang/`) — разбираются одинаково, ничего запускать не нужно.
+Проект распознаётся по `artisan` или `laravel/framework` в `composer.json`. Оба каркаса — 8–10 (`app/Http/Kernel.php`, `resources/lang/`) и 11+ — 11, 12, 13 (`bootstrap/app.php`, `routes/console.php`, `lang/`) — разбираются одинаково, ничего запускать не нужно.
 
 routes — каталог маршрутов из `routes/*.php`: группы с `prefix`/`middleware`/`name`/`namespace`/`domain` (включая `Route::controller(...)->group(...)`), `resource`/`apiResource` с `only`/`except`, `match`, `Route::view`, `Route::redirect`, замыкания. Фильтры: `uri`, `name`, `controller` (подстрока).
 

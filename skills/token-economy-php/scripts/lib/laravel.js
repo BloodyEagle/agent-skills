@@ -1,5 +1,5 @@
 'use strict';
-// laravel.js — понимание проектов Laravel 8 … 12 по исходникам, без запуска composer/artisan.
+// laravel.js — понимание проектов Laravel 8 … 13 по исходникам, без запуска composer/artisan.
 // Маршруты (routes/*.php с группами, ресурсами и fluent-цепочками), Eloquent-модели (таблица,
 // $fillable/$casts, связи, scopes), контейнер (bind/singleton/scoped/instance, контекстные
 // привязки), миграции (Schema::create/table с колонками и ключами), вызовы view()/route()/__(),

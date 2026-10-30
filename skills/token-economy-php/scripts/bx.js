@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// bx.js — token-economy для PHP, 1С-Битрикс и Laravel (8 … 12). Принимает JSON из stdin (или аргументы key=value),
+// bx.js — token-economy для PHP, 1С-Битрикс и Laravel (8 … 13). Принимает JSON из stdin (или аргументы key=value),
 // отвечает компактным текстом. Операции: info, search, symbol, deps, rdeps, path, node, stats, outline,
 // component, events, lang, route, table, routes, model, container, blade, console, read, patch, create, build.
 
