@@ -43,8 +43,29 @@ function makeCtx(opts) {
 
 const docPath = (ctx, rel) => '/' + (ctx.prefix ? rel.slice(ctx.prefix.length) : rel);
 
+const neutralCl = () => ({ origin: 'custom', comp: null, over: null, module: null, lang: null, tag: '' });
+
+/**
+ * Классификация пути по режиму проекта: Битрикс — своя таксономия путей,
+ * Laravel — поверх неё теги каркаса, в универсальном режиме путь нейтрален.
+ */
+function classifyFor(ctx, doc) {
+  if (ctx.mode === 'bitrix') return classify(doc);
+  if (ctx.mode === 'generic') return neutralCl();
+  const cl = classify(doc); // laravel
+  const lv = laravelClassify(doc);
+  if (lv.tag) {
+    cl.tag = lv.tag;
+    if (lv.view) cl.view = lv.view;
+    if (lv.langlv) { cl.langlv = lv.langlv; cl.lang = null; } // не битрикс-языковой файл
+  }
+  return cl;
+}
+
 function candidateFiles(ctx) {
-  return listFiles(ctx.root, ctx.docroot, ['.php']).filter((rel) => ctx.core || classify(docPath(ctx, rel)).origin !== 'core');
+  const files = listFiles(ctx.root, ctx.docroot, ['.php'], ctx.mode);
+  if (ctx.mode !== 'bitrix' || ctx.core) return files; // ядро Битрикса вне индекса только в режиме Битрикса
+  return files.filter((rel) => classify(docPath(ctx, rel)).origin !== 'core');
 }
 
 function parseOne(ctx, rel, cl) {
@@ -54,7 +75,7 @@ function parseOne(ctx, rel, cl) {
   if (cl.langlv) return { ...base, loc: text.split('\n').length, mess: parseLaravelLang(text) }; // lang/<locale>/<group>.php
   if (cl.lang) return { ...base, loc: text.split('\n').length, mess: parseLang(text) };
   const d = parsePhp(text);
-  if (ctx.laravel) {
+  if (ctx.mode === 'laravel') {
     const lr = parseLaravelPhp(text); // маршруты, привязки, модели, миграции, view()/route()/__()
     for (const k of ['routes', 'binds', 'ctxBinds', 'models', 'migs', 'views', 'routeRefs', 'langRefs', 'cmds', 'sched']) if (lr[k]) d[k] = lr[k];
   }
@@ -73,15 +94,7 @@ function buildIndex(ctx) {
   files.forEach((rel, i) => {
     const st = fs.statSync(path.join(ctx.root, rel));
     const doc = docPath(ctx, rel);
-    let cl = classify(doc);
-    if (ctx.laravel) { // Laravel-структура: теги видов, модели, маршруты… перекрывают битрикс-классификацию
-      const lv = laravelClassify(doc);
-      if (lv.tag) {
-        cl.tag = lv.tag;
-        if (lv.view) cl.view = lv.view;
-        if (lv.langlv) { cl.langlv = lv.langlv; cl.lang = null; } // не битрикс-языковой файл
-      }
-    }
+    const cl = classifyFor(ctx, doc);
     const c = old[rel];
     let data;
     if (c && c.m === st.mtimeMs && c.s === st.size) data = c.d;
@@ -129,33 +142,35 @@ function buildIndex(ctx) {
         const target = resolveInclude(inc, n.d);
         if (target) add(pathIdx.get(target.toLowerCase()), 'i');
       }
-      for (const ev of r.events || []) { // обработчик строкой: 'Vendor\\Mod\\Class', Class::class, "Class::method", "имя_функции"
-        const names = [];
-        for (const m of String(ev.c).matchAll(/([A-Za-z_\\][\w\\]*)::class|['"]([A-Za-z_\\][\w\\]*)(?:::\w+)?['"]|([A-Za-z_\\][\w\\]*)::\w+$/g)) names.push(m[1] || m[2] || m[3]);
-        for (const nm of names) {
-          const key = nm.replace(/\\+/g, '\\').replace(/^\\/, '').toLowerCase();
-          const ids = classIdx.get(key) || funcIdx.get(key);
-          if (ids) { prefer(ids).slice(0, 2).forEach((id) => add(id, 'e')); break; }
+      if (ctx.mode === 'bitrix') {
+        for (const ev of r.events || []) { // обработчик строкой: 'Vendor\\Mod\\Class', Class::class, "Class::method", "имя_функции"
+          const names = [];
+          for (const m of String(ev.c).matchAll(/([A-Za-z_\\][\w\\]*)::class|['"]([A-Za-z_\\][\w\\]*)(?:::\w+)?['"]|([A-Za-z_\\][\w\\]*)::\w+$/g)) names.push(m[1] || m[2] || m[3]);
+          for (const nm of names) {
+            const key = nm.replace(/\\+/g, '\\').replace(/^\\/, '').toLowerCase();
+            const ids = classIdx.get(key) || funcIdx.get(key);
+            if (ids) { prefer(ids).slice(0, 2).forEach((id) => add(id, 'e')); break; }
+          }
+        }
+        for (const [mid] of r.mods || []) { // подключение модуля → его include.php
+          const low = String(mid).toLowerCase();
+          add(pathIdx.get('/local/modules/' + low + '/include.php') || pathIdx.get('/bitrix/modules/' + low + '/include.php'), 'm');
+        }
+        for (const [cid, tpl] of r.comps || []) {
+          if (cid === '?') continue;
+          const cc = comps.get(cid.toLowerCase());
+          if (!cc) continue;
+          cc.main.forEach((id) => add(id, 'x'));
+          if (tpl !== '?') (cc.tpl.get((tpl || '.default').toLowerCase()) || []).forEach((id) => add(id, 't'));
+        }
+        const langs = langByBase.get(n.d.toLowerCase());
+        if (langs) {
+          n.langs = langs.map((l) => l.code).sort();
+          const pick = langs.find((l) => l.code === 'ru') || langs[0];
+          add(pick.id, 'l');
         }
       }
-      for (const [mid] of r.mods || []) { // подключение модуля → его include.php
-        const low = String(mid).toLowerCase();
-        add(pathIdx.get('/local/modules/' + low + '/include.php') || pathIdx.get('/bitrix/modules/' + low + '/include.php'), 'm');
-      }
-      for (const [cid, tpl] of r.comps || []) {
-        if (cid === '?') continue;
-        const cc = comps.get(cid.toLowerCase());
-        if (!cc) continue;
-        cc.main.forEach((id) => add(id, 'x'));
-        if (tpl !== '?') (cc.tpl.get((tpl || '.default').toLowerCase()) || []).forEach((id) => add(id, 't'));
-      }
-      const langs = langByBase.get(n.d.toLowerCase());
-      if (langs) {
-        n.langs = langs.map((l) => l.code).sort();
-        const pick = langs.find((l) => l.code === 'ru') || langs[0];
-        add(pick.id, 'l');
-      }
-      if (ctx.laravel) {
+      if (ctx.mode === 'laravel') {
         // view('name') и связи Blade → родительские шаблоны
         const viewNames = new Set();
         for (const [vn] of r.views || []) viewNames.add(vn);
@@ -223,4 +238,4 @@ function ensureIndex(ctx) {
   return buildIndex(ctx).index;
 }
 
-module.exports = { makeCtx, ensureIndex, buildIndex, docPath, CACHE_DIR, loadJson };
+module.exports = { makeCtx, ensureIndex, buildIndex, docPath, classifyFor, CACHE_DIR, loadJson };

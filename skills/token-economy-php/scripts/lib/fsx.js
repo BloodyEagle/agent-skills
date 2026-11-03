@@ -8,11 +8,16 @@ const cp = require('child_process');
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const SKIP_DIRS = new Set(['.git', '.idea', '.vscode', 'node_modules', '.bx-cache', '.token-economy']);
-// каталоги Битрикса со сгенерированным или не относящимся к коду содержимым (пути относительно корня сайта)
-// vendor/ исключаем только в местах composer: имя «vendor» бывает пространством имён компонентов
-// storage/ и bootstrap/cache/ — служебные каталоги Laravel (в Битриксе таких путей нет)
-const SKIP_PREFIXES = ['vendor/', 'local/vendor/', 'bitrix/vendor/', 'upload/', 'storage/', 'bootstrap/cache/', 'bitrix/cache/', 'bitrix/managed_cache/', 'bitrix/stack_cache/', 'bitrix/backup/', 'bitrix/updates/',
-  'bitrix/tmp/', 'bitrix/html_pages/', 'bitrix/js/', 'bitrix/images/', 'bitrix/fonts/', 'bitrix/wizards/', 'bitrix/themes/', 'bitrix/gadgets/'];
+// служебные каталоги со сгенерированным или не относящимся к коду содержимым — по режиму проекта
+// (пути относительно корня индексации: docroot в Битриксе, корень проекта в остальных режимах).
+// vendor/ исключаем только в местах composer: имя «vendor» бывает пространством имён компонентов.
+const SKIP_PREFIXES = {
+  bitrix: ['vendor/', 'local/vendor/', 'bitrix/vendor/', 'upload/', 'bitrix/cache/', 'bitrix/managed_cache/', 'bitrix/stack_cache/', 'bitrix/backup/', 'bitrix/updates/',
+    'bitrix/tmp/', 'bitrix/html_pages/', 'bitrix/js/', 'bitrix/images/', 'bitrix/fonts/', 'bitrix/wizards/', 'bitrix/themes/', 'bitrix/gadgets/'],
+  laravel: ['vendor/', 'storage/', 'bootstrap/cache/'],
+  generic: ['vendor/'],
+  modx: ['vendor/', 'core/vendor/', 'core/cache/', 'core/packages/', 'setup/'],
+};
 
 const posix = (p) => String(p).replace(/\\/g, '/');
 
@@ -29,14 +34,16 @@ function detectDocroot(projectRoot) {
 
 /**
  * Файлы проекта (пути относительно projectRoot): git ls-files (учитывает .gitignore), иначе обход.
+ * mode — режим проекта (bitrix | laravel | generic | modx): выбирает список skip-префиксов.
  */
-function listFiles(projectRoot, docroot, exts) {
+function listFiles(projectRoot, docroot, exts, mode) {
+  const prefixes = SKIP_PREFIXES[mode] || SKIP_PREFIXES.generic;
   let rel = null;
   try {
     const r = cp.spawnSync('git', ['-C', projectRoot, 'ls-files', '-co', '--exclude-standard', '-z'], { maxBuffer: 256 * 1024 * 1024 });
     if (r.status === 0) rel = r.stdout.toString('utf8').split('\0').filter(Boolean);
   } catch (e) { rel = null; }
-  if (!rel) {
+  if (!rel || !rel.length) { // git недоступен, проект вне репозитория — или все файлы под .gitignore: идём обходом
     rel = [];
     (function walk(dir) {
       let ents;
@@ -55,7 +62,7 @@ function listFiles(projectRoot, docroot, exts) {
     if (f.split('/').some((seg) => SKIP_DIRS.has(seg))) continue;
     const inRoot = prefix ? (f.startsWith(prefix) ? f.slice(prefix.length) : null) : f;
     if (inRoot === null && docroot) continue;
-    if (SKIP_PREFIXES.some((s) => inRoot.startsWith(s))) continue;
+    if (prefixes.some((s) => inRoot.startsWith(s))) continue;
     let st;
     try { st = fs.statSync(path.join(projectRoot, f)); } catch (e) { continue; }
     if (st.isFile() && st.size <= MAX_BYTES) out.push(f);
@@ -118,4 +125,4 @@ function writeAtomic(abs, buf) {
   fs.renameSync(tmp, abs);
 }
 
-module.exports = { posix, detectDocroot, listFiles, readText, encodeText, writeAtomic, MAX_BYTES };
+module.exports = { posix, detectDocroot, listFiles, readText, encodeText, writeAtomic, MAX_BYTES, SKIP_PREFIXES };

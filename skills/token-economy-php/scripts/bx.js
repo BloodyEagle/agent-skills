@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { posix, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
-const { makeCtx, ensureIndex, buildIndex, docPath, CACHE_DIR } = require('./lib/index');
+const { makeCtx, ensureIndex, buildIndex, docPath, classifyFor, CACHE_DIR } = require('./lib/index');
 const { classify, pcreToRegExp, resolveInclude } = require('./lib/bitrix');
 const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams } = require('./lib/php');
 const {
@@ -197,7 +197,7 @@ const ops = {
     for (const n of cust) enc[n.enc] = (enc[n.enc] || 0) + 1;
     const lines = [];
     const isBx = fs.existsSync(path.join(dr, 'bitrix')) || fs.existsSync(path.join(dr, 'local'));
-    if (ctx.laravel) {
+    if (ctx.mode === 'laravel') {
       const fw = composerFramework(ctx.root);
       const sv = structureVersion(ctx.root);
       lines.push(`проект Laravel${fw ? ' ' + fw : ''} (composer.json)${sv ? ', структура ' + sv + (sv === '11+' ? ' (bootstrap/app.php)' : ' (app/Http/Kernel.php)') : ''}`);
@@ -230,7 +230,7 @@ const ops = {
     } catch (e) { /* нет файла */ }
     let withNs = 0, legacy = 0;
     for (const n of cust) { if ((n.decls || []).length) { if (n.ns) withNs++; else legacy++; } }
-    if (ctx.laravel) lines.push(`стиль кода: файлов с классами в namespace ${withNs}, глобальные классы ${legacy}`);
+    if (ctx.mode === 'laravel') lines.push(`стиль кода: файлов с классами в namespace ${withNs}, глобальные классы ${legacy}`);
     else lines.push(`стиль кода: файлов с классами в namespace (D7) ${withNs}, с глобальными классами (старое API) ${legacy}`);
     lines.push(`кодировка PHP-файлов проекта: utf8 ${enc.utf8}, cp1251 ${enc.cp1251}, только ASCII ${enc.ascii}`);
     if (enc.cp1251 > 0) lines.push('ВНИМАНИЕ: есть файлы в cp1251. Читай их операцией read, правь операцией patch: штатные инструменты испортят кириллицу.');
@@ -246,7 +246,7 @@ const ops = {
     if (nsList.length) lines.push('свои компоненты: ' + nsList.join(', '));
     const files = ['local/php_interface/init.php', 'bitrix/php_interface/init.php', 'local/php_interface/dbconn.php', 'bitrix/php_interface/dbconn.php', 'urlrewrite.php', 'local/routes']
       .filter((f) => fs.existsSync(path.join(dr, f)));
-    if (ctx.laravel) {
+    if (ctx.mode === 'laravel') {
       const lf = ['routes/web.php', 'routes/api.php', 'routes/console.php', 'app/Models', 'app/Providers', 'app/Console/Kernel.php', 'app/Http/Kernel.php', 'bootstrap/app.php', 'database/migrations', 'resources/views', 'lang', 'config/app.php', 'composer.json']
         .filter((f) => fs.existsSync(path.join(ctx.root, f)));
       if (lf.length) lines.push('найдено: ' + lf.join(', '));
@@ -263,7 +263,7 @@ const ops = {
     try { rx = new RegExp(truthy(args.regex) ? args.query : String(args.query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags); } catch (e) { fail('некорректное регулярное выражение'); }
     const sub = posix(args.path || '').replace(/^\/+|\/+$/g, '');
     const limit = Number(args.limit) || 30;
-    const files = listFiles(ctx.root, ctx.docroot, exts).filter((rel) => (ctx.core || classify(docPath(ctx, rel)).origin !== 'core') && (!sub || rel === sub || rel.startsWith(sub + '/')));
+    const files = listFiles(ctx.root, ctx.docroot, exts, ctx.mode).filter((rel) => (ctx.mode !== 'bitrix' || ctx.core || classifyFor(ctx, docPath(ctx, rel)).origin !== 'core') && (!sub || rel === sub || rel.startsWith(sub + '/')));
     let total = 0, shown = 0, nfiles = 0, cur = null;
     const lines = [];
     for (const rel of files) {
@@ -396,7 +396,7 @@ const ops = {
     [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).forEach(([id, c]) => lines.push(`  ${c}  ${idx.nodes[id - 1].p}`));
     const ev = idx.nodes.reduce((s, n) => s + (n.events ? n.events.length : 0), 0);
     if (ev) lines.push(`обработчиков событий: ${ev} (операция events)`);
-    if (ctx.laravel) {
+    if (ctx.mode === 'laravel') {
       const d = laravelScan(idx);
       lines.push(`Laravel: маршрутов ${d.routes.length}, моделей ${d.models.length}, views ${idx.nodes.filter((n) => n.view).length}, миграций ${d.migs.length}, команд ${d.cmds.length}, расписание ${d.sched.length}`);
     }
@@ -573,7 +573,7 @@ const ops = {
   route() {
     let url = String(args.url || '').trim();
     if (!url) fail('укажите url');
-    if (ctx.laravel) { // Laravel: URL → маршрут → контроллер → view
+    if (ctx.mode === 'laravel') { // Laravel: URL → маршрут → контроллер → view
       const idx = ensureIndex(ctx);
       const d = laravelScan(idx);
       url = url.replace(/^https?:\/\/[^/]+/i, '').split('?')[0].split('#')[0];
@@ -654,7 +654,7 @@ const ops = {
     for (const n of idx.nodes) for (const d of n.decls || []) {
       if (d.table && d.table.toLowerCase() === lq) lines.push(`${d.table}  (D7 ORM: ${d.fqn}, ${n.p}:${d.line}-${d.end})`, '  поля: ' + (d.fields || []).join(', '));
     }
-    if (ctx.laravel) { // Eloquent-модель и миграции
+    if (ctx.mode === 'laravel') { // Eloquent-модель и миграции
       const d = laravelScan(idx);
       for (const m of d.models.filter((x) => (x.table || modelTable(x.cls)).toLowerCase() === lq)) {
         lines.push(`${q}  (Eloquent: ${m.fqn}, ${m.node.p}:${m.l})`, '  fillable: ' + (m.fillable.join(', ') || '—'), '  связей: ' + m.rels.length + ' (op=model name=' + m.cls + ')');
@@ -665,8 +665,8 @@ const ops = {
       }
     }
     // старое API: схема в install/db/<СУБД>/install.sql модулей
-    const sqlFiles = listFiles(ctx.root, ctx.docroot, ['.sql'])
-      .filter((rel) => /\/install\/db\//i.test('/' + rel) && (ctx.core || classify(docPath(ctx, rel)).origin !== 'core'))
+    const sqlFiles = listFiles(ctx.root, ctx.docroot, ['.sql'], ctx.mode)
+      .filter((rel) => /\/install\/db\//i.test('/' + rel) && (ctx.mode !== 'bitrix' || ctx.core || classifyFor(ctx, docPath(ctx, rel)).origin !== 'core'))
       .sort((a, b) => (/\/mysql\//i.test(b) ? 1 : 0) - (/\/mysql\//i.test(a) ? 1 : 0) || a.localeCompare(b));
     const names = new Set();
     let found = false;
@@ -704,8 +704,8 @@ const ops = {
     }
     // где таблица встречается в коде (SQL-запросы старого API)
     const hits = [];
-    for (const rel of listFiles(ctx.root, ctx.docroot, ['.php'])) {
-      if (!ctx.core && classify(docPath(ctx, rel)).origin === 'core') continue;
+    for (const rel of listFiles(ctx.root, ctx.docroot, ['.php'], ctx.mode)) {
+      if (ctx.mode === 'bitrix' && !ctx.core && classifyFor(ctx, docPath(ctx, rel)).origin === 'core') continue;
       let text;
       try { text = readText(path.join(ctx.root, rel)).text; } catch (e) { continue; }
       const pos = text.toLowerCase().indexOf(lq);
@@ -719,7 +719,7 @@ const ops = {
   // ---------- Laravel ----------
 
   routes() {
-    if (!ctx.laravel) fail('routes: операция для Laravel-проектов');
+    if (ctx.mode !== 'laravel') fail('routes: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
     if (!d.routes.length) return out('маршруты не найдены (routes/*.php)');
@@ -743,7 +743,7 @@ const ops = {
   },
 
   model() {
-    if (!ctx.laravel) fail('model: операция для Laravel-проектов');
+    if (ctx.mode !== 'laravel') fail('model: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
     const tableOf = (m) => m.table || modelTable(m.cls);
@@ -807,7 +807,7 @@ const ops = {
   },
 
   container() {
-    if (!ctx.laravel) fail('container: операция для Laravel-проектов');
+    if (ctx.mode !== 'laravel') fail('container: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
     const lines = [];
@@ -848,7 +848,7 @@ const ops = {
   },
 
   blade() {
-    if (!ctx.laravel) fail('blade: операция для Laravel-проектов');
+    if (ctx.mode !== 'laravel') fail('blade: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     if (args.name) {
       const n = findNode(idx, args.name);
@@ -897,7 +897,7 @@ const ops = {
   },
 
   console() {
-    if (!ctx.laravel) fail('console: операция для Laravel-проектов');
+    if (ctx.mode !== 'laravel') fail('console: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
     const lines = [];
