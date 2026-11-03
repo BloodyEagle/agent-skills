@@ -10,8 +10,10 @@
 
 ## Детект и состав индекса
 
-- **Revolution**: каталоги `core/` + `manager/` + `connectors/`; версия — из `core/composer.json`.
-- **Evolution**: `manager/` + `includes/` + `assets/`; версия — из `manager/includes/version.inc.php`.
+- **Revolution**: `manager/` + `connectors/` + код ядра в `core/` (`core/model/modx` для 2.x, `core/src/Revolution` для 3.x); версия — из `core/composer.json`.
+- **Evolution**: `manager/includes/` + `assets/` (includes — внутри manager); версия — из `manager/includes/version.inc.php`.
+
+Каталоги `manager/`, `core/` и `connectors/` в корне без кода ядра MODX маркерами не считаются — так самописный сайт или админка с такими же именами не примет режим MODX.
 
 В индекс входят `.php` и `.tpl`. Ядро (по умолчанию вне индекса, как «своё» не считается): `core/model`, `core/src`, `core/lexicon`, `core/vendor`, `core/cache`, `core/packages`, `core/docs`, `manager/`, `connectors/`, `setup/`. `core/vendor/` и `core/cache/` исключены всегда. Свои: `core/components/*`, `assets/components/*`, `templates/*`, корневые `.php`.
 

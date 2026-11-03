@@ -4,7 +4,7 @@
 
 ## Какие файлы входят в индекс
 
-Файлы `.php` из `git ls-files` (учитывается `.gitignore`), без git — обход каталогов. Корень сайта определяется сам: папка с `bitrix/` или `local/` (текущая, затем `www`, `public_html`, `httpdocs`, `web`, `public`, `htdocs`, `site`, `docroot`). Файлы вне корня сайта не индексируются.
+Файлы `.php` из `git ls-files` (учитывается `.gitignore`), без git — обход каталогов. Корень сайта определяется сам: папка с `bitrix/` или `local/` с одним из типичных подкаталогов (`components`, `templates`, `modules`, `php_interface`) — текущая, затем `www`, `public_html`, `httpdocs`, `web`, `public`, `htdocs`, `site`, `docroot`. Голая папка `local/` (частая у docker-override и локальных конфигов) маркером не считается; если в `composer.json` указан `laravel/framework`, проект определяется как Laravel независимо от каталогов. Файлы вне корня сайта не индексируются.
 
 Всегда исключаются: `node_modules`, `vendor/`, `local/vendor/`, `bitrix/vendor/` (composer), `upload/`, `bitrix/cache`, `managed_cache`, `stack_cache`, `backup`, `updates`, `tmp`, `html_pages`, `js`, `images`, `fonts`, `wizards`, `themes`, `gadgets`. Файлы больше 2 МБ пропускаются.
 

@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "baseUrl": "./",
+    "paths": {"@env/*": ["src/environments/*"], "@shared/*": ["src/app/shared/*"]}
+  }
+}

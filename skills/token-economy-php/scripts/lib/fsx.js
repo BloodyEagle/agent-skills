@@ -21,14 +21,34 @@ const SKIP_PREFIXES = {
 
 const posix = (p) => String(p).replace(/\\/g, '/');
 
+// типичные docroot-каталоги битрикс-деплоя
+const DOCROOTS = ['www', 'public_html', 'httpdocs', 'web', 'public', 'htdocs', 'site', 'docroot'];
+// local/ — распространённое имя каталога и вне Битрикса: маркер считаем действительным
+// только с одним из типичных битрикс-подкаталогов
+const BITRIX_LOCAL_SUBDIRS = ['components', 'templates', 'modules', 'php_interface'];
+
+const isDirAt = (p, name) => { try { return fs.statSync(path.join(p, name)).isDirectory(); } catch (e) { return false; } };
+
 /**
- * Корень сайта (document root): текущая папка, если в ней есть bitrix/ или local/; иначе типичная вложенная папка.
+ * Маркер Битрикса в каталоге dir ('' — сам projectRoot): каталог bitrix/ либо local/
+ * с одним из типичных подкаталогов (components, templates, modules, php_interface).
+ * @returns {boolean}
+ */
+function bitrixMarkerAt(projectRoot, dir) {
+  const base = dir ? path.join(projectRoot, dir) : projectRoot;
+  if (isDirAt(base, 'bitrix')) return true;
+  if (isDirAt(base, 'local')) return BITRIX_LOCAL_SUBDIRS.some((s) => isDirAt(path.join(base, 'local'), s));
+  return false;
+}
+
+/**
+ * Корень сайта (document root): текущая папка, если в ней есть маркер Битрикса
+ * (bitrix/ или подтверждённый local/); иначе типичная вложенная папка.
  * @returns {string} путь относительно projectRoot ('' — сам projectRoot).
  */
 function detectDocroot(projectRoot) {
-  const has = (d) => fs.existsSync(path.join(projectRoot, d, 'bitrix')) || fs.existsSync(path.join(projectRoot, d, 'local'));
-  if (has('')) return '';
-  for (const d of ['www', 'public_html', 'httpdocs', 'web', 'public', 'htdocs', 'site', 'docroot']) if (has(d)) return d;
+  if (bitrixMarkerAt(projectRoot, '')) return '';
+  for (const d of DOCROOTS) if (bitrixMarkerAt(projectRoot, d)) return d;
   return '';
 }
 
@@ -125,4 +145,4 @@ function writeAtomic(abs, buf) {
   fs.renameSync(tmp, abs);
 }
 
-module.exports = { posix, detectDocroot, listFiles, readText, encodeText, writeAtomic, MAX_BYTES, SKIP_PREFIXES };
+module.exports = { posix, detectDocroot, bitrixMarkerAt, DOCROOTS, listFiles, readText, encodeText, writeAtomic, MAX_BYTES, SKIP_PREFIXES };

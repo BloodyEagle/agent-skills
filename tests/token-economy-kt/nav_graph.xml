@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/nav_main"
+    app:startDestination="@id/homeFragment">
+
+    <fragment
+        android:id="@+id/homeFragment"
+        android:name="com.example.shop.legacy.HomeFragment"
+        android:label="Главная">
+        <action
+            android:id="@+id/actionHomeToSettings"
+            app:destination="@id/settingsFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/settingsFragment"
+        android:name="com.example.shop.legacy.SettingsFragment"
+        android:label="Настройки">
+        <deepLink app:uri="shop://settings" />
+    </fragment>
+</navigation>

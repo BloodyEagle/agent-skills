@@ -285,7 +285,8 @@ const ops = {
     if (ctx.mode === 'generic') {
       const top = cust.filter((n) => n.loc).sort((a, b) => b.loc - a.loc).slice(0, 5);
       if (top.length) lines.push('самые крупные: ' + top.map((n) => `${n.p} (${n.loc} строк)`).join(', '));
-      lines.push('операции: info, search, symbol, outline, deps, rdeps, path, node, stats, read, patch, create, build. Профильные операции Битрикса и Laravel отключены.');
+      lines.push('операции: info, search, symbol, outline, deps, rdeps, path, node, stats, read, patch, create, build. Профильные операции Битрикса, Laravel и MODX отключены.');
+      lines.push('ВНИМАНИЕ: связи через конфигурацию DI/сервис-контейнера и не-PHP файлы (шаблоны, YAML) не индексируются — пустой rdeps не значит «никем не используется».');
     }
     lines.push(`в индексе файлов: ${idx.nodes.length} (${cust.length} своих)` + (ctx.mode === 'bitrix' && !ctx.core ? '; ядро не индексируется ("core":true включит его)' : ''));
     out(...lines);
@@ -1131,21 +1132,29 @@ ops.selftest = function () {
   };
   const dm = require('./lib/detect');
   const dBitrix = mk(['bitrix/modules/main/include.php']);
-  const dModxRev = mk(['core/config/config.inc.php', 'manager/index.php', 'connectors/index.php']);
-  const dModxEvo = mk(['manager/index.php', 'includes/config.inc.php', 'assets/site.css']);
+  const dModxRev = mk(['core/model/modx/modx.class.php', 'manager/index.php', 'connectors/index.php']);
+  const dModxEvo = mk(['manager/includes/config.inc.php', 'assets/site.css']);
   const dLaravel = mk(['artisan', 'composer.json']);
   fs.writeFileSync(path.join(dLaravel, 'composer.json'), '{"require":{"laravel/framework":"^12.0"}}');
   const dGeneric = mk(['src/app.php']);
+  // ложные маркеры: local/ и manager/includes вне своих фреймворков, но Laravel с папкой local/
+  const dLocalOnly = mk(['local/readme.php', 'src/Kernel.php']);
+  const dOldSite = mk(['manager/index.php', 'includes/config.php', 'assets/app.php']);
+  const dBitrixLocal = mk(['local/components/demo/list/component.php']);
+  const dBitrixWww = mk(['www/local/templates/site/header.php']);
+  const dLaravelLocal = mk(['local/docker.php', 'artisan', 'composer.json']);
+  fs.writeFileSync(path.join(dLaravelLocal, 'composer.json'), '{"require":{"laravel/framework":"^11.0"}}');
   chk('режим: Битрикс по маркеру', dm.detectMode(dBitrix) === 'bitrix', dm.detectMode(dBitrix));
+  chk('режим: Битрикс по local/components', dm.detectMode(dBitrixLocal) === 'bitrix', dm.detectMode(dBitrixLocal));
+  chk('режим: Битрикс по local/ внутри www', dm.detectMode(dBitrixWww) === 'bitrix', dm.detectMode(dBitrixWww));
   chk('режим: MODX Revolution по маркерам', dm.detectMode(dModxRev) === 'modx' && dm.detectModx(dModxRev) === 'revolution', dm.detectMode(dModxRev));
   chk('режим: MODX Evolution по маркерам', dm.detectMode(dModxEvo) === 'modx' && dm.detectModx(dModxEvo) === 'evolution', dm.detectMode(dModxEvo));
   chk('режим: Laravel по artisan/composer', dm.detectMode(dLaravel) === 'laravel', dm.detectMode(dLaravel));
+  chk('режим: Laravel приоритетнее local/ (composer.json)', dm.detectMode(dLaravelLocal) === 'laravel', dm.detectMode(dLaravelLocal));
+  chk('режим: local/ без битрикс-подкаталогов — универсальный', dm.detectMode(dLocalOnly) === 'generic', dm.detectMode(dLocalOnly));
+  chk('режим: manager/ и includes/ раздельно — универсальный', dm.detectMode(dOldSite) === 'generic', dm.detectMode(dOldSite));
   chk('режим: универсальный без маркеров', dm.detectMode(dGeneric) === 'generic', dm.detectMode(dGeneric));
-  fs.rmSync(dBitrix, { recursive: true, force: true });
-  fs.rmSync(dModxRev, { recursive: true, force: true });
-  fs.rmSync(dModxEvo, { recursive: true, force: true });
-  fs.rmSync(dLaravel, { recursive: true, force: true });
-  fs.rmSync(dGeneric, { recursive: true, force: true });
+  for (const d of [dBitrix, dModxRev, dModxEvo, dLaravel, dGeneric, dLocalOnly, dOldSite, dBitrixLocal, dBitrixWww, dLaravelLocal]) fs.rmSync(d, { recursive: true, force: true });
   chk('режим: таблица профильных операций', OP_MODES.routes.join() === 'laravel' && OP_MODES.lang.join() === 'bitrix,laravel' && OP_MODES.route.join() === 'bitrix,laravel,modx' && OP_MODES.element.join() === 'modx' && !OP_MODES.symbol && !OP_MODES.outline, JSON.stringify(OP_MODES));
 
   // Битрикс-структуры

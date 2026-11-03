@@ -1,0 +1,7 @@
+[project]
+name = "fixture"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pydantic[email]>=2.5",
+]

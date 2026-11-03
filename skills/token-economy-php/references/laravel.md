@@ -4,7 +4,7 @@
 
 ## Как распознаётся проект и версия
 
-Laravel-режим включается, если в корне есть `artisan` или в `composer.json` (`require` и `require-dev`) указан `laravel/framework` / `laravel/lumen-framework`. Простые PHP и Битрикс-проекты работают как раньше — на них Laravel-ветки не влияют.
+Laravel-режим включается, если в корне есть `artisan` или в `composer.json` (`require` и `require-dev`) указан `laravel/framework` / `laravel/lumen-framework`. Этот маркер проверяется первым, до структурных признаков Битрикса и MODX: проект Laravel с папкой `local/` остаётся Laravel. Простые PHP и Битрикс-проекты работают как раньше — на них Laravel-ветки не влияют.
 
 `info` показывает версию из `composer.json` и структуру каркаса:
 
