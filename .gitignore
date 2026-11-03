@@ -1,0 +1,11 @@
+# кэши token-economy в тестовых фикстурах
+tests/**/.bx-cache/
+tests/**/.kt-cache/
+tests/**/.jv-cache/
+tests/**/.token-economy/
+tests/token-economy-ts/graph-deps.json
+tests/token-economy-ts/.graph-deps-cache.json
+__pycache__/
+*.pyc
+.idea/
+.megamemory/
