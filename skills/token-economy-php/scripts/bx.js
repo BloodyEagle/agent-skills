@@ -1039,6 +1039,26 @@ ops.selftest = function () {
   chk('php: класс и fqn', !!api && api.kind === 'class' && api.fqn === 'Demo\\Mod\\Api', js.slice(0, 300));
   chk('php: методы', !!api && ['run', 'hidden'].every((n) => (api.members || []).some((m) => m.n === n && m.k === 'method')), js.slice(0, 300));
 
+  // режимы проекта (временные каталоги с маркерами)
+  const os = require('os');
+  const mk = (files) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bxst-'));
+    for (const f of files) { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), '<?php\n'); }
+    return dir;
+  };
+  const dm = require('./lib/detect');
+  const dBitrix = mk(['bitrix/modules/main/include.php']);
+  const dLaravel = mk(['artisan', 'composer.json']);
+  fs.writeFileSync(path.join(dLaravel, 'composer.json'), '{"require":{"laravel/framework":"^12.0"}}');
+  const dGeneric = mk(['src/app.php']);
+  chk('режим: Битрикс по маркеру', dm.detectMode(dBitrix) === 'bitrix', dm.detectMode(dBitrix));
+  chk('режим: Laravel по artisan/composer', dm.detectMode(dLaravel) === 'laravel', dm.detectMode(dLaravel));
+  chk('режим: универсальный без маркеров', dm.detectMode(dGeneric) === 'generic', dm.detectMode(dGeneric));
+  fs.rmSync(dBitrix, { recursive: true, force: true });
+  fs.rmSync(dLaravel, { recursive: true, force: true });
+  fs.rmSync(dGeneric, { recursive: true, force: true });
+  chk('режим: таблица профильных операций', OP_MODES.routes.join() === 'laravel' && OP_MODES.lang.join() === 'bitrix,laravel' && OP_MODES.route.join() === 'bitrix,laravel' && !OP_MODES.symbol && !OP_MODES.outline, JSON.stringify(OP_MODES));
+
   // Битрикс-структуры
   const lang = parseLang('<?php $MESS["WELCOME"] = "Привет, мир!";');
   chk('lang: ключи MESS', lang.length === 1 && lang[0][0] === 'WELCOME' && lang[0][1] === 'Привет, мир!', JSON.stringify(lang));
