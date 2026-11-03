@@ -13,11 +13,12 @@ const { posix, detectDocroot, listFiles, readText } = require('./fsx');
 const { parsePhp, parseLang } = require('./php');
 const { classify, resolveInclude } = require('./bitrix');
 const { laravelClassify, parseBlade, parseLaravelPhp, parseLaravelLang, viewNameToDoc } = require('./laravel');
+const { classifyModx, parseTpl, parseModxPhp } = require('./modx');
 const { detectMode } = require('./detect');
 
-const VERSION = 3; // формат кэша и индекса; при смене разбора увеличить
+const VERSION = 4; // формат кэша и индекса; при смене разбора увеличить
 const CACHE_DIR = '.bx-cache';
-const KIND_ORDER = ['x', 't', 'i', 'c', 'e', 'm', 'f', 'l'];
+const KIND_ORDER = ['x', 't', 'i', 'c', 'e', 'm', 'f', 'l', 's', 'h'];
 
 function loadJson(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } }
 
@@ -51,6 +52,7 @@ const neutralCl = () => ({ origin: 'custom', comp: null, over: null, module: nul
  */
 function classifyFor(ctx, doc) {
   if (ctx.mode === 'bitrix') return classify(doc);
+  if (ctx.mode === 'modx') { const cl = neutralCl(); const mx = classifyModx(doc); cl.origin = mx.origin; cl.tag = mx.tag; if (mx.el) cl.el = mx.el; return cl; }
   if (ctx.mode === 'generic') return neutralCl();
   const cl = classify(doc); // laravel
   const lv = laravelClassify(doc);
@@ -63,7 +65,8 @@ function classifyFor(ctx, doc) {
 }
 
 function candidateFiles(ctx) {
-  const files = listFiles(ctx.root, ctx.docroot, ['.php'], ctx.mode);
+  const exts = ctx.mode === 'modx' ? ['.php', '.tpl'] : ['.php'];
+  const files = listFiles(ctx.root, ctx.docroot, exts, ctx.mode);
   if (ctx.mode !== 'bitrix' || ctx.core) return files; // ядро Битрикса вне индекса только в режиме Битрикса
   return files.filter((rel) => classify(docPath(ctx, rel)).origin !== 'core');
 }
@@ -71,6 +74,7 @@ function candidateFiles(ctx) {
 function parseOne(ctx, rel, cl) {
   const { text, enc, eol } = readText(path.join(ctx.root, rel));
   const base = { enc, eol };
+  if (ctx.mode === 'modx' && /\.tpl$/i.test(rel)) return { ...base, ...parseTpl(text) }; // MODX-шаблон/чанк: теги и Fenom
   if (cl.view) return { ...base, ...parseBlade(text) }; // Blade-шаблон: директивы и переменные
   if (cl.langlv) return { ...base, loc: text.split('\n').length, mess: parseLaravelLang(text) }; // lang/<locale>/<group>.php
   if (cl.lang) return { ...base, loc: text.split('\n').length, mess: parseLang(text) };
@@ -78,6 +82,10 @@ function parseOne(ctx, rel, cl) {
   if (ctx.mode === 'laravel') {
     const lr = parseLaravelPhp(text); // маршруты, привязки, модели, миграции, view()/route()/__()
     for (const k of ['routes', 'binds', 'ctxBinds', 'models', 'migs', 'views', 'routeRefs', 'langRefs', 'cmds', 'sched']) if (lr[k]) d[k] = lr[k];
+  }
+  if (ctx.mode === 'modx') {
+    const mx = parseModxPhp(text); // runSnippet('x') / getChunk('x') → файловые элементы
+    for (const k of ['snipCalls', 'chunkCalls']) if (mx[k]) d[k] = mx[k];
   }
   return { ...base, ...d };
 }
@@ -105,12 +113,14 @@ function buildIndex(ctx) {
 
   // индексы
   const classIdx = new Map(), funcIdx = new Map(), pathIdx = new Map(), langByBase = new Map(), langByGroup = new Map();
+  const elExact = new Map(), elAny = new Map(); // файловые элементы MODX: kind|имя → id, имя → id
   const put = (map, key, id) => { const a = map.get(key); if (a) { if (!a.includes(id)) a.push(id); } else map.set(key, [id]); };
   const comps = new Map(); // id компонента → {main: [id файлов], tpl: Map(имя шаблона → [id файлов])}
   const comp = (cid) => { const k = cid.toLowerCase(); if (!comps.has(k)) comps.set(k, { main: [], tpl: new Map() }); return comps.get(k); };
   for (const n of nodes) {
     pathIdx.set(n.d.toLowerCase(), n.id);
     const r = n.raw;
+    if (n.cl.el) { const e = n.cl.el; put(elExact, e.kind + '|' + e.name.toLowerCase(), n.id); put(elAny, e.name.toLowerCase(), n.id); }
     for (const d of r.decls || []) put(classIdx, d.fqn.toLowerCase(), n.id);
     for (const f of r.funcs || []) put(funcIdx, f.f.toLowerCase(), n.id);
     if (n.cl.lang) put(langByBase, (n.cl.lang.dir + '/' + n.cl.lang.rest).toLowerCase(), { id: n.id, code: n.cl.lang.code });
@@ -185,6 +195,26 @@ function buildIndex(ctx) {
           if (g) { const pick = g.find((l) => l.code === 'ru') || g[0]; add(pick.id, 'l'); }
         }
       }
+      if (ctx.mode === 'modx') {
+        // вызов тегом [[!snippet]]/[[$chunk]] или из PHP runSnippet()/getChunk() → файловый элемент
+        const callEl = (list, kind) => {
+          for (const [name] of list || []) {
+            const low = String(name).trim().toLowerCase();
+            const ids = elExact.get(kind + '|' + low) || elAny.get(low);
+            if (ids) add(ids[0], kind === 'snippet' ? 's' : 'h');
+          }
+        };
+        callEl(r.snippets, 'snippet');
+        callEl(r.chunks, 'chunk');
+        callEl(r.snipCalls, 'snippet');
+        callEl(r.chunkCalls, 'chunk');
+        for (const [rest] of r.fenomInc || []) { // {include 'file:chunks/x.tpl'} → файл по точному пути или суффиксу
+          const low = String(rest).toLowerCase();
+          let t = pathIdx.get('/' + low);
+          if (!t) { const nd = nodes.find((x) => x.p.toLowerCase().endsWith('/' + low)); t = nd && nd.id; }
+          if (t) add(t, 'i');
+        }
+      }
     }
     n.edges = [...edges.entries()].sort((a, b) => a[0] - b[0]);
   }
@@ -199,6 +229,7 @@ function buildIndex(ctx) {
     if (n.cl.over) node.over = n.cl.over;
     if (n.cl.module) node.module = n.cl.module;
     if (n.cl.view) node.view = n.cl.view;
+    if (n.cl.el) node.el = n.cl.el;
     if (n.cl.lang) { node.lang = n.cl.lang; node.mess = r.mess; return node; }
     if (n.cl.langlv) { node.langlv = n.cl.langlv; node.mess = r.mess; return node; }
     for (const k of ['ns', 'decls', 'funcs', 'consts', 'comps', 'mods', 'events', 'fires', 'msgs', 'ark', 'apk']) {
@@ -206,6 +237,10 @@ function buildIndex(ctx) {
     }
     // Laravel: данные разбора и директивы Blade (imports — для разрешения имён в операциях)
     for (const k of ['routes', 'binds', 'ctxBinds', 'models', 'migs', 'views', 'routeRefs', 'langRefs', 'cmds', 'sched', 'ext', 'inc', 'comp', 'each', 'sec', 'yld', 'langs', 'vars', 'imports']) {
+      if (r[k] && (Array.isArray(r[k]) ? r[k].length : r[k])) node[k] = r[k];
+    }
+    // MODX: теги tpl-файлов и вызовы элементов из PHP
+    for (const k of ['snippets', 'chunks', 'placeholders', 'settings', 'tvs', 'tags', 'fenomInc', 'fenomExt', 'snipCalls', 'chunkCalls']) {
       if (r[k] && (Array.isArray(r[k]) ? r[k].length : r[k])) node[k] = r[k];
     }
     return node;
