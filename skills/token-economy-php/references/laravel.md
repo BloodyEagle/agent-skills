@@ -59,3 +59,32 @@ PHP-файлы проекта и Blade-шаблоны `resources/views/**/*.blad
 ## Кэш
 
 Тот же `.bx-cache` (формат индекса — версия 2). После обновления скилла при подозрении на устаревший разбор удали папку или вызови `build`. В Laravel-проекте кэш лежит в корне проекта, в git он не попадает (внутри `.gitignore` со звёздочкой).
+
+---
+
+# Laravel: правила и профильные операции
+
+Этот раздел — фреймворк-часть SKILL.md: он актуален, только когда `info` определил режим Laravel.
+
+## Правило (строго)
+
+Вопросы про Laravel решай профильными операциями, а не чтением каталогов и не запуском artisan:
+- каталог маршрутов и их имена — `routes` (фильтры `uri`, `name`, `controller`); какой контроллер обслуживает URL — `route`;
+- модель Eloquent: таблица, колонки из миграций, `fillable`, связи и обратные связи, кто использует — `model`;
+- привязки контейнера (`bind`/`singleton`/`scoped`/`instance`, контекстные `when…needs…give`) и инжекции через конструктор — `container`;
+- Blade-шаблон: директивы, переменные, кто расширяет и откуда рендерится — `blade`;
+- artisan-команды и расписание — `console`.
+
+Общие операции в Laravel-проекте дополняются: `route` для URL показывает маршрут → контроллер и метод с сигнатурой → рендеримый view; `lang` ищет ключи `lang/<код>/<группа>.php` (и `__('…')` в коде, `@lang` в Blade) по ключу и по тексту во всех локалях; `table` показывает Eloquent-модель и миграции; `outline` — директивы Blade и связи модели; `symbol`/`deps`/`rdeps`/`path`/`node`/`stats` работают как в Битриксе.
+
+## Примеры команд
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=routes name=users
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=routes controller=PostController
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=model name=Post
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=model table=order_items
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=container type=App\Contracts\PaymentGateway
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=blade name=layouts.app
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=console
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=route url=/users/5
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=lang query='Добавить в корзину'

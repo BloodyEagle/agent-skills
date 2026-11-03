@@ -52,3 +52,51 @@
 ## Маршрут по URL (route)
 
 Порядок проверки в Битриксе: физический файл (`…/index.php`, `….php`), затем правила `urlrewrite.php` по порядку (срабатывает первое подходящее). Условия переводятся из PCRE в JavaScript: простые выражения совпадают, сложные (именованные группы, `\h`, рекурсия, флаг `u`) могут отличаться.
+
+---
+
+# Битрикс: правила и профильные операции
+
+Этот раздел — фреймворк-часть SKILL.md: он актуален, только когда `info` определил режим Битрикса.
+
+## Правила Битрикса (строго)
+
+1. Вопросы про Битрикс решай профильными операциями, а не чтением каталогов:
+   - компонент (файлы, параметры, шаблоны, переопределения в шаблоне сайта, где вызывается) — `component`;
+   - кто обрабатывает событие или какие события есть — `events`;
+   - где задан или используется текст сообщения — `lang` (ищет и по ключу, и по самому тексту);
+   - какой файл обслуживает URL — `route`;
+   - таблица БД (колонки, ключи, где встречается в коде) — `table`.
+2. Ядро Битрикса (`bitrix/modules/main`, `bitrix/components/bitrix` и т. п.) по умолчанию в индекс не входит. Сигнатуру класса ядра или параметры штатного компонента смотри с `"core":true` через `outline` / `symbol` / `component`. Файлы ядра целиком не читай.
+3. Файл шаблона компонента целиком не читай, пока не понадобилась его вёрстка: `outline` покажет, какие ключи `$arResult` и `$arParams` он использует и какие компоненты вызывает.
+
+## Старое API (до D7) и D7
+
+Оба стиля поддерживаются в одном индексе. Для старого API учтено: глобальные классы без `namespace` (`CIBlockElement`), методы в базовых `CAll*`-классах, варианты классов под разные СУБД (`classes/mysql`, `mssql`, `oracle`: основным считается не-mssql/oracle, остальные скрыты, `"all":true` в `symbol` показывает все), синтаксис PHP 5 (`Array()`, `var`, `&`-возвраты, конструкторы по имени класса, альтернативный синтаксис `if: endif;`, короткие теги `<? ?>`), модули с `include.php`, подключаемые области сайта.
+
+## Операции
+
+component — идентификатор вида `ns:name` (можно без пространства имён, если имя уникально). Показывает расположение, файлы, параметры из `.parameters.php`, класс, шаблоны (собственные и переопределённые по сайтам), все вызовы с указанием шаблона. Для штатных компонентов без `core` работает по переопределениям и вызовам.
+
+events — обработчики событий и вызовы `GetModuleEvents`: `модуль:Событие  вид  обработчик  файл:строка`. Без `query` — сводка по событиям, с `query` — фильтр по части события, класса или пути. Находит регистрации в коде и в `install/index.php` модулей.
+
+lang — по ключу (`CAT_LIST_TITLE`) или по тексту (`список товаров`): значения во всех языках, файлы и места использования.
+
+route — какой файл обслуживает URL: физический файл или подходящие правила `urlrewrite.php`.
+
+table — имя таблицы БД: D7-класс и поля (`getTableName` / `getMap`), схема из `install/db/mysql/install.sql` модулей (колонки и ключи), файлы, где имя таблицы встречается. Без точного совпадения подскажет похожие имена. В Laravel-режиме `table` показывает Eloquent-модель и миграции.
+
+## Примеры команд
+
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=search query=OnAfterIBlockElementAdd path=local
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name=Vendor\Catalog\ProductTable
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name='CIBlockElement::GetList' core=true
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=local/components/vendor/cat.list/class.php
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=CIBlockElement inherit=true core=true
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=table name=b_acme_item
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=component id=bitrix:news.list
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=events query=OnSaleOrderSaved
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=lang query='Добавить в корзину'
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=route url=/catalog/item-1/
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=rdeps file=local/php_interface/include/helpers.php depth=2
+    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=read file=local/php_interface/init.php offset=1 limit=120
