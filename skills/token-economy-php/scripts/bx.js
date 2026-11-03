@@ -10,6 +10,7 @@ const { posix, listFiles, readText, encodeText, writeAtomic } = require('./lib/f
 const { makeCtx, ensureIndex, buildIndex, docPath, classifyFor, CACHE_DIR } = require('./lib/index');
 const { classify, pcreToRegExp, resolveInclude } = require('./lib/bitrix');
 const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams } = require('./lib/php');
+const { detectModx } = require('./lib/detect');
 const {
   composerFramework, composerNamespace, structureVersion, modelTable, viewNameToDoc, routeUriToRegExp,
 } = require('./lib/laravel');
@@ -39,7 +40,7 @@ const out = (...lines) => console.log(lines.join('\n'));
 const short = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 // подсказка про ядро Битрикса уместна только в режиме Битрикса
 const coreHint = () => (ctx.mode === 'bitrix' && !ctx.core ? ' (ядро Битрикса не индексируется; "core":true включит его)' : '');
-const EDGE = { x: 'component', t: 'template', i: 'include', c: 'class', f: 'function', l: 'lang', e: 'event handler', m: 'module' };
+const EDGE = { x: 'component', t: 'template', i: 'include', c: 'class', f: 'function', l: 'lang', e: 'event handler', m: 'module', s: 'snippet', h: 'chunk' };
 
 function safeAbs(rel) {
   const abs = path.resolve(ctx.root, rel);
@@ -68,7 +69,9 @@ function findNode(idx, q, allowList) {
   if (r) return r;
   r = pick(nodes.filter((n) => n.view && n.view.name.toLowerCase() === lq)); // Blade: layouts.app
   if (r) return r;
-  if (/^[\w.-]+:[\w.-]+$/.test(q)) { // идентификатор компонента ns:name
+  if (/^[\w.-]+:[\w.-]+$/.test(q)) { // идентификатор компонента ns:name или элемента MODX ns:name
+    r = pick(nodes.filter((n) => n.el && n.el.id.toLowerCase() === lq));
+    if (r) return r;
     r = pick(nodes.filter((n) => n.comp && n.comp.id.toLowerCase() === lq && !n.lang && (n.comp.part === 'class.php' || n.comp.part === 'component.php')));
     if (r) return r;
   }
@@ -212,6 +215,26 @@ const ops = {
       if (d.cmds.length || d.sched.length) lines.push(`команды: ${d.cmds.length}, расписание: ${d.sched.length} (op=console)`);
     } else if (ctx.mode === 'bitrix') {
       lines.push(`корень сайта: ${ctx.docroot || '.'}`);
+    } else if (ctx.mode === 'modx') {
+      const ed = detectModx(ctx.root);
+      lines.push(`проект MODX ${ed === 'revolution' ? 'Revolution' : 'Evolution'}`);
+      let ver = null;
+      try {
+        const cj = JSON.parse(fs.readFileSync(path.join(ctx.root, 'core', 'composer.json'), 'utf8'));
+        if (cj && cj.version) ver = cj.version;
+      } catch (e) { /* нет composer.json в core */ }
+      if (!ver && ed === 'evolution') {
+        try {
+          const s = fs.readFileSync(path.join(ctx.root, 'manager', 'includes', 'version.inc.php'), 'latin1');
+          const m = /modx_version\s*=\s*['"]([^'"]+)/.exec(s);
+          if (m) ver = m[1];
+        } catch (e) { /* нет version.inc.php */ }
+      }
+      if (ver) lines.push('версия: ' + ver);
+      const extras = new Set();
+      for (const n of idx.nodes) if (n.el) extras.add(n.el.ns);
+      lines.push(`файловых элементов: ${idx.nodes.filter((n) => n.el).length} (extras: ${[...extras].join(', ') || 'нет'}), tpl-файлов: ${idx.nodes.filter((n) => (n.kind || '').startsWith('tpl')).length}`);
+      lines.push('ВНИМАНИЕ: сниппеты, плагины, чанки и шаблоны, созданные в БД, файловому индексу недоступны — ищи их вызовы тегами через search (например query=[[$) или op=element / op=tpl по файловым элементам.');
     } else {
       lines.push('CMS/фреймворк не определена — универсальный режим (только общие операции PHP)');
     }
@@ -380,6 +403,11 @@ const ops = {
       if (n.yld) lines.push('  yield: ' + keysOnly(n.yld).join(', '));
       if (n.vars) lines.push('  vars: ' + n.vars.join(', '));
     }
+    if (n.el) lines.push('  элемент: ' + n.el.kind + ' ' + n.el.id);
+    if (n.snippets) lines.push('  сниппеты: ' + keysOnly(n.snippets).slice(0, 8).join(', '));
+    if (n.chunks) lines.push('  чанки: ' + keysOnly(n.chunks).slice(0, 8).join(', '));
+    if (n.snipCalls) lines.push('  runSnippet: ' + keysOnly(n.snipCalls).slice(0, 8).join(', '));
+    if (n.chunkCalls) lines.push('  getChunk: ' + keysOnly(n.chunkCalls).slice(0, 8).join(', '));
     if (n.routes) lines.push('  маршрутов: ' + n.routes.length + ' (op=routes)');
     if (n.binds) lines.push('  привязок контейнера: ' + n.binds.length + (n.ctxBinds ? ', контекстных: ' + n.ctxBinds.length : '') + ' (op=container)');
     if (n.models) lines.push('  модели: ' + n.models.map((m) => m.cls).join(', ') + ' (op=model)');
@@ -412,6 +440,9 @@ const ops = {
     if (ctx.mode === 'laravel') {
       const d = laravelScan(idx);
       lines.push(`Laravel: маршрутов ${d.routes.length}, моделей ${d.models.length}, views ${idx.nodes.filter((n) => n.view).length}, миграций ${d.migs.length}, команд ${d.cmds.length}, расписание ${d.sched.length}`);
+    }
+    if (ctx.mode === 'modx') {
+      lines.push(`MODX: файловых элементов ${idx.nodes.filter((n) => n.el).length}, tpl-файлов ${idx.nodes.filter((n) => (n.kind || '').startsWith('tpl')).length} (операции element, tpl)`);
     }
     out(...lines);
   },
@@ -458,6 +489,12 @@ const ops = {
       if (n.sec) lines.push('  section: ' + keysOnly(n.sec).join(', '));
       if (n.vars) lines.push('  vars: ' + n.vars.join(', '));
       if (n.langs) lines.push('  @lang: ' + keysOnly(n.langs).join(', '));
+    }
+    if (ctx.mode === 'modx' && (n.snippets || n.chunks || n.placeholders)) {
+      if (n.snippets) lines.push('сниппеты: ' + n.snippets.map(([v, l]) => v + ' L' + l).join(', '));
+      if (n.chunks) lines.push('чанки: ' + n.chunks.map(([v, l]) => '$' + v + ' L' + l).join(', '));
+      if (n.placeholders) lines.push('плейсхолдеры: ' + keysOnly(n.placeholders).join(', '));
+      if (n.settings) lines.push('настройки: ' + keysOnly(n.settings).join(', '));
     }
     if (n.routes) {
       lines.push('маршруты (' + n.routes.length + '):');
@@ -586,6 +623,7 @@ const ops = {
   route() {
     let url = String(args.url || '').trim();
     if (!url) fail('укажите url');
+    if (ctx.mode === 'modx') fail('в MODX соответствие URL → ресурс хранится в БД (modx_site_content); файловый разбор маршрутов не применим. Ищи шаблон ресурса в БД, файловые элементы — op=element / op=tpl');
     if (ctx.mode === 'laravel') { // Laravel: URL → маршрут → контроллер → view
       const idx = ensureIndex(ctx);
       const d = laravelScan(idx);
@@ -928,6 +966,51 @@ const ops = {
     out(...lines);
   },
 
+  // ---------- MODX ----------
+
+  element() {
+    const q = String(args.name || '').trim();
+    if (!q) fail('укажите name файлового элемента (например hello или acme:hello)');
+    const idx = ensureIndex(ctx);
+    const lq = q.toLowerCase();
+    const els = idx.nodes.filter((n) => n.el && (n.el.name.toLowerCase() === lq || n.el.id.toLowerCase() === lq || n.el.id.toLowerCase().endsWith(':' + lq)));
+    if (!els.length) {
+      const names = [...new Set(idx.nodes.filter((n) => n.el).map((n) => n.el.id))];
+      const like = names.filter((x) => x.toLowerCase().includes(lq));
+      return out(`файловый элемент «${q}» не найден` + (like.length ? '; похожие: ' + like.slice(0, 10).join(', ') : names.length ? '' : '; файловых элементов в индексе нет (элемент в БД или extras не в файлах)'));
+    }
+    for (const n of els.slice(0, 5)) {
+      const d0 = (n.decls || [])[0];
+      console.log(`${n.el.kind} ${n.el.id}  (${n.p}${d0 ? ':' + d0.line + '-' + d0.end : ''})`);
+      const rev = bfs(idx, n.id, 1, true);
+      console.log('  вызывают: ' + (rev.length ? rev.slice(0, 10).map(([, nn, k]) => `${nn.p} (${EDGE[k]})`).join(', ') : '—'));
+      if (els.length > 5) console.log(`… ещё ${els.length - 5}`);
+    }
+  },
+
+  tpl() {
+    const idx = ensureIndex(ctx);
+    const n = findNode(idx, args.name || args.file);
+    const lines = [`${n.p}  [${n.kind}]  (${n.loc} строк, ${n.enc})`];
+    if (n.fenomInc) lines.push('fenom include: ' + n.fenomInc.map(([v, l]) => v + ' L' + l).join(', '));
+    if (n.fenomExt) lines.push('fenom extends: ' + n.fenomExt.map(([v, l]) => v + ' L' + l).join(', '));
+    if (n.settings) lines.push('настройки [[++]]: ' + keysOnly(n.settings).join(', '));
+    if (n.tvs) lines.push('TV [[*]]: ' + keysOnly(n.tvs).join(', '));
+    if (n.placeholders) lines.push('плейсхолдеры [[+]]: ' + keysOnly(n.placeholders).join(', '));
+    if (n.snippets) {
+      lines.push(`вызовы сниппетов (${n.snippets.length}):`);
+      for (const [nm, l] of n.snippets.slice(0, 30)) lines.push(`  L${l}  [[${nm}]]`);
+    }
+    if (n.chunks) {
+      lines.push(`чанки (${n.chunks.length}):`);
+      for (const [nm, l] of n.chunks.slice(0, 30)) lines.push(`  L${l}  [[$${nm}]]`);
+    }
+    if (!n.snippets && !n.chunks && !n.placeholders && !n.tags) lines.push('(тегов MODX не найдено)');
+    const rev = bfs(idx, n.id, 1, true);
+    lines.push('связаны с ним: ' + (rev.length ? rev.slice(0, 10).map(([, nn, k]) => `${nn.p} (${EDGE[k]})`).join(', ') : '—'));
+    out(...lines);
+  },
+
   create() {
     const f = args.file;
     if (!f || args.text === undefined) fail('нужны file и text');
@@ -1048,16 +1131,22 @@ ops.selftest = function () {
   };
   const dm = require('./lib/detect');
   const dBitrix = mk(['bitrix/modules/main/include.php']);
+  const dModxRev = mk(['core/config/config.inc.php', 'manager/index.php', 'connectors/index.php']);
+  const dModxEvo = mk(['manager/index.php', 'includes/config.inc.php', 'assets/site.css']);
   const dLaravel = mk(['artisan', 'composer.json']);
   fs.writeFileSync(path.join(dLaravel, 'composer.json'), '{"require":{"laravel/framework":"^12.0"}}');
   const dGeneric = mk(['src/app.php']);
   chk('режим: Битрикс по маркеру', dm.detectMode(dBitrix) === 'bitrix', dm.detectMode(dBitrix));
+  chk('режим: MODX Revolution по маркерам', dm.detectMode(dModxRev) === 'modx' && dm.detectModx(dModxRev) === 'revolution', dm.detectMode(dModxRev));
+  chk('режим: MODX Evolution по маркерам', dm.detectMode(dModxEvo) === 'modx' && dm.detectModx(dModxEvo) === 'evolution', dm.detectMode(dModxEvo));
   chk('режим: Laravel по artisan/composer', dm.detectMode(dLaravel) === 'laravel', dm.detectMode(dLaravel));
   chk('режим: универсальный без маркеров', dm.detectMode(dGeneric) === 'generic', dm.detectMode(dGeneric));
   fs.rmSync(dBitrix, { recursive: true, force: true });
+  fs.rmSync(dModxRev, { recursive: true, force: true });
+  fs.rmSync(dModxEvo, { recursive: true, force: true });
   fs.rmSync(dLaravel, { recursive: true, force: true });
   fs.rmSync(dGeneric, { recursive: true, force: true });
-  chk('режим: таблица профильных операций', OP_MODES.routes.join() === 'laravel' && OP_MODES.lang.join() === 'bitrix,laravel' && OP_MODES.route.join() === 'bitrix,laravel' && !OP_MODES.symbol && !OP_MODES.outline, JSON.stringify(OP_MODES));
+  chk('режим: таблица профильных операций', OP_MODES.routes.join() === 'laravel' && OP_MODES.lang.join() === 'bitrix,laravel' && OP_MODES.route.join() === 'bitrix,laravel,modx' && OP_MODES.element.join() === 'modx' && !OP_MODES.symbol && !OP_MODES.outline, JSON.stringify(OP_MODES));
 
   // Битрикс-структуры
   const lang = parseLang('<?php $MESS["WELCOME"] = "Привет, мир!";');
@@ -1140,6 +1229,26 @@ ops.selftest = function () {
   const sch = lv.parseLaravelPhp('<?php Schedule::command("app:sync")->dailyAt("02:00")->withoutOverlapping();');
   chk('laravel: расписание', (sch.sched || []).length === 1 && sch.sched[0].cmd === 'app:sync' && sch.sched[0].freq.includes("dailyAt('02:00')"), JSON.stringify(sch).slice(0, 300));
 
+  // MODX
+  const md = require('./lib/modx');
+  const mc = md.classifyModx('/core/components/acme/elements/snippets/hello.php');
+  const mc2 = md.classifyModx('/core/model/modx/modx.class.php');
+  const mc3 = md.classifyModx('/templates/base.tpl');
+  chk('modx: файловый элемент и ядро', !!mc.el && mc.el.id === 'acme:hello' && mc.el.kind === 'snippet' && mc.origin === 'custom' && mc2.origin === 'core', JSON.stringify([mc, mc2]));
+  chk('modx: tpl-путь', mc3.tag === 'tpl base', JSON.stringify(mc3));
+  const tplSrc = [
+    '<!doctype html>',
+    '[[!pdoMenu? &level=`2`]]',
+    '[[$headerChunk]]',
+    "{include 'file:chunks/nav.tpl'}",
+    '[[++site_name]] [[*pagetitle]] [[+content]]',
+    '[[helloSnippet]]',
+  ].join('\n');
+  const mt = md.parseTpl(tplSrc);
+  chk('modx: разбор tpl', (mt.snippets || []).some(([n]) => n === 'pdoMenu') && (mt.snippets || []).some(([n]) => n === 'helloSnippet') && mt.chunks[0][0] === 'headerChunk' && mt.settings[0][0] === 'site_name' && mt.tvs[0][0] === 'pagetitle' && mt.placeholders[0][0] === 'content' && mt.fenomInc[0][0] === 'chunks/nav.tpl', JSON.stringify(mt).slice(0, 400));
+  const mp = md.parseModxPhp('<?php\n$out = $modx->runSnippet("hello", ["n" => 1]);\n$c = $modx->getChunk(\'hdr\');');
+  chk('modx: вызовы из PHP', mp.snipCalls[0][0] === 'hello' && mp.chunkCalls[0][0] === 'hdr', JSON.stringify(mp));
+
   if (bad.length) {
     console.log('\nпровалено: ' + bad.join(', '));
     process.exit(1);
@@ -1150,8 +1259,9 @@ ops.selftest = function () {
 // профильные операции доступны только в своих режимах; общие (lang/route/table) — в Битриксе и Laravel
 const OP_MODES = {
   component: ['bitrix'], events: ['bitrix'],
-  lang: ['bitrix', 'laravel'], route: ['bitrix', 'laravel'], table: ['bitrix', 'laravel'],
+  lang: ['bitrix', 'laravel'], route: ['bitrix', 'laravel', 'modx'], table: ['bitrix', 'laravel'],
   routes: ['laravel'], model: ['laravel'], container: ['laravel'], blade: ['laravel'], console: ['laravel'],
+  element: ['modx'], tpl: ['modx'],
 };
 if (!args.op) fail('укажите op: ' + Object.keys(ops).join(' | '));
 if (!ops[args.op]) fail('неизвестный op: ' + args.op);
