@@ -12,9 +12,10 @@ const path = require('path');
 const { posix, detectDocroot, listFiles, readText } = require('./fsx');
 const { parsePhp, parseLang } = require('./php');
 const { classify, resolveInclude } = require('./bitrix');
-const { detectLaravel, laravelClassify, parseBlade, parseLaravelPhp, parseLaravelLang, viewNameToDoc } = require('./laravel');
+const { laravelClassify, parseBlade, parseLaravelPhp, parseLaravelLang, viewNameToDoc } = require('./laravel');
+const { detectMode } = require('./detect');
 
-const VERSION = 2; // формат кэша и индекса; при смене разбора увеличить
+const VERSION = 3; // формат кэша и индекса; при смене разбора увеличить
 const CACHE_DIR = '.bx-cache';
 const KIND_ORDER = ['x', 't', 'i', 'c', 'e', 'm', 'f', 'l'];
 
@@ -30,12 +31,14 @@ function saveJson(p, obj) {
 }
 
 /**
- * Контекст проекта: корень, корень сайта, префикс путей, режим core.
+ * Контекст проекта: корень, режим (bitrix | laravel | generic), корень сайта, префикс путей, режим core.
+ * Корень сайта ищется только в режиме Битрикса; в остальных весь проект — рабочая область.
  */
 function makeCtx(opts) {
   const root = path.resolve(opts.root || '.');
-  const docroot = opts.docroot !== undefined ? opts.docroot : detectDocroot(root);
-  return { root, docroot, prefix: docroot ? docroot + '/' : '', core: !!opts.core, laravel: detectLaravel(root) };
+  const mode = opts.mode !== undefined ? opts.mode : detectMode(root);
+  const docroot = opts.docroot !== undefined ? opts.docroot : (mode === 'bitrix' ? detectDocroot(root) : '');
+  return { root, mode, docroot, prefix: docroot ? docroot + '/' : '', core: !!opts.core, laravel: mode === 'laravel' };
 }
 
 const docPath = (ctx, rel) => '/' + (ctx.prefix ? rel.slice(ctx.prefix.length) : rel);
@@ -192,7 +195,7 @@ function buildIndex(ctx) {
     }
     return node;
   });
-  const index = { v: VERSION, core: ctx.core, docroot: ctx.docroot, laravel: ctx.laravel, nodes: out };
+  const index = { v: VERSION, core: ctx.core, docroot: ctx.docroot, mode: ctx.mode, nodes: out };
   saveJson(path.join(ctx.root, CACHE_DIR, 'index.json'), index);
   saveJson(cacheFile, { v: VERSION, files: fresh });
   return { index, reparsed };
@@ -203,7 +206,7 @@ function buildIndex(ctx) {
  */
 function ensureIndex(ctx) {
   const idx = loadJson(path.join(ctx.root, CACHE_DIR, 'index.json'));
-  if (idx && idx.v === VERSION && idx.core === ctx.core && idx.docroot === ctx.docroot && !!idx.laravel === ctx.laravel) {
+  if (idx && idx.v === VERSION && idx.core === ctx.core && idx.docroot === ctx.docroot && idx.mode === ctx.mode) {
     const files = candidateFiles(ctx);
     const have = new Map(idx.nodes.map((n) => [n.p, n]));
     let ok = files.length === have.size;
