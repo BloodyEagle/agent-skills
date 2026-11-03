@@ -1,6 +1,6 @@
 ---
 name: token-economy-php
-description: Экономия токенов в любых PHP-проектах. Универсальный режим (CMS не определена) — поиск определений, граф классов и функций, оглавления, безопасное чтение и правка файлов в cp1251. Режим 1С-Битрикс (старое API до D7 и D7) — компоненты, события, языковые сообщения, схема таблиц, маршруты. Режим Laravel 8–13 — маршруты, модели Eloquent, привязки контейнера, Blade, команды и расписание. Все команды — PowerShell.
+description: Экономия токенов в любых PHP-проектах. Универсальный режим (CMS не определена) — поиск определений, граф классов и функций, оглавления, безопасное чтение и правка файлов в cp1251. Режим 1С-Битрикс (старое API до D7 и D7) — компоненты, события, языковые сообщения, схема таблиц, маршруты. Режим Laravel 8–13 — маршруты, модели Eloquent, привязки контейнера, Blade, команды и расписание. Режим MODX (Revolution/Evolution) — файловые элементы, теги шаблонов. Все команды — PowerShell.
 ---
 
 # Skill: token-economy-php
@@ -15,7 +15,7 @@ description: Экономия токенов в любых PHP-проектах.
     "properties": {
       "op": {
         "type": "string",
-        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | routes | model | container | blade | console | read | patch | create | build | selftest"
+        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | routes | model | container | blade | console | element | tpl | read | patch | create | build | selftest"
       },
       "payload": {
         "type": "object",
@@ -32,7 +32,7 @@ description: Экономия токенов в любых PHP-проектах.
 ## Правила (строго)
 
 1. Один раз за разговор, прежде чем читать или править файлы, вызови `info`: он назовёт режим проекта (Битрикс / Laravel / «CMS не определена — универсальный»), кодировки и состав файлов.
-2. Режим определяет доступные профильные операции: Битрикс — правила и операции Битрикса в `references/bitrix.md` (прочитай перед их использованием); Laravel — в `references/laravel.md`; «CMS не определена» — универсальный режим: профильные операции не вызывай, работай общими (`search`, `outline`, `symbol`, `deps`, `rdeps`, `path`, `node`, `stats`, `read`, `patch`, `create`).
+2. Режим определяет доступные профильные операции: Битрикс — правила и операции Битрикса в `references/bitrix.md` (прочитай перед их использованием); Laravel — в `references/laravel.md`; MODX — в `references/modx.md` (сниппеты/чанки/шаблоны в БД файловому индексу недоступны — об этом предупреждает `info`); «CMS не определена» — универсальный режим: профильные операции не вызывай, работай общими (`search`, `outline`, `symbol`, `deps`, `rdeps`, `path`, `node`, `stats`, `read`, `patch`, `create`).
 3. Если `info` показал файлы в cp1251, любые файлы с кириллицей читай только операцией `read`, правь только `patch`, создавай только `create`. Штатные инструменты чтения и записи портят cp1251 (кириллица превращается в мусор, и файл ломается).
 4. Файл меньше 300 строк читай напрямую (в cp1251 — через `read`). Файл от 300 строк — сначала `outline`, затем точечное чтение диапазона (`read` с `offset` и `limit` либо Read(offset, limit)).
 5. Где определён класс, метод, функция, константа или ORM-таблица — `symbol` (метод ищется и по цепочке наследования, в базовых классах). Где встречается текст — `search`.
@@ -68,6 +68,7 @@ deps / rdeps / path / node / stats — граф связей. Типы связ�
 | component / template | `IncludeComponent("ns:name", …)` → файл компонента и шаблона | Битрикс |
 | event handler / module / lang | обработчики событий, подключение модулей, языковые файлы | Битрикс |
 | template / lang (Blade) | `view('name')`, `@extends`, `__('group.key')` → шаблоны и локали | Laravel |
+| snippet / chunk / include | теги `[[!snippet]]`/`[[$chunk]]`, `runSnippet`/`getChunk`, Fenom `file:` → файловые элементы | MODX |
 
 ### Изменение
 
@@ -141,7 +142,7 @@ patch и create (`@`-файл параметров — единственный 
 
     {"op":"create","file":"src/Support/helpers2.php","text":"<?php\nfunction hello() {}\n"}
 
-Примеры и правила для режимов фреймворков — в references: `references/bitrix.md` (Битрикс: правила, профильные операции, устройство индекса и ограничения), `references/laravel.md` (Laravel: правила, профильные операции, устройство и ограничения). Режим текущего проекта называет `info`.
+Примеры и правила для режимов фреймворков — в references: `references/bitrix.md` (Битрикс: правила, профильные операции, устройство индекса и ограничения), `references/laravel.md` (Laravel), `references/modx.md` (MODX). Режим текущего проекта называет `info`.
 
 Самопроверка скрипта (индекс проекта не нужен):
 
