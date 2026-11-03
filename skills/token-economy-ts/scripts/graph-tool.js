@@ -1032,6 +1032,90 @@ function walk(graph, startId, depth, reverse, why) {
 const op = args.op;
 if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats');
 
+if (op === 'selftest') {
+    // Самопроверка всех скриптов скилла на временном мини-проекте: граф реального проекта не нужен.
+    const os = require('os');
+    const cp = require('child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'te-ts-'));
+    const w = (rel, text) => {
+        fs.mkdirSync(path.dirname(path.join(dir, rel)), {recursive: true});
+        fs.writeFileSync(path.join(dir, rel), text);
+    };
+    w('package.json', '{"name":"selftest-app","dependencies":{"fake-lib":"^1.0.0"}}');
+    w('node_modules/fake-lib/package.json', '{"name":"fake-lib","version":"1.0.0","types":"./index.d.ts"}');
+    w('node_modules/fake-lib/index.d.ts', 'export declare class Widget {\n    render(x: number): string;\n}\n');
+    w('src/app/app.component.ts', "import {Component} from './nothing';\n@Component({selector: 'app-root', templateUrl: './app.component.html'})\nexport class AppComponent {}\n");
+    w('src/app/app.component.html', '<app-profile></app-profile>\n{{ title | bold }}\n');
+    w('src/app/profile/profile.component.ts', "@Component({selector: 'app-profile', template: '<app-widget></app-widget>'})\nexport class ProfileComponent {}\n");
+    w('src/app/widget/widget.component.ts', "@Component({selector: 'app-widget', template: 'w'})\nexport class WidgetComponent {}\n");
+    w('src/app/pipes/bold.pipe.ts', "@Pipe({name: 'bold'})\nexport class BoldPipe {}\n");
+    w('src/app/services/user.service.ts', 'export class UserService {\n    save(id: number): number {\n        return 1;\n    }\n}\n');
+    w('src/app/styles/_vars.scss', '$primary: #333;\n@mixin card {\n    border: 1px solid;\n}\n');
+    // execFileSync: ненулевой код выхода (ожидаем для scaffold-helper) отдаём как stdout
+    const run = (script, argv) => {
+        try {
+            return cp.execFileSync(process.execPath, [path.join(__dirname, script), ...argv], {cwd: dir, encoding: 'utf8'});
+        } catch (e) {
+            return String(e.stdout || '');
+        }
+    };
+    const json = (script, argv) => JSON.parse(run(script, argv));
+    let total = 0;
+    const bad = [];
+    const chk = (name, cond, extra) => {
+        total++;
+        console.log((cond ? 'ok    ' : 'FAIL  ') + name + (cond ? '' : ' — ' + String(extra).slice(0, 200)));
+        if (!cond) bad.push(name);
+    };
+
+    // code-searcher
+    const s1 = json('code-searcher.js', ['query=ProfileComponent']);
+    chk('search: совпадение в .ts', !!s1.matches && s1.matches.some((m) => m.file.includes('profile.component.ts')), s1.error || JSON.stringify(s1));
+    const s2 = json('code-searcher.js', ['query=app-profile', 'ext=.html', 'files=1']);
+    chk('search: ext=.html + files=1', s2.files && s2.files.some((f) => f.file.includes('app.component.html')), s2.error || JSON.stringify(s2));
+
+    // graph-tool
+    const g1 = json('graph-tool.js', ['op=symbol', 'name=UserService']);
+    chk('graph: symbol → файл и строка', g1.definedIn && g1.definedIn.length === 1 && g1.definedIn[0].file.endsWith('user.service.ts') && g1.definedIn[0].line === 1, g1.error || JSON.stringify(g1));
+    const g2 = json('graph-tool.js', ['op=symbol', 'name=$primary']);
+    chk('graph: symbol $var в scss', g2.definedIn && g2.definedIn.some((d) => d.file.endsWith('_vars.scss')), g2.error || JSON.stringify(g2));
+    const g3 = json('graph-tool.js', ['op=selector', 'selector=app-profile']);
+    chk('graph: selector → файл и шаблоны', g3.file && g3.file.endsWith('profile.component.ts') && g3.usedInTemplates.some((t) => t.endsWith('app.component.html')), g3.error || JSON.stringify(g3));
+    const g4 = json('graph-tool.js', ['op=rdeps', 'file=src/app/profile/profile.component.ts', 'depth=2']);
+    const files4 = (g4.importedBy || []).map((x) => x.file);
+    chk('graph: rdeps через selector и templateUrl', files4.some((f) => f.endsWith('app.component.html')) && files4.some((f) => f.endsWith('app.component.ts')), g4.error || JSON.stringify(g4));
+    const g5 = json('graph-tool.js', ['op=deps', 'file=src/app/app.component.html']);
+    const files5 = (g5.imports || []).map((x) => x.file);
+    chk('graph: пайп в шаблоне → deps', files5.some((f) => f.endsWith('bold.pipe.ts')), g5.error || JSON.stringify(g5));
+
+    // symbol-index (outline)
+    const o1 = json('symbol-index.js', ['file=src/app/services/user.service.ts']);
+    chk('outline: методы класса', o1.outline && o1.outline.includes('save') && o1.count >= 2, o1.error || JSON.stringify(o1));
+
+    // sig-reader
+    const q1 = run('sig-reader.js', ['name=fake-lib#Widget', 'member=render']);
+    chk('sig: сигнатура члена из node_modules', q1.includes('render') && q1.includes('number'), q1);
+    const q2 = run('sig-reader.js', ['name=fake-lib#Widget', 'member=absent']);
+    chk('sig: ненайденный член → available', q2.includes('available') && q2.includes('render'), q2);
+
+    // edit-symbol
+    const svc = path.join(dir, 'src/app/services/user.service.ts');
+    const before = fs.readFileSync(svc, 'utf8');
+    const e1 = json('edit-symbol.js', ['file=src/app/services/user.service.ts', 'symbol=UserService.save', 'body=return 2;']);
+    chk('edit_symbol: dry-run не пишет файл', e1.ok === true && e1.dry === true && fs.readFileSync(svc, 'utf8') === before, JSON.stringify(e1));
+    const e2 = json('edit-symbol.js', ['file=src/app/services/user.service.ts', 'symbol=UserService.save', 'body=return 2;', 'dry=false']);
+    const after = fs.readFileSync(svc, 'utf8');
+    chk('edit_symbol: запись только тела', e2.ok === true && e2.written === true && after.includes('return 2;') && after.includes('save(id: number)'), JSON.stringify(e2));
+
+    // scaffold-helper: без локального ng — вежливый отказ, не падение
+    const sf = run('scaffold-helper.js', ['type=component', 'name=x']);
+    chk('generate: отказ без Angular CLI', sf.includes('Angular CLI не найден'), sf);
+
+    fs.rmSync(dir, {recursive: true, force: true});
+    console.log(bad.length ? '\nпровалено: ' + bad.join(', ') : '\nвсе проверки пройдены (' + total + ')');
+    process.exit(bad.length ? 1 : 0);
+}
+
 if (op === 'build') {
     const {graph, reparsed, ms} = buildGraph(null);
     emit({built: true, ...graph.stats, reparsed, ms});
