@@ -37,6 +37,8 @@ const ctx = makeCtx({ root: args.root, core: truthy(args.core) });
 function fail(msg) { console.log('Ошибка: ' + msg); process.exit(1); }
 const out = (...lines) => console.log(lines.join('\n'));
 const short = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+// подсказка про ядро Битрикса уместна только в режиме Битрикса
+const coreHint = () => (ctx.mode === 'bitrix' && !ctx.core ? ' (ядро Битрикса не индексируется; "core":true включит его)' : '');
 const EDGE = { x: 'component', t: 'template', i: 'include', c: 'class', f: 'function', l: 'lang', e: 'event handler', m: 'module' };
 
 function safeAbs(rel) {
@@ -83,7 +85,7 @@ function findNode(idx, q, allowList) {
   if (r) return r;
   r = pick(nodes.filter((n) => n.p.toLowerCase().includes(lq)));
   if (r) return r;
-  fail('не найдено в индексе: ' + q + (ctx.core ? '' : ' (ядро Битрикса не индексируется; добавьте "core":true)'));
+  fail('не найдено в индексе: ' + q + (ctx.mode === 'bitrix' && !ctx.core ? '; ядро не индексируется ("core":true включит его)' : ''));
 }
 
 function bfs(idx, start, depth, reverse) {
@@ -196,7 +198,6 @@ const ops = {
     const enc = { utf8: 0, cp1251: 0, ascii: 0 };
     for (const n of cust) enc[n.enc] = (enc[n.enc] || 0) + 1;
     const lines = [];
-    const isBx = fs.existsSync(path.join(dr, 'bitrix')) || fs.existsSync(path.join(dr, 'local'));
     if (ctx.mode === 'laravel') {
       const fw = composerFramework(ctx.root);
       const sv = structureVersion(ctx.root);
@@ -209,49 +210,61 @@ const ops = {
       const locales = [...new Set(idx.nodes.filter((n) => n.langlv).map((n) => n.langlv.code))];
       lines.push(`модели: ${d.models.length}, миграций: ${d.migs.length}, views: ${idx.nodes.filter((n) => n.view).length}, провайдеры: ${idx.nodes.filter((n) => n.kind === 'provider').length}, локали: ${locales.join(', ') || 'нет'}`);
       if (d.cmds.length || d.sched.length) lines.push(`команды: ${d.cmds.length}, расписание: ${d.sched.length} (op=console)`);
+    } else if (ctx.mode === 'bitrix') {
+      lines.push(`корень сайта: ${ctx.docroot || '.'}`);
     } else {
-      lines.push(`корень сайта: ${ctx.docroot || '.'}${isBx ? '' : '  (признаков Битрикса нет: bitrix/ и local/ не найдены)'}`);
+      lines.push('CMS/фреймворк не определена — универсальный режим (только общие операции PHP)');
     }
-    let ver = null;
-    try {
-      const v = fs.readFileSync(path.join(dr, 'bitrix/modules/main/classes/general/version.php'), 'latin1');
-      const m = /SM_VERSION["']\s*,\s*["']([\d.]+)/.exec(v);
-      if (m) ver = m[1];
-    } catch (e) { /* ядра может не быть */ }
-    if (ver) lines.push('версия Битрикса: ' + ver);
-    try {
-      const s = fs.readFileSync(path.join(dr, 'bitrix/.settings.php'), 'latin1');
-      const m = /['"]utf_mode['"]\s*=>\s*(?:array\s*\(|\[)\s*['"]value['"]\s*=>\s*(true|false)/.exec(s);
-      if (m) lines.push('utf_mode: ' + m[1] + '  (bitrix/.settings.php)');
-    } catch (e) { /* нет файла */ }
-    try {
-      const s = fs.readFileSync(path.join(dr, 'bitrix/php_interface/dbconn.php'), 'latin1');
-      if (/define\s*\(\s*["']BX_UTF["']\s*,\s*true/i.test(s)) lines.push('BX_UTF: true  (dbconn.php)');
-    } catch (e) { /* нет файла */ }
+    if (ctx.mode === 'bitrix') {
+      let ver = null;
+      try {
+        const v = fs.readFileSync(path.join(dr, 'bitrix/modules/main/classes/general/version.php'), 'latin1');
+        const m = /SM_VERSION["']\s*,\s*["']([\d.]+)/.exec(v);
+        if (m) ver = m[1];
+      } catch (e) { /* ядра может не быть */ }
+      if (ver) lines.push('версия Битрикса: ' + ver);
+      try {
+        const s = fs.readFileSync(path.join(dr, 'bitrix/.settings.php'), 'latin1');
+        const m = /['"]utf_mode['"]\s*=>\s*(?:array\s*\(|\[)\s*['"]value['"]\s*=>\s*(true|false)/.exec(s);
+        if (m) lines.push('utf_mode: ' + m[1] + '  (bitrix/.settings.php)');
+      } catch (e) { /* нет файла */ }
+      try {
+        const s = fs.readFileSync(path.join(dr, 'bitrix/php_interface/dbconn.php'), 'latin1');
+        if (/define\s*\(\s*["']BX_UTF["']\s*,\s*true/i.test(s)) lines.push('BX_UTF: true  (dbconn.php)');
+      } catch (e) { /* нет файла */ }
+    }
     let withNs = 0, legacy = 0;
     for (const n of cust) { if ((n.decls || []).length) { if (n.ns) withNs++; else legacy++; } }
-    if (ctx.mode === 'laravel') lines.push(`стиль кода: файлов с классами в namespace ${withNs}, глобальные классы ${legacy}`);
-    else lines.push(`стиль кода: файлов с классами в namespace (D7) ${withNs}, с глобальными классами (старое API) ${legacy}`);
+    if (ctx.mode === 'bitrix') lines.push(`стиль кода: файлов с классами в namespace (D7) ${withNs}, с глобальными классами (старое API) ${legacy}`);
+    else lines.push(`стиль кода: файлов с классами в namespace ${withNs}, глобальные классы ${legacy}`);
     lines.push(`кодировка PHP-файлов проекта: utf8 ${enc.utf8}, cp1251 ${enc.cp1251}, только ASCII ${enc.ascii}`);
     if (enc.cp1251 > 0) lines.push('ВНИМАНИЕ: есть файлы в cp1251. Читай их операцией read, правь операцией patch: штатные инструменты испортят кириллицу.');
-    const ls = (dir) => { try { return fs.readdirSync(path.join(dr, dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch (e) { return []; } };
-    const tpls = [...ls('local/templates').map((n) => 'local/templates/' + n), ...ls('bitrix/templates').map((n) => 'bitrix/templates/' + n)];
-    if (tpls.length) lines.push('шаблоны сайта: ' + tpls.join(', '));
-    const mods = [...ls('local/modules').map((n) => 'local/modules/' + n), ...ls('bitrix/modules').filter((n) => n.includes('.')).map((n) => 'bitrix/modules/' + n)];
-    if (mods.length) lines.push('свои модули: ' + mods.join(', '));
-    const nsList = [];
-    for (const base of ['local/components', 'bitrix/components']) {
-      for (const ns of ls(base)) { if (ns === 'bitrix') continue; nsList.push(`${base}/${ns} (${ls(base + '/' + ns).length})`); }
+    if (ctx.mode === 'bitrix') {
+      const ls = (dir) => { try { return fs.readdirSync(path.join(dr, dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch (e) { return []; } };
+      const tpls = [...ls('local/templates').map((n) => 'local/templates/' + n), ...ls('bitrix/templates').map((n) => 'bitrix/templates/' + n)];
+      if (tpls.length) lines.push('шаблоны сайта: ' + tpls.join(', '));
+      const mods = [...ls('local/modules').map((n) => 'local/modules/' + n), ...ls('bitrix/modules').filter((n) => n.includes('.')).map((n) => 'bitrix/modules/' + n)];
+      if (mods.length) lines.push('свои модули: ' + mods.join(', '));
+      const nsList = [];
+      for (const base of ['local/components', 'bitrix/components']) {
+        for (const ns of ls(base)) { if (ns === 'bitrix') continue; nsList.push(`${base}/${ns} (${ls(base + '/' + ns).length})`); }
+      }
+      if (nsList.length) lines.push('свои компоненты: ' + nsList.join(', '));
+      const files = ['local/php_interface/init.php', 'bitrix/php_interface/init.php', 'local/php_interface/dbconn.php', 'bitrix/php_interface/dbconn.php', 'urlrewrite.php', 'local/routes']
+        .filter((f) => fs.existsSync(path.join(dr, f)));
+      if (files.length) lines.push('найдено: ' + files.join(', '));
     }
-    if (nsList.length) lines.push('свои компоненты: ' + nsList.join(', '));
-    const files = ['local/php_interface/init.php', 'bitrix/php_interface/init.php', 'local/php_interface/dbconn.php', 'bitrix/php_interface/dbconn.php', 'urlrewrite.php', 'local/routes']
-      .filter((f) => fs.existsSync(path.join(dr, f)));
     if (ctx.mode === 'laravel') {
       const lf = ['routes/web.php', 'routes/api.php', 'routes/console.php', 'app/Models', 'app/Providers', 'app/Console/Kernel.php', 'app/Http/Kernel.php', 'bootstrap/app.php', 'database/migrations', 'resources/views', 'lang', 'config/app.php', 'composer.json']
         .filter((f) => fs.existsSync(path.join(ctx.root, f)));
       if (lf.length) lines.push('найдено: ' + lf.join(', '));
-    } else if (files.length) lines.push('найдено: ' + files.join(', '));
-    lines.push(`в индексе файлов: ${idx.nodes.length} (${cust.length} своих)${ctx.core ? '' : '; ядро не индексируется ("core":true включит его)'}`);
+    }
+    if (ctx.mode === 'generic') {
+      const top = cust.filter((n) => n.loc).sort((a, b) => b.loc - a.loc).slice(0, 5);
+      if (top.length) lines.push('самые крупные: ' + top.map((n) => `${n.p} (${n.loc} строк)`).join(', '));
+      lines.push('операции: info, search, symbol, outline, deps, rdeps, path, node, stats, read, patch, create, build. Профильные операции Битрикса и Laravel отключены.');
+    }
+    lines.push(`в индексе файлов: ${idx.nodes.length} (${cust.length} своих)` + (ctx.mode === 'bitrix' && !ctx.core ? '; ядро не индексируется ("core":true включит его)' : ''));
     out(...lines);
   },
 
@@ -324,7 +337,7 @@ const ops = {
       if (main.length) hits = main;
     }
     hits = hits.filter((h, i) => hits.findIndex((x) => x[0] === h[0] && x[2] === h[2] && x[3] === h[3]) === i); // без повторов
-    if (!hits.length) return out(`${q0}: не найдено` + (ctx.core ? '' : ' (ядро Битрикса не индексируется; "core":true включит его)'));
+    if (!hits.length) return out(`${q0}: не найдено` + coreHint());
     hits.slice(0, 20).forEach(([name, kind, p, l, e]) => console.log(`${name}  ${kind}  ${p}:${l}-${e}`));
     if (hits.length > 20) console.log(`… ещё ${hits.length - 20}`);
   },
@@ -482,7 +495,7 @@ const ops = {
     const overs = idx.nodes.filter((n) => n.over && match(n.over.id));
     const calls = [];
     for (const n of idx.nodes) for (const [cid, tpl, l] of n.comps || []) if (match(cid)) calls.push([n.p, l, cid, tpl]);
-    if (!own.length && !overs.length && !calls.length) return out(`компонент ${args.id || args.name}: в индексе не найден` + (ctx.core ? '' : ' (компоненты bitrix:* из ядра не индексируются; "core":true включит их)'));
+    if (!own.length && !overs.length && !calls.length) return out(`компонент ${args.id || args.name}: в индексе не найден` + (ctx.mode === 'bitrix' && !ctx.core ? ' (компоненты bitrix:* из ядра не индексируются; "core":true включит их)' : ''));
     const id = (own[0] && own[0].comp.id) || (overs[0] && overs[0].over.id) || (calls[0] && calls[0][2]);
     const lines = [id];
     const nonLang = own.filter((n) => !n.lang);
@@ -719,7 +732,6 @@ const ops = {
   // ---------- Laravel ----------
 
   routes() {
-    if (ctx.mode !== 'laravel') fail('routes: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
     if (!d.routes.length) return out('маршруты не найдены (routes/*.php)');
@@ -743,7 +755,6 @@ const ops = {
   },
 
   model() {
-    if (ctx.mode !== 'laravel') fail('model: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
     const tableOf = (m) => m.table || modelTable(m.cls);
@@ -807,7 +818,6 @@ const ops = {
   },
 
   container() {
-    if (ctx.mode !== 'laravel') fail('container: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
     const lines = [];
@@ -848,7 +858,6 @@ const ops = {
   },
 
   blade() {
-    if (ctx.mode !== 'laravel') fail('blade: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     if (args.name) {
       const n = findNode(idx, args.name);
@@ -897,7 +906,6 @@ const ops = {
   },
 
   console() {
-    if (ctx.mode !== 'laravel') fail('console: операция для Laravel-проектов');
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
     const lines = [];
@@ -1119,6 +1127,16 @@ ops.selftest = function () {
   console.log('\nвсе проверки пройдены (' + total + ')');
 };
 
+// профильные операции доступны только в своих режимах; общие (lang/route/table) — в Битриксе и Laravel
+const OP_MODES = {
+  component: ['bitrix'], events: ['bitrix'],
+  lang: ['bitrix', 'laravel'], route: ['bitrix', 'laravel'], table: ['bitrix', 'laravel'],
+  routes: ['laravel'], model: ['laravel'], container: ['laravel'], blade: ['laravel'], console: ['laravel'],
+};
 if (!args.op) fail('укажите op: ' + Object.keys(ops).join(' | '));
 if (!ops[args.op]) fail('неизвестный op: ' + args.op);
+if (OP_MODES[args.op] && !OP_MODES[args.op].includes(ctx.mode)) {
+  const here = ctx.mode === 'generic' ? 'универсальный (CMS не определена)' : ctx.mode === 'bitrix' ? 'Битрикс' : 'Laravel';
+  fail(`${args.op}: операция доступна в проектах ${OP_MODES[args.op].join(' и ')}; здесь режим — ${here}. Общие операции (search, outline, symbol, deps, rdeps, read, patch) работают в любом проекте.`);
+}
 try { ops[args.op](); } catch (e) { fail(e.message); }
