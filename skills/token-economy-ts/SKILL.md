@@ -101,15 +101,11 @@ edit_symbol — хирургическая замена тела функции 
 
 Команда — одна строка, параметры передаются argv-аргументами `ключ=значение` (разделитель значения — первый `=`):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=ИскомыйТекст ext=.ts
+    node "<SCRIPTS_DIR>\code-searcher.js" query=ИскомыйТекст ext=.ts
 
-Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<путь>\<скрипт>.js" ключ=значение…`.
+Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<SCRIPTS_DIR>\<скрипт>.js" ключ=значение…`.
 
-Варианты пути до скриптов:
-
-    глобально на Windows: "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts"
-    локально в репозитории: ".kilo\skills\token-economy-ts\scripts"
-    pwsh на Linux/macOS: "$HOME/.config/kilo/skills/token-economy-ts/scripts"
+`<SCRIPTS_DIR>` — папка `scripts` этого скилла: возьми полный путь этого SKILL.md и замени имя файла на `scripts`. Каталог скиллов агента: ZCode — `%USERPROFILE%\.zcode\skills\…` (в репозитории проекта — `.zcode\skills\…`), Kilo Code — `%USERPROFILE%\.kilocode\skills\…` (в репозитории — `.kilo\skills\…`, Linux/macOS — `~/.config/kilo/skills/…`).
 
 Значения аргументов: с пробелами — в одинарных кавычках; апостроф внутри значения удваивается (`''`); значения, начинающиеся с `$`, тоже бери в одинарные кавычки, иначе PowerShell раскроет их как переменные; двойные кавычки `"` внутри значений не используй — PowerShell 5.1 их портит, ищи подстроку без кавычек. Кириллица через argv не портится: node читает командную строку через Unicode API Windows (раньше портилась только кодировка stdin-пайпа).
 
@@ -117,61 +113,61 @@ edit_symbol — хирургическая замена тела функции 
 
 ### search
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=ИскомыйТекст ext=.ts
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=app-profile ext=.html
+    node "<SCRIPTS_DIR>\code-searcher.js" query=ИскомыйТекст ext=.ts
+    node "<SCRIPTS_DIR>\code-searcher.js" query=app-profile ext=.html
 
 Параметры: `query` (обязательный), `ext` (по умолчанию `.ts`; несколько через запятую — `ext=.ts,.html`), `root` (по умолчанию `src`), `i=1` (без учёта регистра), `regex=1` (`query` — регулярное выражение), `limit` (по умолчанию 30), `files=1` (только список файлов со счётчиком совпадений).
 
 Без учёта регистра и по нескольким расширениям сразу:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=userName ext=.ts,.html i=1
+    node "<SCRIPTS_DIR>\code-searcher.js" query=userName ext=.ts,.html i=1
 
 Регулярное выражение и только файлы:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\code-searcher.js" query=app-[a-z-]+ ext=.html regex=1 files=1
+    node "<SCRIPTS_DIR>\code-searcher.js" query=app-[a-z-]+ ext=.html regex=1 files=1
 
 
 ### outline
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\symbol-index.js" file=src/app/modules/ais/appeals/appeal-subservices.service.ts
+    node "<SCRIPTS_DIR>\symbol-index.js" file=src/app/modules/ais/appeals/appeal-subservices.service.ts
 
 ### graph
 
-Общий вид: `node "<путь>\graph-tool.js" op=symbol name=UserService`. Параметры: `op` (обязательный), `root` (по умолчанию `src`), `depth` (1–5, для `deps`/`rdeps`), `specs` (`true` — включить `.spec.ts`), `why` (`true` — добавить `via`: номер строки импорта в `deps`/`rdeps`/`node`).
+Общий вид: `node "<SCRIPTS_DIR>\graph-tool.js" op=symbol name=UserService`. Параметры: `op` (обязательный), `root` (по умолчанию `src`), `depth` (1–5, для `deps`/`rdeps`), `specs` (`true` — включить `.spec.ts`), `why` (`true` — добавить `via`: номер строки импорта в `deps`/`rdeps`/`node`).
 
 Где определён символ (класс, интерфейс, пайп по имени, `$переменная`, миксин, `--custom-prop`):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=symbol name=UserService
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=symbol name='$primary'
+    node "<SCRIPTS_DIR>\graph-tool.js" op=symbol name=UserService
+    node "<SCRIPTS_DIR>\graph-tool.js" op=symbol name='$primary'
 
 Селектор компонента или директивы → файл и шаблоны, где он применён (`[appHighlight]` можно писать как `appHighlight`):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=selector selector=app-profile
+    node "<SCRIPTS_DIR>\graph-tool.js" op=selector selector=app-profile
 
 Метод или свойство класса (файл + строка + класс-владелец; частое имя — с `in=`):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=symbol name=ngOnInit in=UserListComponent
+    node "<SCRIPTS_DIR>\graph-tool.js" op=symbol name=ngOnInit in=UserListComponent
 
 
 Кто использует файл (обязательно перед правкой общего файла); `why=1` добавляет `via` — номер строки импорта (только для ts-связей):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=rdeps file=src/app/services/auth.service.ts depth=2
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=rdeps file=src/app/services/auth.service.ts why=1
+    node "<SCRIPTS_DIR>\graph-tool.js" op=rdeps file=src/app/services/auth.service.ts depth=2
+    node "<SCRIPTS_DIR>\graph-tool.js" op=rdeps file=src/app/services/auth.service.ts why=1
 
 
 Что использует файл:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=deps file=src/app/profile/profile.component.html
+    node "<SCRIPTS_DIR>\graph-tool.js" op=deps file=src/app/profile/profile.component.html
 
 Цепочка связей между двумя файлами:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=path from=src/app/app.component.ts to=src/styles/_variables.scss
+    node "<SCRIPTS_DIR>\graph-tool.js" op=path from=src/app/app.component.ts to=src/styles/_variables.scss
 
 Прочие операции: `info` (паспорт проекта: версии, алиасы tsconfig, состав файлов, крупнейшие файлы, предупреждения — один вызов в начале разговора), `node` (сводка по файлу: сущности, импорты, потребители), `cycles` (циклические группы; большие показываются выборкой), `stats` (размер графа и самые востребованные файлы), `build` (принудительная пересборка).
 
 Паспорт проекта:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=info
+    node "<SCRIPTS_DIR>\graph-tool.js" op=info
 
 
 В параметре `file` можно передать путь, часть пути или имя без расширения (`profile.component` — вернётся .ts-файл; чтобы получить шаблон или стиль, укажи расширение). При неоднозначности вернётся список кандидатов.
@@ -180,29 +176,29 @@ edit_symbol — хирургическая замена тела функции 
 
 API сторонних библиотек без чтения node_modules — класс целиком или один член:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\sig-reader.js" name=rxjs#Observable
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\sig-reader.js" name=rxjs#Observable member=subscribe
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\sig-reader.js" name=@angular/common/http#HttpClient member=get
+    node "<SCRIPTS_DIR>\sig-reader.js" name=rxjs#Observable
+    node "<SCRIPTS_DIR>\sig-reader.js" name=rxjs#Observable member=subscribe
+    node "<SCRIPTS_DIR>\sig-reader.js" name=@angular/common/http#HttpClient member=get
 
 Функция — все перегрузки: `name=rxjs/operators#map`. Параметры: `name` (обязательный) — пакет с подпутем, член после `#`; `member` — можно задать отдельно; `limit` (по умолчанию 40) — максимум сигнатур в ответе. Если член не найден, ответ содержит `available` — доступные имена (экспорты файла или члены класса).
 
 ### generate
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\scaffold-helper.js" type=component name=components/profile
+    node "<SCRIPTS_DIR>\scaffold-helper.js" type=component name=components/profile
 
 ### edit_symbol
 
 Запиши новое тело в файл (каждая строка — отдельный аргумент -Value; одинарные кавычки защищают $ и backtick от PowerShell), затем вызови скрипт:
 
     Set-Content -Path .kilo-edit-body.txt -Value '    const url = `/api/users/${id}`;', '    return this.http.put(url, { id });' -Encoding UTF8
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\edit-symbol.js" file=src/app/services/user.service.ts symbol=UserService.save body_file dry=false
+    node "<SCRIPTS_DIR>\edit-symbol.js" file=src/app/services/user.service.ts symbol=UserService.save body_file dry=false
 
 Однострочное тело можно передать прямо в аргументах (с \n):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\edit-symbol.js" file=src/app/services/user.service.ts symbol=UserService.save body='return this.http.get(url);' dry=false
+    node "<SCRIPTS_DIR>\edit-symbol.js" file=src/app/services/user.service.ts symbol=UserService.save body='return this.http.get(url);' dry=false
 
 Параметры: `file`, `symbol` (обязательные); тело — `body_file` / `body` / `body_b64` (ровно один); `engine` (auto | ts | fallback, по умолчанию auto), `indent` (auto | 2 | 4 | tab | raw — по умолчанию наследуется отступ старого тела), `dry` (по умолчанию true), `body_file_delete` (по умолчанию true). Отступ нового тела указывай без базового уровня — скрипт выровняет его под старое тело автоматически; полное тело, обёрнутое во внешние {…}, разворачивается.
 
 Самопроверка всех скриптов скилла на временном мини-проекте (проект не нужен):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\graph-tool.js" op=selftest
+    node "<SCRIPTS_DIR>\graph-tool.js" op=selftest

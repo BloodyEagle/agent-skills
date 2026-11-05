@@ -1,7 +1,7 @@
 # Python — token-economy-py
 
 - Стек: Python 3.9+. Скрипт `te.py` (только стандартная библиотека).
-- Синтаксис команд: `.kilocode/skills/token-economy-py/SKILL.md` — открой перед первой командой сессии.
+- Синтаксис команд: `<каталог скиллов>/token-economy-py/SKILL.md` (ZCode — `.zcode/skills/…`, Kilo Code — `.kilocode/skills/…`) — открой перед первой командой сессии.
 
 ## Навигация и чтение
 

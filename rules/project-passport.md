@@ -1,6 +1,6 @@
 # Паспорт проекта
 
-<!-- Положить в репозиторий проекта: .kilocode/rules/project-passport.md.
+<!-- Положить в репозиторий проекта: .zcode/rules/project-passport.md (ZCode) или .kilocode/rules/project-passport.md (Kilo Code).
      Держать в пределах 500–800 токенов: файл всегда в контексте.
      Только то, что стабильно и не выводится из кода или graph. -->
 

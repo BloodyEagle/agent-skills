@@ -74,60 +74,57 @@ patch — точная замена фрагмента с сохранением
 create — новый файл; кодировка по умолчанию UTF-8 (или преобладающая в проекте, если в тексте есть не-ASCII и в проекте больше файлов в cp1251), перевод строк — преобладающий.
 ## Выполнение команд (PowerShell)
 Команда — одна строка, параметры передаются argv-аргументами `ключ=значение` (разделитель значения — первый `=`), обязательный параметр каждой операции — `op`:
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=info
-Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<путь>\kt.js" ключ=значение…`.
-Варианты пути до скриптов:
-глобально на Windows: "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts"
-локально в репозитории: ".kilo\skills\token-economy-kt\scripts"
-pwsh на Linux/macOS: "$HOME/.config/kilo/skills/token-economy-kt/scripts"
+node "<SCRIPTS_DIR>\kt.js" op=info
+Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<SCRIPTS_DIR>\kt.js" ключ=значение…`.
+`<SCRIPTS_DIR>` — папка `scripts` этого скилла: возьми полный путь этого SKILL.md и замени имя файла на `scripts`. Каталог скиллов агента: ZCode — `%USERPROFILE%\.zcode\skills\…` (в репозитории проекта — `.zcode\skills\…`), Kilo Code — `%USERPROFILE%\.kilocode\skills\…` (в репозитории — `.kilo\skills\…`, Linux/macOS — `~/.config/kilo/skills/…`).
 Значения аргументов: с пробелами — в одинарных кавычках; апостроф внутри значения удваивается (`''`); значения, начинающиеся с `$`, тоже бери в одинарные кавычки, иначе PowerShell раскроет их как переменные; двойные кавычки `"` внутри значений не используй — PowerShell 5.1 их портит. `#` внутри значения (`Class#method`) — часть аргумента, экранировать не нужно. Кириллица через argv не портится. Для многострочных payload (`patch`/`create`) — файл параметров: запиши JSON штатным инструментом в `.kt-cache/payload.json` (папка вне git) и передай его через `@.kt-cache/payload.json`.
 Общий параметр: `root` (корень проекта, по умолчанию текущая папка; для многомодульных проектов запускай из корня репозитория).
 info:
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=info
+node "<SCRIPTS_DIR>\kt.js" op=info
 symbol / outline / rdeps / impls:
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=symbol name=LoginViewModel
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=symbol name=ShopApi#login
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=symbol name=btn_login
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=outline file=UserRepositoryImpl
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=outline name=UserRepositoryImpl inherit=true
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=rdeps file=UserRepository
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=impls name=UserRepository
+node "<SCRIPTS_DIR>\kt.js" op=symbol name=LoginViewModel
+node "<SCRIPTS_DIR>\kt.js" op=symbol name=ShopApi#login
+node "<SCRIPTS_DIR>\kt.js" op=symbol name=btn_login
+node "<SCRIPTS_DIR>\kt.js" op=outline file=UserRepositoryImpl
+node "<SCRIPTS_DIR>\kt.js" op=outline name=UserRepositoryImpl inherit=true
+node "<SCRIPTS_DIR>\kt.js" op=rdeps file=UserRepository
+node "<SCRIPTS_DIR>\kt.js" op=impls name=UserRepository
 search (для ресурсов — `ext`):
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=search query=findByLogin ext=.kt,.java,.xml
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=search query=compileSdk ext=.kts,.toml
+node "<SCRIPTS_DIR>\kt.js" op=search query=findByLogin ext=.kt,.java,.xml
+node "<SCRIPTS_DIR>\kt.js" op=search query=compileSdk ext=.kts,.toml
 манифест:
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=manifest
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=manifest kind=receiver
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=manifest query=BOOT_COMPLETED
+node "<SCRIPTS_DIR>\kt.js" op=manifest
+node "<SCRIPTS_DIR>\kt.js" op=manifest kind=receiver
+node "<SCRIPTS_DIR>\kt.js" op=manifest query=BOOT_COMPLETED
 room / di / nav / res / api:
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=room
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=room table=users
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=room cls=UserDao
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=di
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=di type=UserRepository
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=nav
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=nav route=home
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=res
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=res name=login_title
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=res missing=1
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=api
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=api url=auth
+node "<SCRIPTS_DIR>\kt.js" op=room
+node "<SCRIPTS_DIR>\kt.js" op=room table=users
+node "<SCRIPTS_DIR>\kt.js" op=room cls=UserDao
+node "<SCRIPTS_DIR>\kt.js" op=di
+node "<SCRIPTS_DIR>\kt.js" op=di type=UserRepository
+node "<SCRIPTS_DIR>\kt.js" op=nav
+node "<SCRIPTS_DIR>\kt.js" op=nav route=home
+node "<SCRIPTS_DIR>\kt.js" op=res
+node "<SCRIPTS_DIR>\kt.js" op=res name=login_title
+node "<SCRIPTS_DIR>\kt.js" op=res missing=1
+node "<SCRIPTS_DIR>\kt.js" op=api
+node "<SCRIPTS_DIR>\kt.js" op=api url=auth
 граф:
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=deps name=LoginViewModel
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=node file=UserDao
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=path a=MainActivity b=UserDao undirected=true
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=stats
+node "<SCRIPTS_DIR>\kt.js" op=deps name=LoginViewModel
+node "<SCRIPTS_DIR>\kt.js" op=node file=UserDao
+node "<SCRIPTS_DIR>\kt.js" op=path a=MainActivity b=UserDao undirected=true
+node "<SCRIPTS_DIR>\kt.js" op=stats
 sig:
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=sig name=androidx.room.RoomDatabase
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=sig name=retrofit2.Retrofit#get jar=retrofit
+node "<SCRIPTS_DIR>\kt.js" op=sig name=androidx.room.RoomDatabase
+node "<SCRIPTS_DIR>\kt.js" op=sig name=retrofit2.Retrofit#get jar=retrofit
 read / patch / create (для файлов не в UTF-8; для patch и create — `@`-файл параметров, единственный способ: многострочные значения в argv не передать):
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=read file=legacy/Cp1251Notes.java offset=5 limit=20
-node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" @.kt-cache/payload.json
+node "<SCRIPTS_DIR>\kt.js" op=read file=legacy/Cp1251Notes.java offset=5 limit=20
+node "<SCRIPTS_DIR>\kt.js" @.kt-cache/payload.json
 Содержимое `.kt-cache/payload.json` для правки:
 {"op":"patch","file":"app/src/main/java/com/acme/Foo.kt","old":"return 1;","new":"return 2;"}
 Подробности про индекс, определение ролей, кодировки и ограничения: `references/android.md`.
 
 Самопроверка скрипта (индекс проекта не нужен):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-kt\scripts\kt.js" op=selftest
+    node "<SCRIPTS_DIR>\kt.js" op=selftest
 

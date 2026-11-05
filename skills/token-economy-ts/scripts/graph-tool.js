@@ -53,7 +53,7 @@ const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
 const GRAPH_VERSION = 4; // формат graph-deps.json и кэша; смена версии пересобирает всё
 // (4: линии импортов для why и члены классов/интерфейсов в entities)
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
-const EXCLUDE = new Set(['node_modules', '.git', 'dist', '.kilocode', '.angular', 'coverage', 'build']);
+const EXCLUDE = new Set(['node_modules', '.git', 'dist', '.zcode', '.kilo', '.kilocode', '.angular', 'coverage', 'build']);
 const NG_KINDS = {
     Component: 'component',
     Directive: 'directive',

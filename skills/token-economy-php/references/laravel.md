@@ -79,12 +79,12 @@ PHP-файлы проекта и Blade-шаблоны `resources/views/**/*.blad
 
 ## Примеры команд
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=routes name=users
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=routes controller=PostController
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=model name=Post
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=model table=order_items
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=container type=App\Contracts\PaymentGateway
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=blade name=layouts.app
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=console
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=route url=/users/5
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=lang query='Добавить в корзину'
+    node "<SCRIPTS_DIR>\bx.js" op=routes name=users
+    node "<SCRIPTS_DIR>\bx.js" op=routes controller=PostController
+    node "<SCRIPTS_DIR>\bx.js" op=model name=Post
+    node "<SCRIPTS_DIR>\bx.js" op=model table=order_items
+    node "<SCRIPTS_DIR>\bx.js" op=container type=App\Contracts\PaymentGateway
+    node "<SCRIPTS_DIR>\bx.js" op=blade name=layouts.app
+    node "<SCRIPTS_DIR>\bx.js" op=console
+    node "<SCRIPTS_DIR>\bx.js" op=route url=/users/5
+    node "<SCRIPTS_DIR>\bx.js" op=lang query='Добавить в корзину'

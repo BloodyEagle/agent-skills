@@ -82,15 +82,11 @@ build — принудительная перестройка индекса.
 
 Команда — одна строка, параметры передаются argv-аргументами `ключ=значение` (разделитель значения — первый `=`), обязательный параметр каждой операции — `op`:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=info
+    node "<SCRIPTS_DIR>\bx.js" op=info
 
-Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<путь>\bx.js" ключ=значение…`.
+Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<SCRIPTS_DIR>\bx.js" ключ=значение…`.
 
-Варианты пути до скриптов:
-
-    глобально на Windows: "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts"
-    локально в репозитории: ".kilo\skills\token-economy-php\scripts"
-    pwsh на Linux/macOS: "$HOME/.config/kilo/skills/token-economy-php/scripts"
+`<SCRIPTS_DIR>` — папка `scripts` этого скилла: возьми полный путь этого SKILL.md и замени имя файла на `scripts`. Каталог скиллов агента: ZCode — `%USERPROFILE%\.zcode\skills\…` (в репозитории проекта — `.zcode\skills\…`), Kilo Code — `%USERPROFILE%\.kilocode\skills\…` (в репозитории — `.kilo\skills\…`, Linux/macOS — `~/.config/kilo/skills/…`).
 
 Значения аргументов: с пробелами — в одинарных кавычках; апостроф внутри значения удваивается (`''`); значения, начинающиеся с `$`, тоже бери в одинарные кавычки, иначе PowerShell раскроет их как переменные; двойные кавычки `"` внутри значений не используй — PowerShell 5.1 их портит. Кириллица через argv не портится: node читает командную строку через Unicode API Windows. Для многострочных payload (`patch`/`create`) — файл параметров: запиши JSON штатным инструментом в `.bx-cache/payload.json` (папка вне git) и передай его через `@.bx-cache/payload.json`.
 
@@ -98,41 +94,41 @@ build — принудительная перестройка индекса.
 
 info:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=info
+    node "<SCRIPTS_DIR>\bx.js" op=info
 
 search (`ext` — по умолчанию `.php`; `regex`, `ignoreCase`, `path`, `limit` — по желанию):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=search query=getUserInfo path=src
+    node "<SCRIPTS_DIR>\bx.js" op=search query=getUserInfo path=src
 
 symbol:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name=App\Services\Billing
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name=Billing::recalc
+    node "<SCRIPTS_DIR>\bx.js" op=symbol name=App\Services\Billing
+    node "<SCRIPTS_DIR>\bx.js" op=symbol name=Billing::recalc
 
 rdeps / deps (`file` — путь, часть пути или имя класса; `depth` 1–5):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=rdeps file=src/Support/helpers.php depth=2
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=deps file=index.php
+    node "<SCRIPTS_DIR>\bx.js" op=rdeps file=src/Support/helpers.php depth=2
+    node "<SCRIPTS_DIR>\bx.js" op=deps file=index.php
 
 path / node / stats:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=path from=index.php to=App\Core\Launcher
+    node "<SCRIPTS_DIR>\bx.js" op=path from=index.php to=App\Core\Launcher
 
 outline:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=src/Services/Billing.php
+    node "<SCRIPTS_DIR>\bx.js" op=outline file=src/Services/Billing.php
 
 read:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=read file=src/bootstrap.php offset=1 limit=120
+    node "<SCRIPTS_DIR>\bx.js" op=read file=src/bootstrap.php offset=1 limit=120
 
 build (принудительная перестройка индекса):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=build
+    node "<SCRIPTS_DIR>\bx.js" op=build
 
 patch и create (`@`-файл параметров — единственный способ: многострочные значения в argv не передать; перевод строки внутри JSON-строк — `\n`):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" @.bx-cache/payload.json
+    node "<SCRIPTS_DIR>\bx.js" @.bx-cache/payload.json
 
 Содержимое `.bx-cache/payload.json` для правки:
 
@@ -146,4 +142,4 @@ patch и create (`@`-файл параметров — единственный 
 
 Самопроверка скрипта (индекс проекта не нужен):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=selftest
+    node "<SCRIPTS_DIR>\bx.js" op=selftest

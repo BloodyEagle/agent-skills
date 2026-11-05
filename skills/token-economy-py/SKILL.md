@@ -8,11 +8,9 @@ version: 1.2.0
 
 Один скрипт `te.py` (только стандартная библиотека, Python 3.9+) с командами `graph`, `outline`, `search`, `sig` и `info` (плюс `selftest` для самопроверки скрипта). Вывод — короткий текст. Запускай из корня проекта; иначе добавь `--root ПУТЬ`. На Windows вместо `python3` — `python`.
 
-Вызов: python "<путь>\scripts\te.py" <команда> … . Варианты пути до скрипта:
+Вызов: python "<SCRIPTS_DIR>\te.py" <команда> …
 
-    глобально на Windows: %USERPROFILE%\.kilocode\skills\token-economy-py\scripts
-    локально в репозитории: .kilo\skills\token-economy-py\scripts
-    Linux и macOS: ~/.config/kilo/skills/token-economy-py/scripts
+`<SCRIPTS_DIR>` — папка `scripts` этого скилла: возьми полный путь этого SKILL.md и замени имя файла на `scripts`. Каталог скиллов агента: ZCode — `%USERPROFILE%\.zcode\skills\…` (в репозитории проекта — `.zcode\skills\…`), Kilo Code — `%USERPROFILE%\.kilocode\skills\…` или `~/.config/kilo/skills/…` (в репозитории — `.kilo\skills\…`).
 
 Общие параметры `--root` и `--src` можно указывать как до команды, так и после неё.
 
@@ -31,7 +29,7 @@ version: 1.2.0
 
 ## Команды
 
-Ниже TE = python "<путь>\scripts\te.py". Глубина --depth ограничена 5.
+Ниже TE = python "<SCRIPTS_DIR>\te.py". Глубина --depth ограничена 5.
 
 | Задача | Команда |
 |---|---|
