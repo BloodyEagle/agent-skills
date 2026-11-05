@@ -34,13 +34,13 @@ tpl — шаблон/чанк-файл (`name=templates/base.tpl` или пут�
 
 ## Примеры команд
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=info
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=element name=hello
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=tpl name=templates/base.tpl
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=search query='[[$' ext=.tpl,.php
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=search query=runSnippet
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=rdeps file=acme:hello
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=core/components/acme/elements/snippets/hello.php
+    node "<SCRIPTS_DIR>\bx.js" op=info
+    node "<SCRIPTS_DIR>\bx.js" op=element name=hello
+    node "<SCRIPTS_DIR>\bx.js" op=tpl name=templates/base.tpl
+    node "<SCRIPTS_DIR>\bx.js" op=search query='[[$' ext=.tpl,.php
+    node "<SCRIPTS_DIR>\bx.js" op=search query=runSnippet
+    node "<SCRIPTS_DIR>\bx.js" op=rdeps file=acme:hello
+    node "<SCRIPTS_DIR>\bx.js" op=outline file=core/components/acme/elements/snippets/hello.php
 
 ## Чего скрипт не видит
 

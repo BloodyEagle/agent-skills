@@ -103,15 +103,11 @@ create — новый файл; кодировка по умолчанию UTF-8
 
 Команда — одна строка, параметры передаются argv-аргументами `ключ=значение` (разделитель значения — первый `=`), обязательный параметр каждой операции — `op`:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=info
+    node "<SCRIPTS_DIR>\jv.js" op=info
 
-Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<путь>\jv.js" ключ=значение…`.
+Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<SCRIPTS_DIR>\jv.js" ключ=значение…`.
 
-Варианты пути до скриптов:
-
-    глобально на Windows: "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts"
-    локально в репозитории: ".kilo\skills\token-economy-java\scripts"
-    pwsh на Linux/macOS: "$HOME/.config/kilo/skills/token-economy-java/scripts"
+`<SCRIPTS_DIR>` — папка `scripts` этого скилла: возьми полный путь этого SKILL.md и замени имя файла на `scripts`. Каталог скиллов агента: ZCode — `%USERPROFILE%\.zcode\skills\…` (в репозитории проекта — `.zcode\skills\…`), Kilo Code — `%USERPROFILE%\.kilocode\skills\…` (в репозитории — `.kilo\skills\…`, Linux/macOS — `~/.config/kilo/skills/…`).
 
 Значения аргументов: с пробелами — в одинарных кавычках; апостроф внутри значения удваивается (`''`); значения, начинающиеся с `$`, тоже бери в одинарные кавычки, иначе PowerShell раскроет их как переменные; двойные кавычки `"` внутри значений не используй — PowerShell 5.1 их портит. Кириллица через argv не портится: node читает командную строку через Unicode API Windows. Для многострочных payload (`patch`/`create`) — файл параметров: запиши JSON штатным инструментом в `.jv-cache/payload.json` (папка вне git) и передай его через `@.jv-cache/payload.json`.
 
@@ -119,38 +115,38 @@ create — новый файл; кодировка по умолчанию UTF-8
 
 info:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=info
+    node "<SCRIPTS_DIR>\jv.js" op=info
 
 symbol / outline / rdeps / impls:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=symbol name=UserService
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=symbol name=UserController#get
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=outline file=UserController
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=rdeps file=UserService depth=2
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=impls name=UserService
+    node "<SCRIPTS_DIR>\jv.js" op=symbol name=UserService
+    node "<SCRIPTS_DIR>\jv.js" op=symbol name=UserController#get
+    node "<SCRIPTS_DIR>\jv.js" op=outline file=UserController
+    node "<SCRIPTS_DIR>\jv.js" op=rdeps file=UserService depth=2
+    node "<SCRIPTS_DIR>\jv.js" op=impls name=UserService
 
 search (для ресурсов — `ext`):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=search query=findByEmail path=src/main
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=search query=user-events ext=.java,.yml,.properties
+    node "<SCRIPTS_DIR>\jv.js" op=search query=findByEmail path=src/main
+    node "<SCRIPTS_DIR>\jv.js" op=search query=user-events ext=.java,.yml,.properties
 
 Spring:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=endpoints query=/api/users
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=beans query=Security
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=config query=app.mail
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=entities query=User
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=table name=users
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=listeners query=UserCreatedEvent
+    node "<SCRIPTS_DIR>\jv.js" op=endpoints query=/api/users
+    node "<SCRIPTS_DIR>\jv.js" op=beans query=Security
+    node "<SCRIPTS_DIR>\jv.js" op=config query=app.mail
+    node "<SCRIPTS_DIR>\jv.js" op=entities query=User
+    node "<SCRIPTS_DIR>\jv.js" op=table name=users
+    node "<SCRIPTS_DIR>\jv.js" op=listeners query=UserCreatedEvent
 
 sig:
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=sig name=org.springframework.web.client.RestClient
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=sig name=org.springframework.web.client.RestClient#get
+    node "<SCRIPTS_DIR>\jv.js" op=sig name=org.springframework.web.client.RestClient
+    node "<SCRIPTS_DIR>\jv.js" op=sig name=org.springframework.web.client.RestClient#get
 
 read / patch / create (только для файлов не в UTF-8; для patch и create — `@`-файл параметров, единственный способ: многострочные значения в argv не передать):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" @.jv-cache/payload.json
+    node "<SCRIPTS_DIR>\jv.js" @.jv-cache/payload.json
 
 Содержимое `.jv-cache/payload.json` для правки:
 
@@ -160,5 +156,5 @@ read / patch / create (только для файлов не в UTF-8; для pa
 
 Самопроверка скрипта (индекс проекта не нужен):
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-java\scripts\jv.js" op=selftest
+    node "<SCRIPTS_DIR>\jv.js" op=selftest
 

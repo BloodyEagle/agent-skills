@@ -17,10 +17,11 @@
 
 ## Установка
 
-Скопируй папку `token-economy-php` в каталог навыков Kilo Code:
+Скопируй папку `token-economy-php` в каталог навыков агента:
 
-    глобально на Windows:   %USERPROFILE%\.kilocode\skills\token-economy-php
-    локально в репозитории: .kilo\skills\token-economy-php
+    глобально в ZCode:      %USERPROFILE%\.zcode\skills\token-economy-php
+    глобально в Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-php
+    локально в репозитории: .zcode\skills\token-economy-php (ZCode) или .kilo\skills\token-economy-php (Kilo Code)
     Linux и macOS:          ~/.config/kilo/skills/token-economy-php
 
 Структура:

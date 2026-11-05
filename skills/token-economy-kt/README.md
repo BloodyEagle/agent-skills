@@ -15,10 +15,11 @@
 
 ## Установка
 
-Скопируй папку `token-economy-kt` в каталог навыков Kilo Code:
+Скопируй папку `token-economy-kt` в каталог навыков агента:
 
-    глобально на Windows:   %USERPROFILE%\.kilocode\skills\token-economy-kt
-    локально в репозитории: .kilo\skills\token-economy-kt
+    глобально в ZCode:      %USERPROFILE%\.zcode\skills\token-economy-kt
+    глобально в Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-kt
+    локально в репозитории: .zcode\skills\token-economy-kt (ZCode) или .kilo\skills\token-economy-kt (Kilo Code)
     Linux и macOS:          ~/.config/kilo/skills/token-economy-kt
 
 Структура:

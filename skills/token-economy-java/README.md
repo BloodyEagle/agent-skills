@@ -17,10 +17,11 @@
 
 ## Установка
 
-Скопируй папку `token-economy-java` в каталог навыков Kilo Code:
+Скопируй папку `token-economy-java` в каталог навыков агента:
 
-    глобально на Windows:   %USERPROFILE%\.kilocode\skills\token-economy-java
-    локально в репозитории: .kilo\skills\token-economy-java
+    глобально в ZCode:      %USERPROFILE%\.zcode\skills\token-economy-java
+    глобально в Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-java
+    локально в репозитории: .zcode\skills\token-economy-java (ZCode) или .kilo\skills\token-economy-java (Kilo Code)
     Linux и macOS:          ~/.config/kilo/skills/token-economy-java
 
 Структура:

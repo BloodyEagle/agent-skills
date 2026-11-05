@@ -15,10 +15,11 @@
 
 ## Установка
 
-Скопируй папку `token-economy-py` в каталог навыков Kilo Code:
+Скопируй папку `token-economy-py` в каталог навыков агента:
 
-    глобально на Windows:   %USERPROFILE%\.kilocode\skills\token-economy-py
-    локально в репозитории: .kilo\skills\token-economy-py
+    глобально в ZCode:      %USERPROFILE%\.zcode\skills\token-economy-py
+    глобально в Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-py
+    локально в репозитории: .zcode\skills\token-economy-py (ZCode) или .kilo\skills\token-economy-py (Kilo Code)
     Linux и macOS:          ~/.config/kilo/skills/token-economy-py
 
 Структура:

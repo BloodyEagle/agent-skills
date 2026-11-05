@@ -72,7 +72,7 @@ if (relRoot === '..' || relRoot.startsWith('..' + path.sep) || path.isAbsolute(r
 
 // Выровнен с graph-tool: те же исключаемые папки, точное совпадение имени
 // (было — подстрока: папка "distributes" тоже попадала под исключение)
-const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', '.kilocode', '.angular', 'coverage', 'build']);
+const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', '.zcode', '.kilo', '.kilocode', '.angular', 'coverage', 'build']);
 
 function searchInDir(dir, results = []) {
     if (!fs.existsSync(dir)) return results;

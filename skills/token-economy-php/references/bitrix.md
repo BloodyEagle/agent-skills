@@ -88,15 +88,15 @@ table — имя таблицы БД: D7-класс и поля (`getTableName` 
 
 ## Примеры команд
 
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=search query=OnAfterIBlockElementAdd path=local
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name=Vendor\Catalog\ProductTable
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=symbol name='CIBlockElement::GetList' core=true
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=local/components/vendor/cat.list/class.php
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=outline file=CIBlockElement inherit=true core=true
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=table name=b_acme_item
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=component id=bitrix:news.list
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=events query=OnSaleOrderSaved
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=lang query='Добавить в корзину'
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=route url=/catalog/item-1/
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=rdeps file=local/php_interface/include/helpers.php depth=2
-    node "$env:USERPROFILE\.kilocode\skills\token-economy-php\scripts\bx.js" op=read file=local/php_interface/init.php offset=1 limit=120
+    node "<SCRIPTS_DIR>\bx.js" op=search query=OnAfterIBlockElementAdd path=local
+    node "<SCRIPTS_DIR>\bx.js" op=symbol name=Vendor\Catalog\ProductTable
+    node "<SCRIPTS_DIR>\bx.js" op=symbol name='CIBlockElement::GetList' core=true
+    node "<SCRIPTS_DIR>\bx.js" op=outline file=local/components/vendor/cat.list/class.php
+    node "<SCRIPTS_DIR>\bx.js" op=outline file=CIBlockElement inherit=true core=true
+    node "<SCRIPTS_DIR>\bx.js" op=table name=b_acme_item
+    node "<SCRIPTS_DIR>\bx.js" op=component id=bitrix:news.list
+    node "<SCRIPTS_DIR>\bx.js" op=events query=OnSaleOrderSaved
+    node "<SCRIPTS_DIR>\bx.js" op=lang query='Добавить в корзину'
+    node "<SCRIPTS_DIR>\bx.js" op=route url=/catalog/item-1/
+    node "<SCRIPTS_DIR>\bx.js" op=rdeps file=local/php_interface/include/helpers.php depth=2
+    node "<SCRIPTS_DIR>\bx.js" op=read file=local/php_interface/init.php offset=1 limit=120
