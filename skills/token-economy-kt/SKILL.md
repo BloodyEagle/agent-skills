@@ -1,5 +1,6 @@
 ---
 name: token-economy-kt
+version: 1.0.0
 description: Экономия токенов в Android-проектах на Kotlin (Jetpack Compose и XML Views, Java interop): поиск определений, граф связей (наследование, внедрение зависимостей Hilt/Koin, использование, вызовы Compose-функций, ViewBinding), оглавление класса и Compose-функций, реализации интерфейса, манифест (компоненты, разрешения, intent-фильтры, deep link, exported-предупреждения), Room (сущности, таблицы, SQL-методы DAO), граф DI Hilt (модули, @Provides/@Binds, где связан тип, кто его получает), навигация (маршруты Compose и nav-xml, кто куда переходит), строковые ресурсы по локалям и отсутствующие переводы, каталог Retrofit-endpoint'ов, Gradle-сборка (модули, sdk, версии из version catalog), ресурсы и layout-файлы, id, строки, сигнатуры классов из jar и aar без декомпиляции. Все команды — PowerShell.
 ---
 # Skill: token-economy-kt

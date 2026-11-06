@@ -1,5 +1,6 @@
 ---
 name: token-economy-ts
+version: 1.0.0
 description: Обязательный навык для TypeScript/JavaScript/Angular-проектов, включая React, Node.js (Express/Fastify/Koa), NestJS и Vue. Применять всегда для поиска текста (search), определений и связей ESM/CommonJS (graph symbol/deps/rdeps), оглавления больших TS/JS-файлов (outline), сигнатур сторонних библиотек (sig), замены тела метода/функции (edit_symbol) и создания Angular-сущностей (generate). Тип проекта определяется автоматически (graph op=info → projectType); Angular-специфика подключается только для Angular (references/angular.md). Полностью заменяет встроенный поиск (search_files/ripgrep) и ручные заготовки.
 ---
 
