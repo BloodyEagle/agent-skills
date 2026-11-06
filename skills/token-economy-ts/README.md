@@ -22,6 +22,8 @@ node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.
 
 Тесты создают и удаляют только собственные временные проекты; зависимости проекта не загружаются.
 
+Тип проекта определяется автоматически при `graph op=info` (`projectType`: `angular` / `nest` / `node` / `ts` — по angular.json, `@angular/*`, `@nestjs/*`, серверным пакетам в package.json). Универсальные правила — в SKILL.md; Angular-специфика (селекторы, пайпы, generate) вынесена в references/angular.md и подключается только для Angular.
+
 Скрипты скилла:
 
 | Действие | Что делает | Экономия                                  |

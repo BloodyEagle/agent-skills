@@ -1227,6 +1227,33 @@ if (op === 'selftest') {
     const sf = run('scaffold-helper.js', ['type=component', 'name=x']);
     chk('generate: отказ без Angular CLI', sf.includes('Angular CLI не найден'), sf);
 
+    // info: детекция типа проекта (projectType) — на отдельном чистом мини-проекте:
+    // в основном angular.json создан выше для тестов selector/generate, он всё переопределял бы.
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'te-ts-type-'));
+    fs.mkdirSync(path.join(dir2, 'src'), {recursive: true});
+    fs.writeFileSync(path.join(dir2, 'src', 'main.ts'), 'export const main = 1;\n');
+    const info2 = () => {
+        try {
+            return JSON.parse(cp.execFileSync(process.execPath, [path.join(__dirname, 'graph-tool.js'), 'op=info'], {cwd: dir2, encoding: 'utf8'}));
+        } catch (e) {
+            return JSON.parse(String(e.stdout || '{}'));
+        }
+    };
+    fs.writeFileSync(path.join(dir2, 'package.json'), '{"name":"selftest-app","dependencies":{"fake-lib":"^1.0.0"}}');
+    const i1 = info2();
+    chk('info: чистый TS → projectType=ts', i1.projectType === 'ts', JSON.stringify(i1).slice(0, 160));
+    fs.writeFileSync(path.join(dir2, 'package.json'), '{"name":"selftest-app","dependencies":{"express":"^4.19.0"}}');
+    const i2 = info2();
+    chk('info: express → projectType=node и server', i2.projectType === 'node' && i2.server === 'express', JSON.stringify(i2).slice(0, 160));
+    fs.writeFileSync(path.join(dir2, 'package.json'), '{"name":"selftest-app","dependencies":{"@nestjs/core":"^10.0.0"}}');
+    const i3 = info2();
+    chk('info: @nestjs/* → projectType=nest', i3.projectType === 'nest', JSON.stringify(i3).slice(0, 160));
+    fs.writeFileSync(path.join(dir2, 'package.json'), '{"name":"selftest-app","dependencies":{"fake-lib":"^1.0.0"}}');
+    fs.writeFileSync(path.join(dir2, 'angular.json'), '{"version":1,"projects":{}}');
+    const i4 = info2();
+    chk('info: angular.json → projectType=angular', i4.projectType === 'angular' && i4.angularJson === true, JSON.stringify(i4).slice(0, 160));
+    fs.rmSync(dir2, {recursive: true, force: true});
+
     fs.rmSync(dir, {recursive: true, force: true});
     console.log(bad.length ? '\nпровалено: ' + bad.join(', ') : '\nвсе проверки пройдены (' + total + ')');
     process.exit(bad.length ? 1 : 0);
@@ -1267,7 +1294,8 @@ if (op === 'info') {
     if (pkg && !fs.existsSync(path.join(cwd, 'node_modules'))) warnings.push('node_modules не найден — выполните npm install');
     const deps = {...(pkg && pkg.dependencies || {}), ...(pkg && pkg.devDependencies || {})};
     const KEY_DEPS = ['@angular/core', '@angular/cli', '@angular/material', '@angular/cdk', 'typescript', 'rxjs', 'zone.js',
-        '@ngrx/store', '@ngrx/effects', '@ngrx/component-store', 'jest', 'karma', 'cypress', 'playwright', 'eslint', 'prettier'];
+        '@ngrx/store', '@ngrx/effects', '@ngrx/component-store', 'jest', 'karma', 'cypress', 'playwright', 'eslint', 'prettier',
+        '@nestjs/core', '@nestjs/common', 'express', 'fastify', 'koa', '@hapi/hapi'];
     const key = {};
     for (const k of KEY_DEPS) if (deps[k]) key[k] = deps[k];
     const shown = new Set(Object.keys(key));
@@ -1282,7 +1310,14 @@ if (op === 'info') {
     if (!tc) warnings.push('tsconfig.json не найден или не разобран');
     const paths = tc && tc.paths ? Object.keys(tc.paths).slice(0, 10) : [];
     const aj = ['angular.json', '.angular.json'].some((f) => fs.existsSync(path.join(cwd, f)));
-    if (!aj) warnings.push('angular.json не найден (это не Angular CLI проект?)');
+    // Тип проекта: angular | nest | node | ts — от него зависит, какой набор правил скилла применяет агент.
+    const hasDep = (k) => !!deps[k];
+    const serverDep = ['express', 'fastify', 'koa', '@hapi/hapi'].find(hasDep) || null;
+    const projectType = (aj || hasDep('@angular/core')) ? 'angular'
+        : Object.keys(deps).some((k) => k.startsWith('@nestjs/')) ? 'nest'
+            : serverDep ? 'node' : 'ts';
+    if (projectType === 'angular' && !aj)
+        warnings.push('angular.json не найден: @angular/core есть в зависимостях, но CLI-конфига нет (workspace-пакет?)');
     let gi = '';
     try {
         gi = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8');
@@ -1295,11 +1330,12 @@ if (op === 'info') {
     emit({
         ...(pkg ? {project: {name: pkg.name || null, version: pkg.version || null}} : {}),
         ...(pm ? {packageManager: pm[1]} : {}),
-        angular: deps['@angular/core'] || null,
+        projectType,
+        ...(projectType === 'node' ? {server: serverDep} : {}),
         keyDeps: key,
         otherDeps: {count: others.length, ...(others.length ? {names: others.slice(0, 15)} : {})},
         tsconfig: {strict: tc ? !!tc.strict : null, ...(tc && tc.target ? {target: tc.target} : {}), ...(paths.length ? {paths} : {})},
-        angularJson: aj,
+        ...(projectType === 'angular' ? {angularJson: aj} : {}),
         stats: graph.stats,
         largest,
         ...(warnings.length ? {warnings} : {})
