@@ -4,7 +4,7 @@ const path = require('path');
 const {spawnSync} = require('child_process');
 const assert = require('node:assert/strict');
 
-const scripts = path.resolve(__dirname, '..', 'scripts');
+const scripts = path.resolve(__dirname, '..', '..', 'skills', 'token-economy-ts', 'scripts');
 
 function project(run, files = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-economy-js-'));

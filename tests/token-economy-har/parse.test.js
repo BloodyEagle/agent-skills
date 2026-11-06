@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
-const { openHar, STREAM_THRESHOLD } = require('../lib/parse');
+const { openHar, STREAM_THRESHOLD } = require('../../skills/token-economy-har/lib/parse');
 
 async function collect(file, options = {}) {
     const har = await openHar(file, options);

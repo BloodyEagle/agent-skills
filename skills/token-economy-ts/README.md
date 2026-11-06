@@ -4,20 +4,20 @@
 
 Скрипты написаны для запуска через Node.js, без новых npm-зависимостей. Поддерживаются `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, ESM и CommonJS; Angular-команды без Angular неприменимы.
 
-Проверки JavaScript и регрессий TypeScript находятся в `test/`; запуск из каталога скилла:
+Проверки JavaScript и регрессий TypeScript находятся в репозитории agent-skills, в каталоге `tests/token-economy-ts/`; в сам скилл они не входят. Запуск из корня репозитория:
 
 ```text
-node --test test/files.test.js
-node --test test/symbols.test.js
-node --test test/graph.test.js
-node --test test/angular.test.js
-node --test test/edit-docs.test.js
+node --test tests/token-economy-ts/files.test.js
+node --test tests/token-economy-ts/symbols.test.js
+node --test tests/token-economy-ts/graph.test.js
+node --test tests/token-economy-ts/angular.test.js
+node --test tests/token-economy-ts/edit-docs.test.js
 ```
 
 Весь набор один раз в конце:
 
 ```text
-node --test test/files.test.js test/symbols.test.js test/graph.test.js test/angular.test.js test/edit-docs.test.js
+node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/edit-docs.test.js
 ```
 
 Тесты создают и удаляют только собственные временные проекты; зависимости проекта не загружаются.

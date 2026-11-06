@@ -28,14 +28,14 @@ test('edit-symbol JSX не считает текст разметки скобк
 }, {'view.jsx': 'function View() {\n    return <div>don\'t count } as a brace</div>;\n}'}));
 
 test('SKILL.md содержит JS и ограничение Angular', () => {
-    const skill = fs.readFileSync(path.join(__dirname, '..', 'SKILL.md'), 'utf8');
+    const skill = fs.readFileSync(path.resolve(__dirname, '..', '..', 'skills', 'token-economy-ts', 'SKILL.md'), 'utf8');
     assert.match(skill, /\.js/);
     assert.match(skill, /Angular-команды.*неприменимы/);
     assert.match(skill, /module\.exports/);
 });
 
 test('README явно описывает JavaScript', () => {
-    const readme = fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'README.md'), 'utf8');
+    const readme = fs.readFileSync(path.resolve(__dirname, '..', '..', 'README.md'), 'utf8');
     assert.match(readme, /JavaScript/);
     assert.match(readme, /React, Node\.js, Express/);
 });

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { redactEntry, redactMetadata, REDACTED, isSensitiveName, scrubUrl } = require('../lib/redact');
+const { redactEntry, redactMetadata, REDACTED, isSensitiveName, scrubUrl } = require('../../skills/token-economy-har/lib/redact');
 
 test('секреты в расширениях, OAuth query/fragment и URL внутри строк', () => {
     const metadata = {

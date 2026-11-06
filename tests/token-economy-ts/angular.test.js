@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {project, cli, json} = require('./helpers');
-const {ANGULAR_ERROR} = require('../scripts/lib/files');
+const {ANGULAR_ERROR} = require('../../skills/token-economy-ts/scripts/lib/files');
 
 for (const script of ['graph-tool', 'scaffold-helper']) {
     test(script + ' отказывает без Angular с кодом 1', () => project(root => {

@@ -6,10 +6,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { getSizes, createStats, addEntry, finishStats } = require('../lib/stats');
-const { parseArgs } = require('../har');
+const { getSizes, createStats, addEntry, finishStats } = require('../../skills/token-economy-har/lib/stats');
+const { parseArgs } = require('../../skills/token-economy-har/har');
 
-const CLI = path.join(__dirname, '..', 'har.js');
+const CLI = path.join(__dirname, '..', '..', 'skills', 'token-economy-har', 'har.js');
 const fixture = name => path.join(__dirname, 'fixtures', `${name}.har`);
 
 function cli(args, expected = 0, input) {

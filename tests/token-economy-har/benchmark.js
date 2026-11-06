@@ -6,10 +6,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 async function worker(argv) {
-    const { parseArgs, run } = require('../har');
-    const { formatResult } = require('../lib/format');
-    const { openHar } = require('../lib/parse');
-    const { createStats, addEntry, finishStats } = require('../lib/stats');
+    const { parseArgs, run } = require('../../skills/token-economy-har/har');
+    const { formatResult } = require('../../skills/token-economy-har/lib/format');
+    const { openHar } = require('../../skills/token-economy-har/lib/parse');
+    const { createStats, addEntry, finishStats } = require('../../skills/token-economy-har/lib/stats');
     const firstFlag = argv.indexOf('--first');
     const first = firstFlag < 0 ? null : Number(argv.splice(firstFlag, 2)[1]);
     const options = parseArgs(argv);

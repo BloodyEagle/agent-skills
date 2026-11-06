@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 const {project, json} = require('./helpers');
-const {SOURCE_EXT, IGNORED_DIRS, walk} = require('../scripts/lib/files');
+const {SOURCE_EXT, IGNORED_DIRS, walk} = require('../../skills/token-economy-ts/scripts/lib/files');
 
 const found = result => result.matches.map(m => m.file.replace(/\\/g, '/'));
 

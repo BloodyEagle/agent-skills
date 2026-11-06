@@ -106,16 +106,16 @@ node "<SKILL_DIR>\har.js" redact -f "capture.har" -o "clean.har" --stream
 
 ## Приёмка
 
-Фикстуры и `node:test` находятся в `test/`. Не запускай тесты, линтер или сборку без разрешения пользователя.
+Тесты, фикстуры и бенчмарк находятся в репозитории разработки, в каталоге `tests/token-economy-har/`; в скопированный скилл они не входят. `<REPO_DIR>` означает корень репозитория agent-skills. Не запускай тесты, линтер или сборку без разрешения пользователя.
 
 Команда тестов после разрешения:
 
 ```powershell
-node --test "<SKILL_DIR>\test\har.test.js" "<SKILL_DIR>\test\parse.test.js" "<SKILL_DIR>\test\redact.test.js"
+node --test "<REPO_DIR>\tests\token-economy-har\har.test.js" "<REPO_DIR>\tests\token-economy-har\parse.test.js" "<REPO_DIR>\tests\token-economy-har\redact.test.js"
 ```
 
 Воспроизводимый бенчмарк без npm создаёт временные искусственные HAR, измеряет CLI в отдельных процессах, сравнивает первые 100 записей и удаляет свои файлы. `--real` задаёт реальный HAR для замеров `info/slow`; без него используется искусственный файл 34 MiB. `--temp` задаёт проверенный каталог временных файлов; искусственный файл по умолчанию 300 MiB (`--size N`).
 
 ```powershell
-node "<SKILL_DIR>\test\benchmark.js" --temp "<TEMP_DIR>" --real "sier40.evolenta3.ru.har"
+node "<REPO_DIR>\tests\token-economy-har\benchmark.js" --temp "<TEMP_DIR>" --real "sier40.evolenta3.ru.har"
 ```

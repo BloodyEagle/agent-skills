@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const { once } = require('node:events');
 
 const STREAM_THRESHOLD = 200 * 1024 * 1024;
 
@@ -316,7 +317,11 @@ async function openHar(file, options = {}) {
             if (error.exitCode === 2) throw error;
             throw harError(`Не удалось прочитать HAR (${error.code || 'ошибка чтения'}).`);
         } finally {
-            if (!stdin && source) source.destroy();
+            if (!stdin && source) {
+                source.destroy();
+                // Закрытие дескриптора завершается до возврата генератора: на Windows открытый файл блокирует удаление каталога.
+                if (!source.closed) await once(source, 'close').catch(() => {});
+            }
         }
     })();
     return { entries, metadata, streaming: true };
