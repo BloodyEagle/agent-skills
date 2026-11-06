@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const { openHar } = require('./lib/parse');
 const stats = require('./lib/stats');
 const { formatResult, MAX_BYTES, MAX_LINES } = require('./lib/format');
-const { redactEntry, redactMetadata } = require('./lib/redact');
+const { createRedactionContext, redactEntry, redactMetadata } = require('./lib/redact');
 
 const COMMANDS = ['info', 'slow', 'errors', 'domains', 'content', 'dup', 'search', 'entry', 'waterfall', 'diff', 'redact'];
 const HELP = [
@@ -79,7 +79,8 @@ function parseArgs(argv) {
             }
             let value;
             if (equals >= 0) value = argument.slice(equals + 1);
-            else if (name === 'body' && (!argv[i + 1] || argv[i + 1].startsWith('-'))) value = '2k';
+            else if (name === 'body' && (!argv[i + 1] || argv[i + 1].startsWith('-')
+                || (!options.command && COMMANDS.includes(argv[i + 1])))) value = '2k';
             else value = argv[++i];
             if (value === undefined || value === '' || (equals < 0 && value.startsWith('-') && value !== '-')) {
                 fail(`${flag}: не указано значение.`);
@@ -270,16 +271,21 @@ async function redactHar(options) {
     if (fs.existsSync(options.output)) fail('Файл назначения уже существует; исходные файлы не перезаписываются.');
     const har = await inputHar(options.file, options);
     const temporary = `${options.output}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    const context = createRedactionContext();
     let fd;
+    let temporaryCreated = false;
+    let operation = 'создать временный HAR в каталоге назначения';
     let requests = 0;
     try {
         fd = fs.openSync(temporary, 'wx', 0o600);
+        temporaryCreated = true;
+        operation = 'записать временный HAR';
         fs.writeFileSync(fd, '{"log":{"entries":[');
         for await (const { entry } of har.entries) {
-            fs.writeFileSync(fd, `${requests ? ',' : ''}${JSON.stringify(redactEntry(entry))}`);
+            fs.writeFileSync(fd, `${requests ? ',' : ''}${JSON.stringify(redactEntry(entry, context))}`);
             requests++;
         }
-        const metadata = redactMetadata(har.metadata);
+        const metadata = redactMetadata(har.metadata, context);
         fs.writeFileSync(fd, ']');
         for (const [key, value] of Object.entries(metadata.log || {})) {
             if (key !== 'entries') fs.writeFileSync(fd, `,${JSON.stringify(key)}:${JSON.stringify(value)}`);
@@ -289,13 +295,32 @@ async function redactHar(options) {
             if (key !== 'log') fs.writeFileSync(fd, `,${JSON.stringify(key)}:${JSON.stringify(value)}`);
         }
         fs.writeFileSync(fd, '}\n');
+        operation = 'закрыть временный HAR';
         fs.closeSync(fd);
         fd = undefined;
         // link создаёт назначение атомарно и, в отличие от rename, не перезаписывает чужой файл.
+        operation = 'опубликовать очищенный HAR через hard link';
         fs.linkSync(temporary, options.output);
+    } catch (error) {
+        if (!(error instanceof Error) || error.exitCode === 2 || typeof error.code !== 'string'
+            || !/^[A-Z][A-Z0-9_]+$/.test(error.code)) throw error;
+        let detail = '';
+        if (operation === 'опубликовать очищенный HAR через hard link') {
+            if (error.code === 'EEXIST') detail = ' Файл назначения уже существует; перезапись запрещена.';
+            else if (['ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'].includes(error.code)) {
+                detail = ' Файловая система каталога назначения должна поддерживать hard links.';
+            }
+        }
+        const failure = new Error(`Не удалось ${operation} (${error.code}).${detail}`);
+        failure.exitCode = 2;
+        failure.code = error.code;
+        throw failure;
     } finally {
-        if (fd !== undefined) fs.closeSync(fd);
-        if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+        try {
+            if (fd !== undefined) fs.closeSync(fd);
+        } finally {
+            if (temporaryCreated && fs.existsSync(temporary)) fs.unlinkSync(temporary);
+        }
     }
     return { command: 'redact', requests, output: options.output, redacted: true };
 }
@@ -319,7 +344,9 @@ async function run(options) {
         }
     }
     const har = await inputHar(options.file, options);
-    const aggregate = ['info', 'domains', 'content'].includes(options.command) ? stats.createStats() : null;
+    const aggregate = options.command === 'info' ? stats.createStats()
+        : options.command === 'domains' ? stats.createStats('domains')
+            : options.command === 'content' ? stats.createStats(options['by-mime'] ? 'mimeTypes' : 'categories') : null;
     const limit = rowLimit(options);
     const capacity = Math.min(limit, MAX_LINES - 5);
     const items = [];
@@ -328,6 +355,7 @@ async function run(options) {
     let selected = null;
     let firstStart = Infinity;
     let lastEnd = -Infinity;
+    let spanIncomplete = false;
     for await (const { index, entry } of har.entries) {
         if (aggregate) {
             stats.addEntry(aggregate, entry);
@@ -370,9 +398,10 @@ async function run(options) {
             keepBest(items, { ...row, timings: stats.getTimings(entry) }, capacity, (a, b) => b.time - a.time || a.index - b.index);
         } else if (options.command === 'waterfall') {
             total++;
+            if (row.start === null || row.time === null) spanIncomplete = true;
             if (row.start !== null) {
                 firstStart = Math.min(firstStart, row.start);
-                lastEnd = Math.max(lastEnd, row.start + (row.time || 0));
+                lastEnd = Math.max(lastEnd, row.start + (row.time ?? 0));
             }
             keepBest(items, row, capacity, (a, b) => (a.start ?? Infinity) - (b.start ?? Infinity) || a.index - b.index);
         }
@@ -391,7 +420,7 @@ async function run(options) {
     } else if (options.command === 'waterfall') {
         const span = Number.isFinite(firstStart) ? lastEnd - firstStart : null;
         for (const row of items) row.offset = row.start === null ? null : row.start - firstStart;
-        result = listResult('waterfall', total, items, limit, { span });
+        result = listResult('waterfall', total, items, limit, { span, spanIncomplete });
     } else result = listResult(options.command, total, items, limit);
     const count = result.requests ?? result.total ?? (selected ? 1 : 0);
     return { result, exitCode: count ? 0 : 1 };
@@ -402,11 +431,16 @@ async function main() {
     try {
         options = parseArgs(process.argv.slice(2));
         const { result, exitCode } = await run(options);
-        if (options.command === 'help' && !options.json) process.stdout.write(`${HELP}\n`);
-        else process.stdout.write(`${formatResult(result, options)}\n`);
+        process.stdout.write(`${formatResult(result, options)}\n`);
         process.exitCode = exitCode;
     } catch (error) {
-        const message = error.exitCode === 2 ? error.message : `Не удалось обработать HAR: ${error.message}`;
+        let message = 'Не удалось обработать HAR: неизвестная ошибка.';
+        // Произвольные выброшенные объекты, включая getters, не должны ломать диагностику.
+        try {
+            if (error instanceof Error && typeof error.message === 'string') {
+                message = error.exitCode === 2 ? error.message : `Не удалось обработать HAR: ${error.message}`;
+            }
+        } catch {}
         const json = options?.json || process.argv.includes('--json');
         process.stderr.write(`${formatResult(json ? { error: message, exitCode: 2 } : { message: `Ошибка: ${message}` }, { json })}\n`);
         process.exitCode = 2;

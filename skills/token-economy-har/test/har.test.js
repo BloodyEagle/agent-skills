@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { getSizes, createStats, addEntry, finishStats } = require('../lib/stats');
+const { parseArgs } = require('../har');
 
 const CLI = path.join(__dirname, '..', 'har.js');
 const fixture = name => path.join(__dirname, 'fixtures', `${name}.har`);
@@ -38,10 +39,11 @@ test('info: записи, страницы, честные суммы и про�
     assert.equal(result.requests, 6);
     assert.equal(result.pages, 1);
     assert.equal(result.bytes.uncompressed, 1200);
-    assert.equal(result.bytes.transfer, 580);
+    assert.equal(result.bytes.transferred_known, 580);
     assert.equal(result.bytes.compression, 620);
     assert.equal(result.bytes.unknownUncompressed, 1);
-    assert.equal(result.bytes.unknownTransfer, 1);
+    assert.equal(result.bytes.transferred_unknown_count, 1);
+    assert.equal(result.bytes.transferred_is_lower_bound, true);
     assert.equal(result.bytes.unknownCompression, 1);
     assert.deepEqual(result.statuses, { 0: 1, 200: 3, 404: 1, 500: 1 });
     assert.deepEqual(result.methods, { GET: 4, HEAD: 1, POST: 1 });
@@ -53,12 +55,41 @@ test('info: записи, страницы, честные суммы и про�
     assert.ok(Buffer.byteLength(cli(['info', '-f', fixture('mixed')]).stdout) <= 2048);
 });
 
+test('info: передача и разница размеров считаются только по известным bodySize', () => {
+    for (const flags of [[], ['--stream']]) {
+        const result = json(['info', '-f', fixture('partial-transfer'), ...flags]);
+        assert.equal(result.requests, 4);
+        assert.deepEqual(result.bytes, {
+            transferred_known: 61, transferred_unknown_count: 2, transferred_is_lower_bound: true,
+            uncompressed: 1000, compression: 339, unknownUncompressed: 0, unknownCompression: 2,
+            estimatedUncompressed: 0
+        });
+        assert.equal(Object.hasOwn(result.bytes, 'transfer'), false);
+        assert.equal(Object.hasOwn(result.bytes, 'transferred'), false);
+        assert.equal(result.time.total, 100);
+        assert.equal(result.time.p50, 20);
+        assert.equal(result.time.p95, 40);
+        const text = cli(['info', '-f', fixture('partial-transfer'), ...flags]).stdout;
+        assert.match(text, /не менее 61 B передано \(неизвестно для 2 записей\)/);
+        assert.match(text, /не менее 339 B разницы размеров \(неизвестно для 2 пар\)/);
+        assert.doesNotMatch(text, /339 B экономии/);
+    }
+    const aggregate = createStats();
+    addEntry(aggregate, { response: { bodySize: 20, content: { size: 100 } } });
+    const complete = finishStats(aggregate).bytes;
+    assert.equal(complete.transferred_known, 20);
+    assert.equal(complete.transferred_unknown_count, 0);
+    assert.equal(complete.transferred_is_lower_bound, false);
+});
+
 test('неизвестные размеры и времена не превращаются в известные нули', () => {
     const aggregate = createStats();
     addEntry(aggregate, { time: -1, timings: { wait: 10 }, response: { bodySize: -1, content: {} } });
     const result = finishStats(aggregate);
     assert.equal(result.bytes.unknownUncompressed, 1);
-    assert.equal(result.bytes.unknownTransfer, 1);
+    assert.equal(result.bytes.transferred_known, 0);
+    assert.equal(result.bytes.transferred_unknown_count, 1);
+    assert.equal(result.bytes.transferred_is_lower_bound, true);
     assert.equal(result.time.unknown, 1);
     assert.equal(result.time.p50, null);
     assert.deepEqual(getSizes({ response: { bodySize: 20, content: { size: -1 } } }), {
@@ -137,6 +168,38 @@ test('entry: тело только явно, ограничение байтов
     assert.deepEqual([...Buffer.from(binary.text, 'base64')], [1, 2]);
     assert.equal(binary.truncated, true);
     assert.equal(json(['entry', '999', '-f', fixture('mixed')], 1).found, false);
+});
+
+test('entry: --body без размера до команды и неверный явный размер', () => {
+    const expected = json(['entry', '0', '-f', fixture('mixed'), '--body', '2k']).body;
+    for (const args of [
+        ['--body', 'entry', '0'], ['--body', '2k', 'entry', '0'], ['entry', '0', '--body'],
+        ['--json', '--body', 'entry', '0'], ['--body', '--json', 'entry', '0'],
+        ['--pretty', '--body', 'entry', '0']
+    ]) {
+        assert.equal(parseArgs([...args, '-f', fixture('mixed')]).body, 2048);
+        assert.deepEqual(json([...args, '-f', fixture('mixed')]).body, expected);
+    }
+    for (const args of [
+        ['--body', '5x', 'entry', '0'], ['entry', '0', '--body', '5x'], ['--body=5x', 'entry', '0']
+    ]) {
+        const result = cli([...args, '-f', fixture('mixed'), '--json'], 2);
+        assert.equal(JSON.parse(result.stderr).exitCode, 2);
+        assert.match(JSON.parse(result.stderr).error, /--body:.*(?:байтов|размер)/);
+    }
+});
+
+test('help: полный текст в JSON и pretty с общим пределом вывода', () => {
+    const expected = cli(['help']).stdout.trimEnd();
+    for (const flags of [[], ['--pretty']]) {
+        const output = cli(['help', '--json', ...flags]).stdout;
+        const result = JSON.parse(output);
+        assert.equal(result.message, expected);
+        assert.ok(result.message.includes('\n'));
+        assert.notEqual(result.truncated, true);
+        assert.ok(Buffer.byteLength(output) <= 8192);
+        assert.ok(output.trimEnd().split('\n').length <= 200);
+    }
 });
 
 test('команды не выводят тела по умолчанию', () => {

@@ -48,10 +48,10 @@ function formatInfo(result) {
     const time = result.time;
     return [
         `Запросов: ${result.requests}; страниц: ${result.pages}`,
-        `Размеры тел: ${formatBytes(bytes.uncompressed)} несжатых; ${formatBytes(bytes.transfer)} передано; ${formatBytes(bytes.compression)} экономии`,
-        `Неизвестные размеры: передано=${bytes.unknownTransfer}, несжатые=${bytes.unknownUncompressed}, экономия=${bytes.unknownCompression}; оценка по bodySize=${bytes.estimatedUncompressed}`,
+        `Размеры тел: ${formatBytes(bytes.uncompressed)} несжатых; ${boundedBytes(bytes.transferred_known, bytes.transferred_is_lower_bound, bytes.transferred_unknown_count, ['записи', 'записей'], 'передано')}; ${boundedBytes(bytes.compression, bytes.unknownCompression > 0, bytes.unknownCompression, ['пары', 'пар'], bytes.unknownCompression ? 'разницы размеров' : 'экономии')}`,
+        `Неизвестные размеры: несжатые=${bytes.unknownUncompressed}; оценка по bodySize=${bytes.estimatedUncompressed}`,
         `Время: p50=${formatTime(time.p50)}, p95=${formatTime(time.p95)}, p99=${formatTime(time.p99)}, max=${formatTime(time.max)}`,
-        `Сумма длительностей: ${formatTime(time.total)}; интервал записи: ${formatTime(time.span)}; неизвестно=${time.unknown}`,
+        `Сумма длительностей: ${formatTime(time.total)}; интервал записи: ${formatTime(time.span)}${time.spanIncomplete ? ' (нижняя оценка)' : ''}; неизвестно=${time.unknown}`,
         `Статусы: ${histogram(result.statuses) || '(нет)'}`,
         `Методы: ${histogram(result.methods) || '(нет)'}`,
         `Домены: ${result.domains.map(row => `${clip(row.domain, 50)} (${row.count})`).join(', ') || '(нет)'}`,
@@ -63,6 +63,13 @@ function formatInfo(result) {
 
 function aggregateBytes(value, unknown) {
     return `${formatBytes(value)}${unknown ? ` + ?(${unknown})` : ''}`;
+}
+
+function boundedBytes(known, lower, unknownCount, forms, label) {
+    const amount = `${lower ? 'не менее ' : ''}${formatBytes(known)} ${label}`;
+    if (!lower) return amount;
+    const word = unknownCount % 10 === 1 && unknownCount % 100 !== 11 ? forms[0] : forms[1];
+    return `${amount} (неизвестно для ${unknownCount} ${word})`;
 }
 
 function entryRow(row) {
@@ -85,8 +92,11 @@ function listRow(command, row, result) {
         const width = 36;
         const span = Math.max(1, result.span || 1);
         const offset = row.offset === null ? null : Math.min(width - 1, Math.floor(row.offset / span * width));
-        const length = offset === null ? 0 : Math.max(1, Math.min(width - offset, Math.ceil((row.time || 0) / span * width)));
-        const bar = offset === null ? '?'.padEnd(width) : (' '.repeat(offset) + '='.repeat(length)).padEnd(width);
+        const unknownTime = row.time === null || row.time === undefined;
+        const length = offset === null || unknownTime ? 0 : Math.max(1, Math.min(width - offset, Math.ceil(row.time / span * width)));
+        const bar = offset === null ? '?'.padEnd(width)
+            : unknownTime ? (' '.repeat(offset) + '?').padEnd(width)
+                : (' '.repeat(offset) + '='.repeat(length)).padEnd(width);
         return `#${row.index} [${bar}] +${formatTime(row.offset)} ${formatTime(row.time)} ${clip(row.url, 125)}`;
     }
     if (command === 'diff') {
@@ -106,7 +116,7 @@ function formatList(result) {
         ? 'Группа | запросы | передано / несжатое | сумма времени' : '';
     const lines = [`Совпадений: ${result.total}; показано: ${result.items.length}`];
     if (header) lines.push(header);
-    if (result.span !== undefined) lines.push(`Интервал: ${formatTime(result.span)}; '=' обозначает длительность, не фазы ожидания`);
+    if (result.span !== undefined) lines.push(`Интервал: ${formatTime(result.span)}${result.spanIncomplete ? ' (нижняя оценка)' : ''}; '=' обозначает длительность, не фазы ожидания`);
     lines.push(...result.items.map(row => listRow(result.command, row, result)));
     if (!result.total) lines.push('Нет подходящих записей.');
     if (result.omitted) {
@@ -152,6 +162,7 @@ function renderText(result) {
 
 function boundedCopy(value, state, key = '', parent = null) {
     if (typeof value === 'string') {
+        if (state.isHelp && key === 'message' && parent === state.root) return value;
         const bodyText = key === 'text' && parent && Object.hasOwn(parent, 'shownBytes');
         const max = bodyText ? MAX_BYTES - 512 : key === 'url' || key === 'key' ? 600 : 400;
         const safe = bodyText ? value : value.replace(/[\u0000-\u001f\u007f]/g, ' ');
@@ -177,56 +188,89 @@ function boundedCopy(value, state, key = '', parent = null) {
     return value;
 }
 
-function candidates(value, arrays = [], strings = []) {
+function candidates(value, arrays = [], strings = [], path = []) {
     if (!value || typeof value !== 'object') return { arrays, strings };
     for (const [key, item] of Object.entries(value)) {
-        if (Array.isArray(item) && item.length) arrays.push({ parent: value, key, value: item });
-        else if (typeof item === 'string' && item.length > 16) strings.push({ parent: value, key, value: item });
-        if (item && typeof item === 'object') candidates(item, arrays, strings);
+        const fieldPath = path.concat(key);
+        if (Array.isArray(item) && item.length) arrays.push({ parent: value, key, value: item, path: fieldPath });
+        else if (typeof item === 'string' && item.length > 16) strings.push({ parent: value, key, value: item, path: fieldPath });
+        if (item && typeof item === 'object') candidates(item, arrays, strings, fieldPath);
     }
     return { arrays, strings };
 }
 
+function invisibleInText(path) {
+    return path.includes('queryString') || path.includes('cookies') || path.includes('urls')
+        || (path.includes('postData') && path.includes('params'));
+}
+
+function noteRemoval(array, remove, result) {
+    if (array.parent === result && array.key === 'items') {
+        result.shown = result.items.length;
+        result.omitted = result.total - result.shown;
+    } else if (array.parent === result && array.key === 'domains') {
+        result.omittedDomains = (result.omittedDomains || 0) + remove;
+    } else if (array.parent === result && array.key === 'contentTypes') {
+        result.omittedContentTypes = (result.omittedContentTypes || 0) + remove;
+    } else if (array.key === 'indices' && Object.hasOwn(array.parent, 'count')) {
+        array.parent.omittedIndices = array.parent.count - array.value.length;
+    } else {
+        result.omittedValues = (result.omittedValues || 0) + remove;
+    }
+}
+
 function formatResult(original, options = {}) {
-    const state = { truncated: false };
+    const isHelp = Boolean(original) && original.command === 'help' && typeof original.message === 'string';
+    const state = { truncated: false, root: original, isHelp };
     const result = boundedCopy(original, state);
     if (state.truncated) result.truncated = true;
     const render = () => options.json ? JSON.stringify(result, null, options.pretty ? 2 : undefined) : renderText(result);
+    const arraySizes = new WeakMap();
+    const sizeOf = value => {
+        let size = arraySizes.get(value);
+        if (size === undefined) {
+            size = JSON.stringify(value).length;
+            arraySizes.set(value, size);
+        }
+        return size;
+    };
     let text = render();
     while (!fits(text)) {
         result.truncated = true;
         const fields = candidates(result);
         const rows = fields.arrays.find(field => field.parent === result && field.key === 'items');
-        const array = rows || fields.arrays.sort((a, b) => JSON.stringify(b.value).length - JSON.stringify(a.value).length)[0];
+        const pool = options.json ? fields.arrays : fields.arrays.filter(field => !invisibleInText(field.path));
+        const array = rows || pool.sort((a, b) => sizeOf(b.value) - sizeOf(a.value))[0];
         if (array) {
-            array.value.pop();
-            if (array.parent === result && array.key === 'items') {
-                result.shown = result.items.length;
-                result.omitted = result.total - result.shown;
-            } else if (array.parent === result && array.key === 'domains') result.omittedDomains++;
-            else if (array.parent === result && array.key === 'contentTypes') result.omittedContentTypes++;
-            else if (array.key === 'indices' && Object.hasOwn(array.parent, 'count')) array.parent.omittedIndices = array.parent.count - array.value.length;
-            else result.omittedValues = (result.omittedValues || 0) + 1;
-        } else {
-            const mapKey = ['statuses', 'methods'].filter(key => result[key] && Object.keys(result[key]).length)
-                .sort((a, b) => JSON.stringify(result[b]).length - JSON.stringify(result[a]).length)[0];
-            if (mapKey) {
-                const keys = Object.keys(result[mapKey]);
-                delete result[mapKey][keys[keys.length - 1]];
-                const omitted = mapKey === 'statuses' ? 'omittedStatuses' : 'omittedMethods';
-                result[omitted] = (result[omitted] || 0) + 1;
-                text = render();
-                continue;
-            }
-            const field = fields.strings.sort((a, b) => b.value.length - a.value.length)[0];
-            if (!field) break;
-            const body = field.key === 'text' && Object.hasOwn(field.parent, 'shownBytes');
-            const bytes = Math.max(16, Math.floor(Buffer.byteLength(field.value) / 2));
-            field.parent[field.key] = body ? truncateBody(field.value, field.parent, bytes) : truncateUtf8(field.value, bytes);
-            if (body) {
-                field.parent.shownBytes = Buffer.byteLength(field.parent.text, field.parent.encoding === 'base64' ? 'base64' : 'utf8');
-                field.parent.truncated = true;
-            }
+            const remove = Math.max(1, Math.floor(array.value.length / 2));
+            array.value.splice(array.value.length - remove, remove);
+            arraySizes.delete(array.value);
+            noteRemoval(array, remove, result);
+            text = render();
+            continue;
+        }
+        const mapKey = options.json && ['statuses', 'methods'].filter(key => result[key] && Object.keys(result[key]).length)
+            .sort((a, b) => JSON.stringify(result[b]).length - JSON.stringify(result[a]).length)[0];
+        if (mapKey) {
+            const keys = Object.keys(result[mapKey]);
+            const remove = Math.max(1, Math.floor(keys.length / 2));
+            for (let i = keys.length - remove; i < keys.length; i++) delete result[mapKey][keys[i]];
+            const omitted = mapKey === 'statuses' ? 'omittedStatuses' : 'omittedMethods';
+            result[omitted] = (result[omitted] || 0) + remove;
+            text = render();
+            continue;
+        }
+        const field = fields.strings
+            .filter(candidate => !(isHelp && candidate.parent === result && candidate.key === 'message'))
+            .filter(candidate => options.json || !invisibleInText(candidate.path))
+            .sort((a, b) => b.value.length - a.value.length)[0];
+        if (!field) break;
+        const body = field.key === 'text' && Object.hasOwn(field.parent, 'shownBytes');
+        const bytes = Math.max(16, Math.floor(Buffer.byteLength(field.value) / 2));
+        field.parent[field.key] = body ? truncateBody(field.value, field.parent, bytes) : truncateUtf8(field.value, bytes);
+        if (body) {
+            field.parent.shownBytes = Buffer.byteLength(field.parent.text, field.parent.encoding === 'base64' ? 'base64' : 'utf8');
+            field.parent.truncated = true;
         }
         text = render();
     }

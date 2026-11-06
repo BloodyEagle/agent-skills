@@ -147,15 +147,20 @@ function addGroup(groups, name, sizes, time) {
     addAggregate(groups.get(name), sizes, time);
 }
 
-function createStats() {
+function createStats(group = null) {
+    if (group === 'domains' || group === 'mimeTypes' || group === 'categories') {
+        return { requests: 0, group, [group]: new Map() };
+    }
     return {
         requests: 0,
-        bytes: { transfer: 0, uncompressed: 0, compression: 0, unknownTransfer: 0, unknownUncompressed: 0,
-            unknownCompression: 0, estimatedUncompressed: 0 },
+        bytes: { transferred_known: 0, transferred_unknown_count: 0, transferred_is_lower_bound: false,
+            uncompressed: 0, compression: 0, unknownUncompressed: 0, unknownCompression: 0,
+            estimatedUncompressed: 0 },
         durations: [],
         unknownTime: 0,
         firstStart: Infinity,
         lastEnd: -Infinity,
+        spanIncomplete: false,
         statuses: new Map(),
         methods: new Map(),
         domains: new Map(),
@@ -168,14 +173,33 @@ function addEntry(stats, entry) {
     stats.requests++;
     const sizes = getSizes(entry);
     const time = getTime(entry);
-    for (const key of ['transfer', 'uncompressed', 'compression']) {
-        if (sizes[key] === null) stats.bytes[`unknown${key[0].toUpperCase()}${key.slice(1)}`]++;
-        else stats.bytes[key] += sizes[key];
+    if (stats.group) {
+        let name;
+        if (stats.group === 'domains') name = getDomain(entry.request?.url);
+        else {
+            const mime = getMime(entry);
+            name = stats.group === 'mimeTypes' ? mime : getCategory(mime);
+        }
+        addGroup(stats[stats.group], name, sizes, time);
+        return;
     }
+    const size = knownSize(entry.response?.content?.size);
+    const body = knownSize(entry.response?.bodySize);
+    if (body === null) {
+        stats.bytes.transferred_unknown_count++;
+        stats.bytes.transferred_is_lower_bound = true;
+    } else {
+        stats.bytes.transferred_known += body;
+    }
+    if (sizes.uncompressed === null) stats.bytes.unknownUncompressed++;
+    else stats.bytes.uncompressed += sizes.uncompressed;
+    if (size !== null && body !== null) stats.bytes.compression += size - body;
+    else stats.bytes.unknownCompression++;
     if (sizes.uncompressedEstimated) stats.bytes.estimatedUncompressed++;
     if (time === null) stats.unknownTime++;
     else stats.durations.push(time);
     const start = Date.parse(entry.startedDateTime);
+    if (time === null || !Number.isFinite(start)) stats.spanIncomplete = true;
     if (Number.isFinite(start)) {
         stats.firstStart = Math.min(stats.firstStart, start);
         stats.lastEnd = Math.max(stats.lastEnd, start + (time || 0));
@@ -212,7 +236,8 @@ function finishStats(stats, metadata = {}, limit = 5) {
             p50: percentile(0.5), p95: percentile(0.95), p99: percentile(0.99),
             max: sorted.length ? sorted[sorted.length - 1] : null,
             unknown: stats.unknownTime,
-            span: Number.isFinite(stats.firstStart) ? stats.lastEnd - stats.firstStart : null
+            span: Number.isFinite(stats.firstStart) ? stats.lastEnd - stats.firstStart : null,
+            spanIncomplete: stats.spanIncomplete
         },
         statuses: Object.fromEntries([...stats.statuses].sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))),
         methods: Object.fromEntries([...stats.methods].sort(([a], [b]) => a.localeCompare(b))),
