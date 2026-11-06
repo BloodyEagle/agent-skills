@@ -1,4 +1,4 @@
-// edit-symbol.js — хирургическая замена тела функции/метода в .ts/.tsx (action: edit_symbol).
+// edit-symbol.js — хирургическая замена тела функции/метода в TS/JS/TSX/JSX/MJS/CJS (action: edit_symbol).
 // Заменяет ТОЛЬКО содержимое между { и } тела указанного символа: подпись, JSDoc, декораторы
 // и остальные байты файла не меняются (BOM, CRLF/LF и соседний код — байт в байт).
 //
@@ -35,6 +35,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const {SOURCE_EXT} = require('./lib/files');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
@@ -81,14 +82,15 @@ const cwd = process.cwd();
 
 // ---------- 1. Валидация входа ----------
 
-if (!args.file) fail('укажи file=<путь к .ts/.tsx> и symbol=<имя>; тело — через body_file= / body= / body_b64=');
+if (!args.file) fail('укажи file=<путь к исходнику> и symbol=<имя>; тело — через body_file= / body= / body_b64=');
 const absFile = path.resolve(cwd, args.file);
 {
     const rel = path.relative(cwd, absFile);
     if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
         fail('file вне рабочей директории запрещён: ' + args.file); // правило 11 скилла
 }
-if (!/\.(tsx?)$/i.test(absFile)) fail('допустимы только файлы .ts/.tsx: ' + args.file);
+const sourceExt = path.extname(absFile).toLowerCase();
+if (!SOURCE_EXT.includes(sourceExt)) fail('допустимы только файлы ' + SOURCE_EXT.join('/') + ': ' + args.file);
 if (!fs.existsSync(absFile) || !fs.statSync(absFile).isFile()) fail('файл не найден: ' + args.file);
 if (fs.statSync(absFile).size > 2 * 1024 * 1024) fail('файл больше 2 МБ — edit_symbol не предназначен для бандлов');
 
@@ -146,7 +148,8 @@ const bom = src.charCodeAt(0) === 0xFEFF;
 if (bom) src = src.slice(1);
 const nlPos = src.indexOf('\n');
 const eol = nlPos > 0 && src[nlPos - 1] === '\r' ? '\r\n' : '\n';
-const isTsx = /\.tsx$/i.test(absFile);
+const isJsx = sourceExt === '.tsx' || sourceExt === '.jsx';
+const isJavaScript = sourceExt !== '.ts' && sourceExt !== '.tsx';
 
 // строки/позиции
 function lineStartsOf(text) {
@@ -227,11 +230,11 @@ function prev2(mask, pos) {
  * заменяется пробелами. Длина и переводы строк сохраняются 1:1, идентификаторы и знаки
  * остаются — по маске ищем имена и скобки, не боясь «}» внутри строки.
  */
-function maskCode(text, isTsx) {
+function maskCode(text, jsx) {
     const n = text.length;
     const out = new Array(n);
     const LETTER = /[A-Za-z0-9_$\u00C0-\u024F\u0370-\u04FF\u4E00-\u9FFF]/; // для апострофов JSX-текста
-    const stack = [{m: 'code', nest: 0}]; // code | tpl
+    const stack = [{m: 'code', nest: 0}]; // code | tpl | jsxText | jsxTag
     let lastCode = '', lastWord = '';
     const REGEX_WORDS = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'case', 'do', 'else', 'yield', 'await', 'throw']);
     let i = 0;
@@ -247,7 +250,43 @@ function maskCode(text, isTsx) {
             i++;
             continue;
         }
+        // JSX-разметка и текст не участвуют в балансе; выражения {…} остаются кодом.
+        if (top.m === 'jsxText' || top.m === 'jsxTag') {
+            if (c === '{') {
+                out[i] = '{';
+                stack.push({m: 'code', nest: 0, jsxExpr: true});
+                lastCode = '{'; lastWord = '';
+                i++;
+                continue;
+            }
+            if (top.m === 'jsxText' && c === '<') {
+                stack.push({m: 'jsxTag', closing: text[i + 1] === '/'});
+            } else if (top.m === 'jsxTag' && (c === '"' || c === "'")) {
+                let end = i + 1;
+                while (end < n && text[end] !== c) { if (text[end] === '\\') end++; end++; }
+                end = Math.min(n, end + 1);
+                maskPlain(i, end);
+                i = end;
+                continue;
+            } else if (top.m === 'jsxTag' && c === '>') {
+                stack.pop();
+                const parent = stack[stack.length - 1];
+                if (top.closing) parent.depth--;
+                else if (prevNonWs(text, i) !== '/') parent.depth++;
+                if (parent.depth === 0) { stack.pop(); lastCode = 'w'; lastWord = ''; }
+            }
+            out[i] = c === '\n' || c === '\r' ? c : ' ';
+            i++;
+            continue;
+        }
         // --- режим кода ---
+        if (jsx && c === '<' && /^<(?:>|[A-Za-z][\w:.-]*(?=[\s/>]))/.test(text.slice(i))
+            && (lastCode === '' || '([=,:?{>!&|'.includes(lastCode) || lastWord === 'return' || lastWord === 'yield')) {
+            stack.push({m: 'jsxText', depth: 0}, {m: 'jsxTag', closing: false});
+            out[i] = ' ';
+            i++;
+            continue;
+        }
         if (c === "'" || c === '"') {
             // JSX-апостроф: буква'буква (don't, user's) — не строковый литерал
             if (c === "'" && i > 0 && LETTER.test(text[i - 1]) && i + 1 < n && LETTER.test(text[i + 1])) { out[i] = ' '; i++; continue; }
@@ -323,7 +362,7 @@ function maskCode(text, isTsx) {
         if (c === '}') {
             if (stack.length > 1) {
                 if (top.nest > 0) { top.nest--; out[i] = c; }
-                else { out[i] = ' '; stack.pop(); } // закрытие ${…}
+                else { out[i] = top.jsxExpr ? '}' : ' '; stack.pop(); } // закрытие JSX {…} или ${…}
                 lastCode = ''; lastWord = '';
                 i++;
                 continue;
@@ -350,7 +389,7 @@ function maskCode(text, isTsx) {
 }
 
 function bracketsBalanced(text) {
-    const mask = maskCode(text, false);
+    const mask = maskCode(text, isJsx);
     const need = {')': '(', ']': '[', '}': '{'};
     const st = [];
     for (let i = 0; i < mask.length; i++) {
@@ -547,6 +586,14 @@ function headScan(mask, pos, nameLen) {
             if (mask[j] === '{') return {bodyStart: j, arrow: true};
             return {stop: 'expr'}; // тело-выражение
         }
+        if (w && /^[$A-Za-z_][\w$]*$/.test(w)) { // стрелка с одним параметром: x => { … }
+            const after = skipWs(mask, j + w.length);
+            if (mask[after] === '=' && mask[after + 1] === '>') {
+                j = skipWs(mask, after + 2);
+                if (mask[j] === '{') return {bodyStart: j, arrow: true};
+                return {stop: 'expr'};
+            }
+        }
         return {stop: 'reject'}; // не функция
     }
     if (mask[j] === '{') return {bodyStart: j, arrow: false};
@@ -566,7 +613,7 @@ function kindLabel(mask, span, pos, arrow, name, kind) {
 }
 
 function fallbackFind() {
-    const mask = maskCode(src, isTsx);
+    const mask = maskCode(src, isJsx);
     const occ = findOccurrences(mask, spec.name);
     if (!occ.length) return {error: 'символ не найден в ' + args.file + ': ' + args.symbol};
     const spans = classSpans(mask);
@@ -639,7 +686,9 @@ if (engineMode === 'auto' || engineMode === 'ts') {
 }
 
 function tsFind() {
-    const scriptKind = isTsx ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    const scriptKind = isJavaScript
+        ? (isJsx ? ts.ScriptKind.JSX : ts.ScriptKind.JS)
+        : (isJsx ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     const sf = ts.createSourceFile(absFile, src, ts.ScriptTarget.Latest, false, scriptKind);
     const baseDiags = sf.parseDiagnostics.length;
     const identText = (n) => n && ts.isIdentifier(n) ? n.text : null;
@@ -817,7 +866,7 @@ if (ts) {
     found = tsFind();
     if (found.error) fail(found.error, found.candidates ? {candidates: found.candidates} : undefined);
     baseDiags = found.baseDiags;
-    mask = maskCode(src, isTsx); // для расчёта отступа соседних блоков
+    mask = maskCode(src, isJsx); // для расчёта отступа соседних блоков
 } else {
     found = fallbackFind();
     if (found.error) fail(found.error, found.candidates ? {candidates: found.candidates} : undefined);
@@ -836,7 +885,9 @@ let newContent = buildContent(innerStart, innerEnd, newBody, indents.declIndent)
 
 // валидация нового содержимого
 if (ts) {
-    const scriptKind = isTsx ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    const scriptKind = isJavaScript
+        ? (isJsx ? ts.ScriptKind.JSX : ts.ScriptKind.JS)
+        : (isJsx ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     const sfNew = ts.createSourceFile(absFile, newContent, ts.ScriptTarget.Latest, false, scriptKind);
     if (sfNew.parseDiagnostics.length > baseDiags) {
         const d = sfNew.parseDiagnostics[baseDiags];

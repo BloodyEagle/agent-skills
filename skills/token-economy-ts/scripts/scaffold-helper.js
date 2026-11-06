@@ -3,6 +3,12 @@
 const fs = require('fs');
 const path = require('path');
 const {execSync} = require('child_process');
+const {isAngular, ANGULAR_ERROR} = require('./lib/files');
+
+if (!isAngular(process.cwd())) {
+    console.log(ANGULAR_ERROR);
+    process.exit(1);
+}
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin → env.

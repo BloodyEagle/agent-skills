@@ -23,12 +23,12 @@
 
 ### token-economy-ts — TypeScript / JavaScript / Angular
 
-Обязательный навык для Angular-проектов: заменяет встроенный поиск и ручное чтение файлов.
+Обязательный навык для TypeScript, JavaScript и Angular-проектов: заменяет встроенный поиск и ручное чтение файлов. Поддерживает React, Node.js, Express и Vue на JavaScript, ESM и CommonJS (`require`, `module.exports`). Angular-команды применимы только при наличии Angular.
 
 - `search` — найти текст или регулярку по проекту, с фильтром по расширениям;
 - `graph symbol` / `graph selector` — где объявлен класс, пайп, селектор, `$`-переменная, миксин;
 - `graph deps` / `graph rdeps` — что использует файл и кто использует его;
-- `outline` — оглавление TS-файла: вместо 800 строк — список символов с номерами;
+- `outline` — оглавление TS/JS-файла, включая JSX: вместо 800 строк — список символов с номерами;
 - `generate` — создание сущностей Angular через CLI.
 
 Требуется Node.js. Скрипты: `code-searcher.js`, `graph-tool.js`, `symbol-index.js` в каталоге `scripts/`.

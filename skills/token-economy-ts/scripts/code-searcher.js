@@ -1,6 +1,7 @@
 // code-searcher.js — поиск по подстроке в файлах проекта: имена файлов, номера строк, короткие сниппеты.
 const fs = require('fs');
 const path = require('path');
+const {SOURCE_EXT, walk} = require('./lib/files');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin → env.
@@ -31,7 +32,7 @@ if (!Object.keys(args).length) {
 }
 
 const query = args.query;
-const root = args.root || 'src';
+const root = args.root || (fs.existsSync(path.join(process.cwd(), 'src')) ? 'src' : '.');
 
 if (!query) {
     console.log(JSON.stringify({error: "Не указан поисковый запрос (query)"}));
@@ -39,7 +40,7 @@ if (!query) {
 }
 
 // Несколько расширений за вызов: ext=.ts,.html
-const exts = String(args.ext || '.ts').split(',').map(s => s.trim()).filter(Boolean)
+const exts = String(args.ext || SOURCE_EXT.join(',')).split(',').map(s => s.trim()).filter(Boolean)
     .map(s => s.startsWith('.') ? s : '.' + s);
 // i=1 — без учёта регистра; regex=1 — query как регулярное выражение;
 // limit — максимум показанных совпадений (по умолчанию 30); files=1 — только файлы со счётчиками.
@@ -70,29 +71,19 @@ if (relRoot === '..' || relRoot.startsWith('..' + path.sep) || path.isAbsolute(r
     process.exit(1);
 }
 
-// Выровнен с graph-tool: те же исключаемые папки, точное совпадение имени
-// (было — подстрока: папка "distributes" тоже попадала под исключение)
-const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', '.zcode', '.kilo', '.kilocode', '.angular', 'coverage', 'build']);
-
 function searchInDir(dir, results = []) {
-    if (!fs.existsSync(dir)) return results;
-    fs.readdirSync(dir).forEach(file => {
-        const filePath = path.join(dir, file);
-        if (fs.statSync(filePath).isDirectory()) {
-            if (!EXCLUDE_DIRS.has(file)) searchInDir(filePath, results);
-        } else if (exts.some(e => file.endsWith(e))) {
-            const lines = fs.readFileSync(filePath, 'utf8').replace(/\r\n?/g, '\n').split('\n');
-            lines.forEach((line, index) => {
-                if (match(line)) {
-                    results.push({
-                        file: path.relative(process.cwd(), filePath),
-                        line: index + 1,
-                        text: line.trim().replace(/\r/g, '').substring(0, 100)
-                    });
-                }
-            });
-        }
-    });
+    for (const filePath of walk(dir, {ext: exts})) {
+        const lines = fs.readFileSync(filePath, 'utf8').replace(/\r\n?/g, '\n').split('\n');
+        lines.forEach((line, index) => {
+            if (match(line)) {
+                results.push({
+                    file: path.relative(process.cwd(), filePath),
+                    line: index + 1,
+                    text: line.trim().replace(/\r/g, '').substring(0, 100)
+                });
+            }
+        });
+    }
     return results;
 }
 
