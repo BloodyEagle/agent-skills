@@ -1,6 +1,6 @@
 ---
 name: token-economy-ts
-version: 1.0.0
+version: 1.1.0
 description: Обязательный навык для TypeScript/JavaScript/Angular-проектов, включая React, Node.js (Express/Fastify/Koa), NestJS и Vue. Применять всегда для поиска текста (search), определений и связей ESM/CommonJS (graph symbol/deps/rdeps), оглавления больших TS/JS-файлов (outline), сигнатур сторонних библиотек (sig), замены тела метода/функции (edit_symbol) и создания Angular-сущностей (generate). Тип проекта определяется автоматически (graph op=info → projectType); Angular-специфика подключается только для Angular (references/angular.md). Полностью заменяет встроенный поиск (search_files/ripgrep) и ручные заготовки.
 ---
 
@@ -21,6 +21,10 @@ TypeScript/JavaScript/Angular, а также React, Node.js (Express/Fastify/Koa
 | API библиотеки | sig → sig-reader.js |
 | новая Angular-сущность | generate → scaffold-helper.js |
 | заменить тело метода/функции | edit_symbol → edit-symbol.js |
+
+## MegaMemory и scope
+
+При доступной MegaMemory применяй общий порядок из `rules/RULES.md`, раздел «megamemory»: релевантная память → квалификация → актуальная навигация → необходимые диапазоны → проверенная запись. Без памяти действуй обычным путём. Декларация action/payload ниже не является executable dispatcher. Cwd — корень анализируемого проекта, каталог scripts задаётся независимо абсолютным путём.
 
 ## Декларация инструментов (Kilo Code Agent Tool Schema)
 ```json
@@ -74,6 +78,10 @@ sig — сигнатуры сторонних библиотек из node_modul
 ### Навигация
 
 graph — граф зависимостей с кэшем. Отвечает без чтения файлов: где определён символ (файл + строка → сразу Read с offset), кто использует файл, что использует файл, цепочка связей между файлами, циклы. Первый вызов строит граф (≈0,5 с на 4500 файлов), дальше — инкрементально; пересборка запускается сама при добавлении, удалении, переименовании и правке файлов, а также angular.json, tsconfig.json и package.json.
+
+TS ESM explicit `.js` разрешается в `.ts`, затем `.tsx`, затем существующий `.js`; для JS-импортёра существующий JS имеет приоритет. Extensionless сохраняет TS-first/JS-first по импортёру. `.mjs/.cjs` поддерживаются как реальные исходники; подстановка в `.mts/.cts` не реализована, эти расширения исключены. Alias и reexport используют тот же resolver. `baseUrl` без `paths` разрешает bare specifier через тот же ESM resolver; если локального source target нет, пакет остаётся external. Поддерживается локальный относительный `tsconfig extends` внутри cwd; package/absolute extends, `moduleSuffixes/rootDirs/customConditions` отмечаются неполнотой, не обещается полный TypeScript Compiler API resolution.
+
+Кэш schema 7 учитывает canonical cwd/root/specs, present/missing и SHA256 конфигов, включая прочитанные локальные extends. Создание/изменение/удаление config перестраивает связи даже с прежним mtime. При ошибке записи кэша используется свежий in-memory результат с явной неполнотой. Старый/повреждённый кэш перестраивается; перед reuse проверяются обязательные parsed поля и specifiers по типу файла, повреждённые entries перепарсиваются из source при сохранённых mtime/size.
 
 В граф входят файлы трёх типов:
 
@@ -183,7 +191,11 @@ JS-пример:
 
     node "<SCRIPTS_DIR>\graph-tool.js" op=info
 
-В параметре `file` можно передать путь, часть пути или имя без расширения (`profile.component` — вернётся .ts-файл; чтобы получить шаблон или стиль, укажи расширение). При неоднозначности вернётся список кандидатов.
+`file`, `from`, `to` с сегментами/слешами или абсолютный путь — только нормализованный exact match внутри cwd, без basename fallback; отсутствующий/внешний путь — exit1 JSON error. Только непутевое имя/фрагмент (например `profile.component`) сохраняет fuzzy lookup; при неоднозначности — exit0 `ambiguous:true`, не найденный результат.
+
+Deps/rdeps/path возвращают `scope:{root,scanRoot,specs}` и `completeness:{complete,reasons?,samples?,samplesTruncated?,reasonsTruncated?,truncated?}`. `complete:true` относится к статическому графу в объявленном scope, а не ко всем runtime-связям/файлам проекта. Unresolved по всему scope, неподдерживаемые configs, пропущенные `.mts/.cts`/файлы >1MiB, недоступные каталоги/symlinks и cache-write error делают ответ неполным. Samples/reasons/unresolvedPaths ограничены пятью (счётчики `*Truncated`), deps/rdeps — 60 элементов (`completeness.truncated` — число опущенных). Пустой rdeps или `chain:null` при complete=false не доказывает отсутствия связи. Ошибки запроса complete=false/exit1; неоднозначность complete=false/exit0.
+
+Search возвращает JSON `count/matches`, полный no-match в обследованном scope — `count:0,matches:[]`, exit0. Усечение списка определяется как `count > matches.length` (для files=1: `filesTotal > files.length`); отдельного `truncated` нет. Ошибки аргументов — JSON error/exit1; отсутствие stdout не является no-match. Snippet text ограничен 100 символами без отдельного флага, поэтому для quality oracle проверяй file/line и нужный диапазон источника. Graph symbol no-match — `definedIn:[]`, exit0. Для benchmark передавай literal argv `query={query}` в code-searcher, но graph path всегда получает два endpoint, не свободный query.
 
 ### sig
 

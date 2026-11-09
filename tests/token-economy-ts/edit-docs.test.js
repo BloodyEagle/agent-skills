@@ -34,6 +34,32 @@ test('SKILL.md содержит JS и ограничение Angular', () => {
     assert.match(skill, /module\.exports/);
 });
 
+test('инструкции MegaMemory различают квалификацию и актуальную навигацию', () => {
+    const root = path.resolve(__dirname, '..', '..');
+    const rules = fs.readFileSync(path.join(root, 'rules/RULES.md'), 'utf8');
+    for (const pattern of [/короткого релевантного запроса/, /недоступной памяти/, /stale\/refuted\/unknown\/incomplete/, /must_read/, /skip.*не отменяет/, /brief без утверждения/, /актуальную публичную MCP-схему/, /evidence и версиями/]) assert.match(rules, pattern);
+    for (const skill of ['ts', 'py', 'har']) {
+        const doc = fs.readFileSync(path.join(root, 'skills/token-economy-' + skill, 'SKILL.md'), 'utf8');
+        assert.match(doc, /rules\/RULES\.md/);
+        assert.match(doc, /Cwd/);
+    }
+});
+
+test('TS/PY/HAR docs сохраняют раздельные CLI и реальные negative/truncation форматы', () => {
+    const root = path.resolve(__dirname, '..', '..', 'skills');
+    const ts = fs.readFileSync(path.join(root, 'token-economy-ts/SKILL.md'), 'utf8');
+    const py = fs.readFileSync(path.join(root, 'token-economy-py/SKILL.md'), 'utf8');
+    const har = fs.readFileSync(path.join(root, 'token-economy-har/SKILL.md'), 'utf8');
+    assert.match(ts, /count > matches\.length/);
+    assert.match(ts, /completeness/);
+    assert.match(ts, /два endpoint/);
+    assert.match(py, /python -I/);
+    assert.match(py, /показано K/);
+    assert.match(py, /exit1.*argparse.*exit2/);
+    assert.match(har, /total:0.*exit1/);
+    assert.match(har, /error exit2/);
+});
+
 test('README явно описывает JavaScript', () => {
     const readme = fs.readFileSync(path.resolve(__dirname, '..', '..', 'README.md'), 'utf8');
     assert.match(readme, /JavaScript/);

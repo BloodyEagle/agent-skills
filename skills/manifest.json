@@ -1,12 +1,12 @@
 {
-  "generated": "2026-11-06",
+  "generated": "2026-11-09",
   "skills": [
     {
       "name": "token-economy-har",
-      "version": "1.0.0",
-      "updated": "2026-11-06",
+      "version": "1.0.1",
+      "updated": "2026-11-09",
       "files": 8,
-      "sha256": "99d428d29ae7c77c24d9cc930e6db5cea55193475f5722c2f6a28fde905fd077",
+      "sha256": "bef7121ba49cb191c70c4765193bea4d7f4ae7d35f665de256a4f591077e1114",
       "requires": [
         "node>=18"
       ]
@@ -14,7 +14,7 @@
     {
       "name": "token-economy-java",
       "version": "1.0.0",
-      "updated": "2026-11-06",
+      "updated": "2026-11-09",
       "files": 12,
       "sha256": "69ff529e8e6c7a3208520d056b700199cc84546f8f05bf7a59c97e73887630ee",
       "requires": [
@@ -24,7 +24,7 @@
     {
       "name": "token-economy-kt",
       "version": "1.0.0",
-      "updated": "2026-11-06",
+      "updated": "2026-11-09",
       "files": 5,
       "sha256": "d83a4caf6d40287835296575eaf37f032ac1b4fc376336250bd64fe3d6b72b6c",
       "requires": [
@@ -34,7 +34,7 @@
     {
       "name": "token-economy-php",
       "version": "1.0.0",
-      "updated": "2026-11-06",
+      "updated": "2026-11-09",
       "files": 14,
       "sha256": "40aa67e31c5b127e6797602b487613fc856b1b757772d335ab1d00d590c333e0",
       "requires": [
@@ -43,20 +43,20 @@
     },
     {
       "name": "token-economy-py",
-      "version": "1.2.0",
-      "updated": "2026-11-06",
+      "version": "1.2.1",
+      "updated": "2026-11-09",
       "files": 5,
-      "sha256": "253b054107dc664537c4c8717501a250e9d00b859707e960e75219418a461d78",
+      "sha256": "9d066ff783678719a690be8271637d5da7c818c21efa1efbe720e7c3e0735016",
       "requires": [
         "python>=3"
       ]
     },
     {
       "name": "token-economy-ts",
-      "version": "1.0.0",
-      "updated": "2026-11-06",
+      "version": "1.1.0",
+      "updated": "2026-11-09",
       "files": 12,
-      "sha256": "1e558f3752fbecc36efc8b26cb2193c1c6bf49c892be6ea743d65a80cc02efd1",
+      "sha256": "73013d75397cb5300a40ddafd8ce60aa54b08340719087ce1547e3e2d9263d18",
       "requires": [
         "node>=18"
       ]

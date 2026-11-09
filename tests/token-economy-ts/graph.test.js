@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {project, json} = require('./helpers');
+const {project, cli, json} = require('./helpers');
+const fs = require('fs');
+const path = require('path');
 
 const paths = list => list.map(item => item.file.replace(/\\/g, '/'));
 const deps = (root, file) => json(root, 'graph-tool', {op: 'deps', file, root: '.', why: true});
@@ -67,3 +69,228 @@ test('JS-first резолв не ломает TS-first для TS импортё�
     assert.deepEqual(paths(deps(root, 'js-entry.js').imports), ['shared.js']);
     assert.deepEqual(paths(deps(root, 'ts-entry.ts').imports), ['shared.ts']);
 }, {'js-entry.js': 'import "./shared";', 'ts-entry.ts': 'import "./shared";', 'shared.js': 'export const value = 1;', 'shared.ts': 'export const value: number = 2;'}));
+
+const isolated = (run, files) => project(run, files, {empty: true});
+
+test('I-03: явный внешний путь не подменяется локальным basename', () => isolated(root => {
+    for (const op of ['node', 'deps', 'rdeps', 'path']) {
+        const result = cli(root, 'graph-tool', op === 'path'
+            ? {op, from: 'a.ts', to: 'C:/NOT-THIS-PROJECT/b.ts', root: '.'}
+            : {op, file: 'C:/NOT-THIS-PROJECT/b.ts', root: '.'});
+        assert.equal(result.status, 1, result.stdout);
+        assert.match(JSON.parse(result.stdout).error, /C:\/NOT-THIS-PROJECT\/b\.ts/);
+        assert.equal(result.stderr, '');
+    }
+}, {'a.ts': 'import "./b";', 'b.ts': 'export const b = 1;'}));
+
+test('I-03: внутренние exact paths и непутевой поиск сохраняют идентичность', () => isolated(root => {
+    for (const file of [path.join(root, 'left/b.ts'), 'left/b.ts', '.\\left\\b.ts']) {
+        assert.equal(json(root, 'graph-tool', {op: 'node', file, root: '.'}).file, 'left/b.ts');
+    }
+    for (const file of ['../b.ts', 'missing/b.ts', 'Z:\\NOT-THIS-PROJECT\\b.ts']) {
+        assert.equal(cli(root, 'graph-tool', {op: 'deps', file, root: '.'}).status, 1);
+    }
+    assert.equal(json(root, 'graph-tool', {op: 'node', file: 'unique', root: '.'}).file, 'unique.ts');
+    assert.equal(json(root, 'graph-tool', {op: 'node', file: 'b.ts', root: '.'}).ambiguous, true);
+    const wrongCase = cli(root, 'graph-tool', {op: 'node', file: 'LEFT/b.ts', root: '.'});
+    assert.equal(wrongCase.status, process.platform === 'win32' ? 0 : 1);
+    assert.equal(cli(root, 'graph-tool', {op: 'path', from: '../a.ts', to: 'unique.ts', root: '.'}).status, 1);
+}, {'left/b.ts': 'export const b = 1;', 'right/b.ts': 'export const b = 2;', 'unique.ts': 'export const u = 1;'}));
+
+test('I-02: TS ESM .js импорт находит исходный b.ts', () => isolated(root => {
+    assert.deepEqual(paths(deps(root, 'a.ts').imports), ['b.ts']);
+    assert.deepEqual(paths(json(root, 'graph-tool', {op: 'rdeps', file: 'b.ts', root: '.'}).importedBy), ['a.ts']);
+}, {'a.ts': 'import {b} from "./b.js";', 'b.ts': 'export const b = 1;'}));
+
+test('I-02: .js substitution сохраняет приоритет TS/JS, tsx, alias и reexport', () => isolated(root => {
+    assert.deepEqual(paths(deps(root, 'ts-entry.ts').imports), ['shared.ts']);
+    assert.deepEqual(paths(deps(root, 'js-entry.js').imports), ['shared.js']);
+    assert.deepEqual(paths(deps(root, 'tsx-entry.ts').imports), ['view.tsx']);
+    assert.deepEqual(paths(deps(root, 'real-entry.ts').imports), ['real.js']);
+    assert.deepEqual(paths(deps(root, 'alias.ts').imports), ['shared.ts']);
+    assert.deepEqual(json(root, 'graph-tool', {op: 'path', from: 'alias.ts', to: 'shared.ts', root: '.'}).chain, ['alias.ts', 'shared.ts']);
+    assert.deepEqual(json(root, 'graph-tool', {op: 'symbol', name: 'esmControl', root: '.'}).definedIn.map(item => item.file), ['shared.ts']);
+    assert.deepEqual(paths(deps(root, 'module-entry.ts').imports), ['native.cjs', 'native.mjs']);
+    assert.deepEqual(deps(root, 'unsupported.ts').unresolvedPaths, ['./unsupported.mjs']);
+}, {'ts-entry.ts': 'import "./shared.js";', 'js-entry.js': 'import "./shared.js";',
+    'shared.ts': 'export const shared = 1;\nexport function esmControl() {}\n', 'shared.js': 'export const shared = 2;',
+    'tsx-entry.ts': 'export {view} from "./view.js";', 'view.tsx': 'export const view = <div/>;',
+    'real-entry.ts': 'import "./real.js";', 'real.js': 'export const real = 1;',
+    'alias.ts': 'export * from "@lib/shared.js";',
+    'tsconfig.json': '{"compilerOptions":{"paths":{"@lib/*":["*"]}}}',
+    'module-entry.ts': 'import "./native.mjs"; import "./native.cjs";',
+    'native.mjs': 'export const x = 1;', 'native.cjs': 'module.exports.x = 1;',
+    'unsupported.ts': 'import "./unsupported.mjs";', 'unsupported.mts': 'export const x = 1;'}));
+
+test('I-04: удаление tsconfig сбрасывает alias и совпадает с forced build', () => isolated(root => {
+    assert.deepEqual(paths(deps(root, 'a.ts').imports), ['lib/b.ts']);
+    fs.unlinkSync(path.join(root, 'tsconfig.json'));
+    const cached = deps(root, 'a.ts');
+    assert.deepEqual(cached.imports, []);
+    json(root, 'graph-tool', {op: 'build', root: '.'});
+    assert.deepEqual(deps(root, 'a.ts'), cached);
+    assert.deepEqual(cached.external, ['@lib/b']);
+}, {'a.ts': 'import "@lib/b";', 'lib/b.ts': 'export const b = 1;',
+    'tsconfig.json': '{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["lib/*"]}}}'}));
+
+test('I-04: config create/edit/delete с прежним mtime совпадает с forced graph', () => isolated(root => {
+    const config = path.join(root, 'tsconfig.json');
+    const equivalence = () => {
+        const cached = deps(root, 'a.ts');
+        json(root, 'graph-tool', {op: 'build', root: '.'});
+        assert.deepEqual(deps(root, 'a.ts'), cached);
+        return paths(cached.imports);
+    };
+    assert.deepEqual(equivalence(), []);
+    fs.writeFileSync(config, '{"compilerOptions":{"paths":{"@lib/*":["one/*"]}}}');
+    fs.utimesSync(config, 1, 1);
+    assert.deepEqual(equivalence(), ['one/b.ts']);
+    fs.writeFileSync(config, '{"compilerOptions":{"paths":{"@lib/*":["two/*"]}}}');
+    fs.utimesSync(config, 1, 1);
+    assert.deepEqual(equivalence(), ['two/b.ts']);
+    fs.unlinkSync(config);
+    assert.deepEqual(equivalence(), []);
+}, {'a.ts': 'import "@lib/b";', 'one/b.ts': 'export const b = 1;', 'two/b.ts': 'export const b = 2;'}));
+
+test('I-04: локальный extends отслеживается вместе с origin aliases', () => isolated(root => {
+    const config = path.join(root, 'config/base.json');
+    assert.deepEqual(paths(deps(root, 'a.ts').imports), ['one/b.ts']);
+    fs.writeFileSync(config, '{"compilerOptions":{"baseUrl":"..","paths":{"@lib/*":["two/*"]}}}');
+    fs.utimesSync(config, 1, 1);
+    const cached = deps(root, 'a.ts');
+    assert.deepEqual(paths(cached.imports), ['two/b.ts']);
+    json(root, 'graph-tool', {op: 'build', root: '.'});
+    assert.deepEqual(deps(root, 'a.ts'), cached);
+    fs.unlinkSync(config);
+    assert.deepEqual(deps(root, 'a.ts').imports, []);
+}, {'a.ts': 'import "@lib/b";', 'one/b.ts': 'export const b = 1;', 'two/b.ts': 'export const b = 2;',
+    'tsconfig.json': '{"extends":"./config/base.json"}',
+    'config/base.json': '{"compilerOptions":{"baseUrl":"..","paths":{"@lib/*":["one/*"]}}}'}));
+
+test('I-04: смена root, старый и повреждённый cache перестраиваются', () => isolated(root => {
+    assert.deepEqual(paths(deps(root, 'one/a.ts').imports), ['one/b.ts']);
+    json(root, 'graph-tool', {op: 'build', root: 'two'});
+    assert.deepEqual(paths(deps(root, 'one/a.ts').imports), ['one/b.ts']);
+    fs.writeFileSync(path.join(root, 'graph-deps.json'), '{"version":5,"root":".","files":[]}');
+    fs.writeFileSync(path.join(root, '.graph-deps-cache.json'), '{broken');
+    assert.deepEqual(paths(deps(root, 'one/a.ts').imports), ['one/b.ts']);
+    fs.writeFileSync(path.join(root, 'graph-deps.json'), '{"version":6,"root":".","files":[null]}');
+    assert.deepEqual(paths(deps(root, 'one/a.ts').imports), ['one/b.ts']);
+}, {'one/a.ts': 'import "./b";', 'one/b.ts': 'export const b = 1;', 'two/a.ts': 'export const a = 2;'}));
+
+test('AS-04: полный пустой rdeps отличается от unresolved graph', () => isolated(root => {
+    const clean = json(root, 'graph-tool', {op: 'rdeps', file: 'b.ts', root: '.'});
+    assert.deepEqual(clean.importedBy, []);
+    assert.equal(clean.completeness.complete, true);
+    assert.equal(clean.scope.root, root);
+    fs.writeFileSync(path.join(root, 'a.ts'), 'import "./missing.js";');
+    const partial = json(root, 'graph-tool', {op: 'rdeps', file: 'b.ts', root: '.'});
+    assert.deepEqual(partial.importedBy, []);
+    assert.equal(partial.completeness.complete, false);
+    assert.ok(partial.completeness.reasons.includes('unresolved-imports'));
+    assert.equal(json(root, 'graph-tool', {op: 'path', from: 'a.ts', to: 'b.ts', root: '.'}).completeness.complete, false);
+    const outside = cli(root, 'graph-tool', {op: 'path', from: '../a.ts', to: 'b.ts', root: '.'});
+    assert.equal(outside.status, 1);
+    assert.equal(JSON.parse(outside.stdout).completeness.complete, false);
+}, {'a.ts': 'export const a = 1;', 'b.ts': 'export const b = 1;'}));
+
+test('AS-04: scope, unsupported config и ограниченные samples/truncation', () => isolated(root => {
+    const result = deps(root, 'a.ts');
+    assert.equal(result.scope.scanRoot, '.');
+    assert.equal(result.completeness.complete, false);
+    assert.ok(result.completeness.reasons.includes('unsupported-module-resolution-options'));
+    assert.ok(result.completeness.samples.length <= 5);
+    assert.ok(result.completeness.samplesTruncated > 0);
+    assert.ok(result.unresolvedPaths.length <= 5);
+    assert.equal(result.unresolvedPathsTruncated, 15);
+}, {'a.ts': Array.from({length: 20}, (_, i) => `import "./missing${i}";`).join('\n'),
+    'tsconfig.json': '{"compilerOptions":{"moduleSuffixes":[".native",""]}}'}));
+
+test('AS-04: пропущенный source и недоступная запись cache не выглядят complete', () => isolated(root => {
+    let result = deps(root, 'a.ts');
+    assert.ok(result.completeness.reasons.includes('excluded-source-files'));
+    fs.unlinkSync(path.join(root, 'graph-deps.json'));
+    fs.mkdirSync(path.join(root, 'graph-deps.json'));
+    result = deps(root, 'a.ts');
+    assert.equal(result.completeness.complete, false);
+    assert.ok(result.completeness.reasons.includes('cache-write-failed'));
+    assert.deepEqual(paths(result.imports), ['b.ts']);
+}, {'a.ts': 'import "./b";', 'b.ts': 'export const b = 1;', 'unsupported.mts': 'export const x = 1;'}));
+
+test('AS-04: некорректная конфигурация и null parse-cache безопасно перестраиваются', () => isolated(root => {
+    fs.writeFileSync(path.join(root, '.graph-deps-cache.json'), 'null');
+    assert.equal(deps(root, 'a.ts').completeness.complete, true);
+    fs.writeFileSync(path.join(root, 'tsconfig.json'), '{"compilerOptions":{"paths":{"@lib/*":[null]}}}');
+    const result = deps(root, 'a.ts');
+    assert.deepEqual(paths(result.imports), ['b.ts']);
+    assert.equal(result.completeness.complete, false);
+    assert.ok(result.completeness.reasons.includes('config-invalid-options'));
+}, {'a.ts': 'import "./b";', 'b.ts': 'export const b = 1;'}));
+
+test('review F1: baseUrl-only ESM сохраняет локальный import и полный rdeps', () => isolated(root => {
+    const result = deps(root, 'a.ts');
+    assert.deepEqual(paths(result.imports), ['lib/b.ts']);
+    assert.equal(result.completeness.complete, true);
+    assert.deepEqual(result.external, ['external-package']);
+    const reverse = json(root, 'graph-tool', {op: 'rdeps', file: 'lib/b.ts', root: '.'});
+    assert.deepEqual(paths(reverse.importedBy), ['a.ts']);
+    assert.equal(reverse.completeness.complete, true);
+    assert.deepEqual(json(root, 'graph-tool', {op: 'path', from: 'a.ts', to: 'lib/b.ts', root: '.'}).chain, ['a.ts', 'lib/b.ts']);
+}, {'a.ts': 'import "lib/b.js";\nimport "external-package";', 'lib/b.ts': 'export const b = 1;',
+    'tsconfig.json': '{"compilerOptions":{"baseUrl":"."}}'}));
+
+test('review F1: inherited baseUrl и config removal совпадают с forced graph', () => isolated(root => {
+    assert.deepEqual(paths(deps(root, 'a.ts').imports), ['lib/b.ts']);
+    fs.unlinkSync(path.join(root, 'tsconfig.json'));
+    const ordinary = deps(root, 'a.ts');
+    assert.deepEqual(ordinary.imports, []);
+    assert.deepEqual(ordinary.external, ['lib']);
+    json(root, 'graph-tool', {op: 'build', root: '.'});
+    assert.deepEqual(deps(root, 'a.ts'), ordinary);
+}, {'a.ts': 'import "lib/b.js";', 'lib/b.ts': 'export const b = 1;',
+    'tsconfig.json': '{"extends":"./config/base.json"}', 'config/base.json': '{"compilerOptions":{"baseUrl":".."}}'}));
+
+test('review F2: damaged parse-cache восстанавливает import из source', () => isolated(root => {
+    assert.deepEqual(paths(deps(root, 'a.ts').imports), ['b.ts']);
+    const cacheFile = path.join(root, '.graph-deps-cache.json');
+    const damage = () => {
+        const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+        cache['a.ts'].data = {entities: [], exports: []};
+        fs.writeFileSync(cacheFile, JSON.stringify(cache));
+    };
+    damage();
+    fs.unlinkSync(path.join(root, 'graph-deps.json'));
+    assert.deepEqual(paths(deps(root, 'a.ts').imports), ['b.ts']);
+    damage();
+    const build = json(root, 'graph-tool', {op: 'build', root: '.'});
+    assert.equal(build.reparsed, 1);
+    const reverse = json(root, 'graph-tool', {op: 'rdeps', file: 'b.ts', root: '.'});
+    assert.deepEqual(paths(reverse.importedBy), ['a.ts']);
+    assert.equal(reverse.completeness.complete, true);
+}, {'a.ts': 'import "./b.js";', 'b.ts': 'export const b = 1;'}));
+
+test('review F2: malformed style/JS specifiers и HTML fileRefs перепарсиваются', () => isolated(root => {
+    for (const [file, expected] of [['a.js', 'b.ts'], ['a.scss', '_b.scss'], ['a.html', 'b.css']]) {
+        assert.deepEqual(paths(deps(root, file).imports), [expected]);
+        const cacheFile = path.join(root, '.graph-deps-cache.json');
+        const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+        if (file === 'a.html') delete cache[file].data.fileRefs;
+        else cache[file].data.specifiers = [null];
+        fs.writeFileSync(cacheFile, JSON.stringify(cache));
+        const result = json(root, 'graph-tool', {op: 'build', root: '.'});
+        assert.equal(result.reparsed, 1);
+        assert.deepEqual(paths(deps(root, file).imports), [expected]);
+    }
+}, {'a.js': 'import "./b.js";', 'b.ts': 'export const b = 1;',
+    'a.scss': '@use "./b";', '_b.scss': '$b: 1;', 'a.html': '<link rel="stylesheet" href="./b.css">', 'b.css': 'body {}'}));
+
+test('AS-04: усечённый deps не удостоверяет полноту', () => isolated(root => {
+    const result = deps(root, 'a.ts');
+    assert.equal(result.importsTotal, 65);
+    assert.equal(result.imports.length, 60);
+    assert.equal(result.completeness.complete, false);
+    assert.equal(result.completeness.truncated, 5);
+}, Object.fromEntries([
+    ['a.ts', Array.from({length: 65}, (_, i) => `import "./b${i}";`).join('\n')],
+    ...Array.from({length: 65}, (_, i) => [`b${i}.ts`, 'export const b = 1;'])
+])));

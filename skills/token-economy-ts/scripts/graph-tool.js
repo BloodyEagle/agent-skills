@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, ANGULAR_ERROR} = require('./lib/files');
 const {parseSymbols} = require('./lib/symbols');
 
@@ -53,8 +54,7 @@ const rootArg = args.root || (fs.existsSync(path.join(cwd, 'src')) ? 'src' : '.'
 const ROOT = path.resolve(cwd, rootArg);
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
-const GRAPH_VERSION = 5; // формат graph-deps.json и кэша; смена версии пересобирает всё
-// (5: JS/JSX/MJS/CJS, общий индекс символов JS и локальные unresolved)
+const GRAPH_VERSION = 7; // baseUrl fallback и проверяемая схема parsed cache
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const NG_KINDS = {
     Component: 'component',
@@ -70,7 +70,9 @@ const CONFIG_FILES = ['angular.json', '.angular.json', 'tsconfig.json', 'package
 
 const emit = (obj) => console.log(JSON.stringify(obj));
 const fail = (msg) => {
-    emit({error: msg});
+    emit({error: msg, ...(['deps', 'rdeps', 'path'].includes(args.op)
+        ? {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.'}, completeness: {complete: false, reasons: ['request-error']}}
+        : {})});
     process.exit(1);
 };
 const toPosix = (p) => path.relative(cwd, p).replace(/\\/g, '/');
@@ -108,14 +110,28 @@ function fileType(name) {
 /**
  * Собирает исходники (без спеков и .d.ts), .html и стили (без *.min.css и файлов > 1 МБ).
  */
+const scanExcluded = new Set();
+const scanIssues = new Set();
 function collectFiles(dir) {
-    return walkFiles(dir, {ext: [...SOURCE_EXT, '.html', '.css', '.scss', '.sass', '.less'], ignored: IGNORED_DIRS})
+    function check(directory) {
+        let entries;
+        try { entries = fs.readdirSync(directory, {withFileTypes: true}); }
+        catch (e) { scanIssues.add('source-unreadable'); return; }
+        for (const entry of entries) {
+            if (entry.isSymbolicLink()) { scanIssues.add('source-symlink-skipped'); continue; }
+            if (entry.isDirectory() && !IGNORED_DIRS.includes(entry.name) && entry.name !== '.megamemory') check(path.join(directory, entry.name));
+        }
+    }
+    check(dir);
+    return walkFiles(dir, {ext: [...SOURCE_EXT, '.mts', '.cts', '.html', '.css', '.scss', '.sass', '.less'], ignored: [...IGNORED_DIRS, '.megamemory']})
         .filter((p) => {
             const type = fileType(p);
+            if (/\.(mts|cts)$/i.test(p)) { scanExcluded.add(toPosix(p)); return false; }
             if ((type === 'ts' || type === 'js') && (/\.d\.ts$/i.test(p)
                 || (!args.specs && /\.(spec|test)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(p)))) return false;
             if (type === 'style' && /\.min\.css$/i.test(p)) return false;
-            return statOf(p).size <= MAX_BYTES;
+            if (statOf(p).size > MAX_BYTES) { scanExcluded.add(toPosix(p)); return false; }
+            return true;
         });
 }
 
@@ -175,29 +191,97 @@ function parseJsonc(text) {
  * Резолвер алиасов импортов из tsconfig (paths/baseUrl).
  * @returns {Function|null} spec → массив абсолютных путей-кандидатов.
  */
-function loadAliases() {
-    try {
-        const tsconfig = path.join(cwd, 'tsconfig.json');
-        if (!fs.existsSync(tsconfig)) return null;
-        const co = parseJsonc(fs.readFileSync(tsconfig, 'utf8')).compilerOptions || {};
-        const base = co.baseUrl ? path.resolve(cwd, co.baseUrl) : cwd;
-        const entries = Object.entries(co.paths || {}).map(([k, v]) => ({
-            pre: k.endsWith('*') ? k.slice(0, -1) : k,
-            star: k.endsWith('*'),
-            targets: [].concat(v).map((t) => path.resolve(base, t))
-        }));
-        return (spec) => {
-            for (const e of entries) {
-                if (e.star) {
-                    if (spec.startsWith(e.pre) && spec.length > e.pre.length)
-                        return e.targets.map((t) => t.replace(/\*/g, spec.slice(e.pre.length)));
-                } else if (spec === e.pre) return e.targets.slice();
-            }
-            return null;
-        };
-    } catch (e) {
+const configInputs = new Map();
+const configIssues = new Set();
+const insideProject = file => {
+    const rel = path.relative(cwd, file);
+    return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+};
+function readConfig(file) {
+    if (!insideProject(file)) {
+        configIssues.add('config-outside-project');
         return null;
     }
+    const name = toPosix(file);
+    try {
+        if (!fs.existsSync(file)) {
+            configInputs.set(name, {present: false});
+            return null;
+        }
+        const bytes = fs.readFileSync(file);
+        configInputs.set(name, {present: true, sha256: crypto.createHash('sha256').update(bytes).digest('hex')});
+        const parsed = parseJsonc(bytes.toString('utf8'));
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid config object');
+        return parsed;
+    } catch (e) {
+        configIssues.add('config-unreadable:' + name);
+        return null;
+    }
+}
+
+function loadAliases() {
+    const active = new Set();
+    function load(file) {
+        if (active.has(file)) {
+            configIssues.add('config-extends-cycle');
+            return {};
+        }
+        active.add(file);
+        const cfg = readConfig(file);
+        if (!cfg) { active.delete(file); return {}; }
+        let inherited = {};
+        if (cfg.extends) {
+            if (typeof cfg.extends !== 'string' || !cfg.extends.startsWith('.')) configIssues.add('unsupported-extends');
+            else {
+                let parent = path.resolve(path.dirname(file), cfg.extends);
+                if (!path.extname(parent)) parent += '.json';
+                if (!fs.existsSync(parent)) configIssues.add('config-extends-missing');
+                inherited = load(parent);
+            }
+        }
+        const own = cfg.compilerOptions || {};
+        if (typeof own !== 'object' || Array.isArray(own) || (has(own, 'baseUrl') && typeof own.baseUrl !== 'string')
+            || (has(own, 'paths') && (!own.paths || typeof own.paths !== 'object' || Array.isArray(own.paths)
+                || !Object.values(own.paths).every(v => Array.isArray(v) && v.every(t => typeof t === 'string'))))) {
+            configIssues.add('config-invalid-options');
+            active.delete(file);
+            return inherited;
+        }
+        if (own.moduleSuffixes || own.rootDirs || own.customConditions) configIssues.add('unsupported-module-resolution-options');
+        const merged = {...inherited, ...own};
+        if (has(own, 'baseUrl')) merged.baseUrl = path.resolve(path.dirname(file), own.baseUrl);
+        if (has(own, 'paths')) merged.pathsOrigin = path.dirname(file);
+        active.delete(file);
+        return merged;
+    }
+    const co = load(path.join(cwd, 'tsconfig.json'));
+    const base = co.baseUrl || co.pathsOrigin || cwd;
+    const entries = Object.entries(co.paths || {}).map(([k, v]) => ({
+        pre: k.endsWith('*') ? k.slice(0, -1) : k,
+        star: k.endsWith('*'),
+        targets: [].concat(v).map(t => path.resolve(base, t))
+    }));
+    const resolveAlias = spec => {
+        for (const e of entries) {
+            if (e.star) {
+                if (spec.startsWith(e.pre) && spec.length > e.pre.length)
+                    return e.targets.map(t => t.replace(/\*/g, spec.slice(e.pre.length)));
+            } else if (spec === e.pre) return e.targets.slice();
+        }
+        return null;
+    };
+    resolveAlias.baseUrl = co.baseUrl || null;
+    return resolveAlias;
+}
+
+function graphInputs() {
+    configInputs.clear();
+    configIssues.clear();
+    for (const name of CONFIG_FILES) readConfig(path.join(cwd, name));
+    const alias = loadAliases();
+    const manifest = {algorithm: GRAPH_VERSION, projectRoot: cwd, scanRoot: ROOT, specs: args.specs,
+        configs: Object.fromEntries([...configInputs].sort(([a], [b]) => a.localeCompare(b)))};
+    return {alias, manifest};
 }
 
 /**
@@ -762,20 +846,25 @@ function parseFile(content, rel) {
  */
 function resolveSpec(spec, fromAbs, fileSet, alias) {
     if (ASSET_EXT.test(spec)) spec = spec.replace(/\?.*$/, '');
-    let bases;
+    let bases, baseUrlFallback = false;
     if (spec.startsWith('.') || path.isAbsolute(spec)) bases = [path.resolve(path.dirname(fromAbs), spec)];
     else {
         const hits = alias ? alias(spec) : null;
-        if (!hits) return {external: spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]};
-        bases = hits;
+        baseUrlFallback = !hits && !!(alias && alias.baseUrl);
+        if (!hits && !baseUrlFallback) return {external: spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]};
+        bases = hits || [path.resolve(alias.baseUrl, spec)];
     }
     for (const b of bases) {
         const js = [b + '.js', b + '.jsx', path.join(b, 'index.js'), path.join(b, 'index.jsx')];
         const ts = [b + '.ts', b + '.tsx', path.join(b, 'index.ts'), path.join(b, 'index.tsx')];
         const modules = [b + '.mjs', b + '.cjs', path.join(b, 'index.mjs'), path.join(b, 'index.cjs')];
-        const candidates = fileType(fromAbs) === 'js' ? [b, ...js, ...ts, ...modules] : [b, ...ts, ...js, ...modules];
+        const source = /\.js$/i.test(b) ? [b.slice(0, -3) + '.ts', b.slice(0, -3) + '.tsx'] : [];
+        const candidates = fileType(fromAbs) === 'js'
+            ? [b, ...source, ...js, ...ts, ...modules]
+            : [...source, b, ...ts, ...js, ...modules];
         for (const v of candidates) if (fileSet.has(v)) return {file: v};
     }
+    if (baseUrlFallback) return {external: spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]};
     return null;
 }
 
@@ -888,20 +977,36 @@ function tarjan(nodes) {
 /**
  * Строит граф с инкрементальным кэшем (парсятся только изменённые файлы).
  */
-function buildGraph(files) {
+function validParsedData(data, type) {
+    if (!data || typeof data !== 'object' || !Array.isArray(data.entities) || !Array.isArray(data.exports)
+        || !data.exports.every(name => typeof name === 'string')
+        || !Array.isArray(data.specifiers) || !Number.isInteger(data.loc) || data.loc < 1
+        || typeof data.reexportAll !== 'boolean') return false;
+    if (!data.entities.every(e => e && typeof e.name === 'string' && typeof e.kind === 'string'
+        && Number.isInteger(e.line) && e.line > 0)) return false;
+    if (!data.specifiers.every(s => type === 'ts' || type === 'js'
+        ? s && typeof s.m === 'string' && Number.isInteger(s.line) && s.line > 0
+        : typeof s === 'string')) return false;
+    if (has(data, 'fileRefs') && (!Array.isArray(data.fileRefs) || !data.fileRefs.every(ref => typeof ref === 'string'))) return false;
+    if (has(data, 'templateUrl') && typeof data.templateUrl !== 'string') return false;
+    return type !== 'html' || (Array.isArray(data.fileRefs) && data.usages
+        && Array.isArray(data.usages.els) && Array.isArray(data.usages.pipes));
+}
+
+function buildGraph(files, inputs = graphInputs()) {
     const t0 = Date.now();
     files = (files || collectAll()).sort();
     if (!files.length) fail('Не найдено TS/JS/HTML/стилей в ' + rootArg);
 
     const fileSet = new Set(files);
-    const alias = loadAliases();
+    const alias = inputs.alias;
     const includePaths = loadStyleIncludePaths();
     let cache = {};
     try {
         cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
     } catch (e) {
     }
-    if (cache.__v !== GRAPH_VERSION) cache = {};
+    if (!cache || typeof cache !== 'object' || cache.__v !== GRAPH_VERSION) cache = {};
     const newCache = {__v: GRAPH_VERSION};
     let reparsed = 0;
 
@@ -910,7 +1015,7 @@ function buildGraph(files) {
         const st = statOf(f);
         const c = cache[rel];
         let data;
-        if (c && c.mtime === st.mtimeMs && c.size === st.size) data = c.data;
+        if (c && c.mtime === st.mtimeMs && c.size === st.size && validParsedData(c.data, fileType(f))) data = c.data;
         else {
             data = parseFile(fs.readFileSync(f, 'utf8'), rel);
             reparsed++;
@@ -1026,6 +1131,9 @@ function buildGraph(files) {
     const graph = {
         version: GRAPH_VERSION,
         root: rootArg,
+        inputs: inputs.manifest,
+        sourceStats: Object.fromEntries(files.map(f => [toPosix(f), {mtime: statOf(f).mtimeMs, size: statOf(f).size}])),
+        configIssues: [...configIssues],
         files: nodes,
         symbols, selectors,
         externals: [...externals].sort(),
@@ -1039,8 +1147,12 @@ function buildGraph(files) {
             cycles: cycles.length
         }
     };
-    fs.writeFileSync(GRAPH_FILE, JSON.stringify(graph));
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(newCache));
+    try {
+        fs.writeFileSync(GRAPH_FILE, JSON.stringify(graph));
+        fs.writeFileSync(CACHE_FILE, JSON.stringify(newCache));
+    } catch (e) {
+        graph.cacheIssue = 'cache-write-failed';
+    }
     return {graph, reparsed, ms: Date.now() - t0};
 }
 
@@ -1055,19 +1167,24 @@ function ensureGraph() {
     } catch (e) {
     }
     const files = collectAll();
+    const inputs = graphInputs();
     let stale = !graph || graph.version !== GRAPH_VERSION
-        || graph.root !== rootArg
+        || !Array.isArray(graph.files) || !graph.files.every((f, i) => f && f.id === i + 1 && typeof f.path === 'string'
+            && Array.isArray(f.imports) && f.imports.every(id => Number.isInteger(id) && id > 0 && id <= graph.files.length)
+            && Array.isArray(f.entities) && Array.isArray(f.unresolved) && Array.isArray(f.external))
+        || !graph.symbols || !graph.selectors || !graph.stats || !Array.isArray(graph.cycles)
+        || JSON.stringify(graph.inputs) !== JSON.stringify(inputs.manifest)
         || files.length !== graph.files.length;
     if (!stale) {
-        const known = new Set(graph.files.map((f) => f.path));
-        stale = files.some((f) => !known.has(toPosix(f)));
+        const known = new Set(graph.files.map(f => f.path));
+        stale = files.some(f => !known.has(toPosix(f)));
     }
-    if (!stale) {
-        const gm = fs.statSync(GRAPH_FILE).mtimeMs;
-        stale = files.some((f) => statOf(f).mtimeMs > gm)
-            || CONFIG_FILES.some((c) => fs.existsSync(path.join(cwd, c)) && fs.statSync(path.join(cwd, c)).mtimeMs > gm);
-    }
-    return stale ? buildGraph(files) : {graph, reparsed: 0};
+    if (!stale) stale = files.some(f => {
+        const old = graph.sourceStats && graph.sourceStats[toPosix(f)];
+        const st = statOf(f);
+        return !old || old.mtime !== st.mtimeMs || old.size !== st.size;
+    });
+    return stale ? buildGraph(files, inputs) : {graph, reparsed: 0};
 }
 
 /**
@@ -1075,7 +1192,19 @@ function ensureGraph() {
  * Запрос без расширения («profile.component») предпочитает .ts-файл его html/стилям-соседям.
  */
 function findNode(graph, q) {
-    q = String(q).replace(/\\/g, '/');
+    const original = String(q);
+    q = original.replace(/\\/g, '/');
+    if (q.includes('/') || path.isAbsolute(q) || /^[a-z]:/i.test(q) || q === '.' || q === '..') {
+        const abs = path.resolve(cwd, q);
+        const rel = path.relative(cwd, abs);
+        if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)
+            || (process.platform !== 'win32' && /^[a-z]:/i.test(q)))
+            return {error: 'Путь вне рабочей директории запрещён: ' + original};
+        const exact = toPosix(abs);
+        const matches = graph.files.filter(f => process.platform === 'win32'
+            ? f.path.toLowerCase() === exact.toLowerCase() : f.path === exact);
+        return matches.length === 1 ? {node: matches[0]} : {error: 'Точный путь не найден в графе: ' + original};
+    }
     if (/^\d+$/.test(q)) {
         const byId = graph.files.find((f) => f.id === +q);
         if (byId) return {node: byId};
@@ -1099,6 +1228,27 @@ function findNode(graph, q) {
     }
     if (list.length > 1) return {ambiguous: list.slice(0, 15).map((f) => f.path + ' [' + f.kind + ']')};
     return {node: list[0]};
+}
+
+function structuralStatus(graph, truncated = 0, extra = []) {
+    const unresolved = graph.files.flatMap(f => f.unresolved.map(specifier => ({file: f.path, specifier})));
+    const reasons = [...new Set([
+        ...(unresolved.length ? ['unresolved-imports'] : []),
+        ...(scanExcluded.size ? ['excluded-source-files'] : []),
+        ...scanIssues, ...configIssues, ...(graph.configIssues || []),
+        ...(graph.cacheIssue ? [graph.cacheIssue] : []), ...extra
+    ])];
+    const samples = [...unresolved, ...[...scanExcluded].map(file => ({file, reason: 'excluded-source'}))];
+    return {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.', specs: args.specs},
+        completeness: {complete: reasons.length === 0 && truncated === 0,
+            ...(reasons.length ? {reasons: reasons.slice(0, 5), ...(reasons.length > 5 ? {reasonsTruncated: reasons.length - 5} : {})} : {}),
+            ...(samples.length ? {samples: samples.slice(0, 5), ...(samples.length > 5 ? {samplesTruncated: samples.length - 5} : {})} : {}),
+            ...(truncated ? {truncated} : {})}};
+}
+
+function unresolvedSummary(node) {
+    return node.unresolved.length ? {unresolvedPaths: node.unresolved.slice(0, 5),
+        ...(node.unresolved.length > 5 ? {unresolvedPathsTruncated: node.unresolved.length - 5} : {})} : {};
 }
 
 function reverseIndex(graph) {
@@ -1422,7 +1572,7 @@ if (op === 'path') {
     if (a.error) fail(a.error);
     if (b.error) fail(b.error);
     if (a.ambiguous || b.ambiguous) {
-        emit({ambiguous: true, matches: a.ambiguous || b.ambiguous});
+        emit({ambiguous: true, matches: a.ambiguous || b.ambiguous, ...structuralStatus(graph, 0, ['ambiguous-query'])});
         process.exit(0);
     }
     const prev = new Map([[a.node.id, null]]);
@@ -1437,12 +1587,12 @@ if (op === 'path') {
             }
     }
     if (!prev.has(b.node.id)) {
-        emit({from: a.node.path, to: b.node.path, chain: null});
+        emit({from: a.node.path, to: b.node.path, chain: null, ...structuralStatus(graph)});
         process.exit(0);
     }
     const chain = [];
     for (let cur = b.node.id; cur != null; cur = prev.get(cur)) chain.unshift(graph.files[cur - 1].path);
-    emit({from: a.node.path, to: b.node.path, chain});
+    emit({from: a.node.path, to: b.node.path, chain, ...structuralStatus(graph)});
     process.exit(0);
 }
 
@@ -1451,7 +1601,7 @@ if (op === 'node' || op === 'deps' || op === 'rdeps') {
     const r = findNode(graph, args.file);
     if (r.error) fail(r.error);
     if (r.ambiguous) {
-        emit({ambiguous: true, matches: r.ambiguous});
+        emit({ambiguous: true, matches: r.ambiguous, ...structuralStatus(graph, 0, ['ambiguous-query'])});
         process.exit(0);
     }
     const n = r.node;
@@ -1474,24 +1624,27 @@ if (op === 'node' || op === 'deps' || op === 'rdeps') {
                 return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
             }),
             unresolved: n.unresolved.length,
-            ...(n.unresolved.length ? {unresolvedPaths: n.unresolved} : {}),
+            ...unresolvedSummary(n),
             ...(n.external.length ? {external: n.external} : {})
         });
         process.exit(0);
     }
 
     const depth = Math.min(Math.max(args.depth, 1), 5);
-    const list = walk(graph, n.id, depth, op === 'rdeps', args.why).slice(0, 60);
+    const all = walk(graph, n.id, depth, op === 'rdeps', args.why);
+    const list = all.slice(0, 60);
+    const status = structuralStatus(graph, Math.max(0, all.length - 60));
     emit(op === 'deps'
         ? {
             file: n.path,
             kind: n.kind,
-            importsTotal: walk(graph, n.id, depth, false).length,
+            importsTotal: all.length,
+            ...status,
             unresolved: n.unresolved.length,
-            ...(n.unresolved.length ? {unresolvedPaths: n.unresolved} : {}),
+            ...unresolvedSummary(n),
             imports: list, ...(n.external.length ? {external: n.external} : {})
         }
-        : {file: n.path, kind: n.kind, importedByTotal: walk(graph, n.id, depth, true).length, importedBy: list});
+        : {file: n.path, kind: n.kind, importedByTotal: all.length, importedBy: list, ...status});
     process.exit(0);
 }
 
