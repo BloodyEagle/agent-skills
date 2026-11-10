@@ -6,28 +6,33 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const {execFileSync} = require('node:child_process');
-const {hashDir, requiresOf} = require('./lib/hash');
+const {hashDir, requiresOf, isExcluded} = require('./lib/hash');
 
 // ---------- разбор аргументов ----------
 
 function parseArgs(argv) {
     const flags = {};
     const pos = [];
+    const valueFlags = new Set(['--dir', '--to', '--manifest', '--root']);
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
-        if (a.startsWith('--')) {
-            const eq = a.indexOf('=');
-            if (eq > 0) {
-                flags[a.slice(0, eq)] = a.slice(eq + 1);
-            } else if (['--dir', '--to', '--manifest', '--root'].includes(a) && i + 1 < argv.length) {
-                flags[a] = argv[++i];
-            } else {
-                flags[a] = '';
-            }
-        } else {
+        if (!a.startsWith('--')) {
             pos.push(a);
+            continue;
         }
+        const eq = a.indexOf('=');
+        const name = eq > 0 ? a.slice(0, eq) : a;
+        if (!valueFlags.has(name) && name !== '--json') fail(`неизвестный флаг: ${name}`);
+        if (!valueFlags.has(name)) {
+            flags[name] = eq > 0 ? a.slice(eq + 1) : '';
+            continue;
+        }
+        const value = eq > 0 ? a.slice(eq + 1) : argv[i + 1];
+        if (!value || value.startsWith('--')) fail(`укажите значение для ${name}`);
+        flags[name] = value;
+        if (eq < 0) i++;
     }
     return {flags, pos};
 }
@@ -40,6 +45,124 @@ const SKILLS_DIR = path.join(ROOT, 'skills');
 const MANIFEST_PATH = path.join(SKILLS_DIR, 'manifest.json');
 
 // ---------- служебные ----------
+
+const MANIFEST_SCHEMA = 1;
+const SKILL_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+
+function validateName(name) {
+    if (typeof name !== 'string' || !SKILL_NAME.test(name) || /[.]$/.test(name)) {
+        throw new Error(`недопустимое имя скилла: ${name}`);
+    }
+    return name;
+}
+
+function insideDir(root, target) {
+    const rel = path.relative(root, target);
+    return rel === '' || (!path.isAbsolute(rel) && rel !== '..' && !rel.startsWith('..' + path.sep));
+}
+
+function realPath(target) {
+    const parts = [];
+    let parent = path.resolve(target);
+    for (;;) {
+        try {
+            fs.lstatSync(parent);
+        } catch (e) {
+            if (e.code !== 'ENOENT') throw e;
+            const next = path.dirname(parent);
+            if (next === parent) throw e;
+            parts.push(path.basename(parent));
+            parent = next;
+            continue;
+        }
+        return path.join(fs.realpathSync(parent), ...parts.reverse());
+    }
+}
+
+function skillDir(name) {
+    validateName(name);
+    const dir = path.resolve(SKILLS_DIR, name);
+    if (!fs.existsSync(dir)) throw new Error(`скилл не найден: ${name}`);
+    if (fs.lstatSync(dir).isSymbolicLink() || !fs.statSync(dir).isDirectory()
+        || !insideDir(fs.realpathSync(SKILLS_DIR), fs.realpathSync(dir))) {
+        throw new Error(`скилл вне каталога skills или не является каталогом: ${name}`);
+    }
+    return dir;
+}
+
+function readRegularFile(file) {
+    if (!fs.lstatSync(file).isFile()) throw new Error(`ожидался обычный файл без ссылки: ${file}`);
+    return fs.readFileSync(file, 'utf8');
+}
+
+function validateManifest(manifest, source) {
+    if (!manifest || !Array.isArray(manifest.skills)) throw new Error(`битый манифест: ${source} — нет массива skills`);
+    if (manifest.schemaVersion !== undefined && manifest.schemaVersion !== MANIFEST_SCHEMA) {
+        throw new Error(`неподдерживаемая schemaVersion манифеста: ${manifest.schemaVersion}`);
+    }
+    const names = new Set();
+    for (const entry of manifest.skills) {
+        validateName(entry && entry.name);
+        if (names.has(entry.name)) throw new Error(`дубликат скилла в манифесте: ${entry.name}`);
+        names.add(entry.name);
+        if (!parseVersion(entry.version) || !/^[a-f0-9]{64}$/.test(entry.sha256)
+            || !Number.isSafeInteger(entry.files) || entry.files < 0) {
+            throw new Error(`битая запись манифеста: ${entry.name}`);
+        }
+    }
+    return manifest;
+}
+
+// Все файлы подготовлены до первой замены; при ошибке записи возвращаем прежнее содержимое.
+function writeFiles(changes) {
+    const prepared = [];
+    const committed = [];
+    try {
+        for (const [file, content] of changes) {
+            let previous = null;
+            let mode;
+            try {
+                const stat = fs.lstatSync(file);
+                if (!stat.isFile()) throw new Error(`ожидался обычный файл без ссылки: ${file}`);
+                previous = fs.readFileSync(file);
+                mode = stat.mode;
+            } catch (e) {
+                if (e.code !== 'ENOENT') throw e;
+            }
+            const tmp = file + '.' + process.pid + '.' + crypto.randomUUID() + '.tmp';
+            const change = {file, tmp, previous, mode};
+            prepared.push(change);
+            fs.writeFileSync(tmp, content, {flag: 'wx', mode});
+        }
+        for (const change of prepared) {
+            fs.renameSync(change.tmp, change.file);
+            committed.push(change);
+        }
+    } catch (e) {
+        const errors = [];
+        for (const change of committed.reverse()) {
+            try {
+                if (change.previous === null) fs.unlinkSync(change.file);
+                else {
+                    fs.writeFileSync(change.tmp, change.previous, {flag: 'wx', mode: change.mode});
+                    fs.renameSync(change.tmp, change.file);
+                }
+            } catch (rollback) {
+                change.preserve = true;
+                errors.push(`${change.file}: ${rollback.message} (резерв: ${change.tmp})`);
+            }
+        }
+        if (errors.length) throw new Error(`${e.message}; не удалось восстановить: ${errors.join('; ')}`);
+        throw e;
+    } finally {
+        for (const change of prepared) {
+            if (change.preserve) continue;
+            try { fs.unlinkSync(change.tmp); } catch (e) {
+                if (e.code !== 'ENOENT') console.error(`Предупреждение: не удалось удалить ${change.tmp}: ${e.message}`);
+            }
+        }
+    }
+}
 
 function fail(msg, code = 1) {
     console.error('Ошибка: ' + msg);
@@ -72,49 +195,49 @@ function compareVersions(a, b) {
 function readVersionFile(dir, name) {
     const p = path.join(dir, 'VERSION');
     if (!fs.existsSync(p)) return null;
-    return parseVersion(fs.readFileSync(p, 'utf8'));
+    return parseVersion(readRegularFile(p));
 }
 
 // version: из frontmatter SKILL.md (блок между первым и вторым ---).
 function frontmatterVersion(skillDir) {
     const p = path.join(skillDir, 'SKILL.md');
     if (!fs.existsSync(p)) return null;
-    const parts = fs.readFileSync(p, 'utf8').split(/^---\s*$/m);
-    const head = parts.length > 1 ? parts[1] : parts[0];
-    const m = /^version:\s*(\S+)\s*$/m.exec(head);
+    const parts = /^(?:\uFEFF?---[^\S\r\n]*\r?\n)([\s\S]*?)^---[^\S\r\n]*(?:\r?\n|$)/m.exec(readRegularFile(p));
+    if (!parts || parts.index !== 0) return null;
+    const m = /^version:\s*(\S+)\s*$/m.exec(parts[1]);
     return m ? m[1] : null;
 }
 
-// Записывает version: в frontmatter: заменяет существующую строку или вставляет после description:.
-function setFrontmatterVersion(skillDir, version) {
+// Готовит новый frontmatter без изменения файла; запись выполняется вместе с VERSION и манифестом.
+function frontmatterText(skillDir, version) {
     const p = path.join(skillDir, 'SKILL.md');
-    let text = fs.readFileSync(p, 'utf8');
-    if (/^version:\s*\S+\s*$/m.test(text)) {
-        text = text.replace(/^version:\s*\S+\s*$/m, 'version: ' + version);
+    const text = readRegularFile(p);
+    const match = /^(\uFEFF?---[^\S\r\n]*\r?\n)([\s\S]*?)(^---[^\S\r\n]*(?:\r?\n|$))/m.exec(text);
+    if (!match || match.index !== 0) throw new Error(`${skillDir}: в SKILL.md нет frontmatter`);
+    const eol = match[1].endsWith('\r\n') ? '\r\n' : '\n';
+    let header = match[2];
+    if (/^version:[^\r\n]*$/m.test(header)) {
+        header = header.replace(/^version:[^\r\n]*$/m, 'version: ' + version);
     } else {
-        if (!/^description:/m.test(text)) fail(`${skillDir}: в SKILL.md нет frontmatter с description: — некуда вставить version:`);
-        text = text.replace(/^description:/m, 'version: ' + version + '\ndescription:');
+        if (!/^description:/m.test(header)) throw new Error(`${skillDir}: в SKILL.md нет description: в frontmatter`);
+        header = header.replace(/^description:/m, 'version: ' + version + eol + 'description:');
     }
-    fs.writeFileSync(p, text);
+    return match[1] + header + match[3] + text.slice(match[0].length);
 }
 
 function loadManifest(manifestPath) {
     if (!fs.existsSync(manifestPath)) {
         fail(`манифест не найден: ${manifestPath}. Укажите --manifest <путь|URL> или сгенерируйте: node skills.js manifest`);
     }
-    const raw = fs.readFileSync(manifestPath, 'utf8');
-    const m = JSON.parse(raw);
-    if (!m || !Array.isArray(m.skills)) fail(`битый манифест: ${manifestPath} — нет массива skills`);
-    return m;
+    const raw = readRegularFile(manifestPath);
+    return validateManifest(JSON.parse(raw), manifestPath);
 }
 
 async function loadManifestFromFlag(flag) {
     if (/^https?:\/\//.test(flag)) {
-        const res = await fetch(flag);
+        const res = await fetch(flag, {signal: AbortSignal.timeout(10000)});
         if (!res.ok) fail(`манифест по URL недоступен: ${flag} — HTTP ${res.status}`);
-        const m = JSON.parse(await res.text());
-        if (!m || !Array.isArray(m.skills)) fail(`битый манифест по URL: ${flag} — нет массива skills`);
-        return m;
+        return validateManifest(JSON.parse(await res.text()), flag);
     }
     return loadManifest(path.resolve(flag));
 }
@@ -129,7 +252,7 @@ function resolveInstallDir(flags, optName) {
 
 function gitCommit() {
     try {
-        return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {cwd: ROOT, encoding: 'utf8'}).trim();
+        return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}).trim();
     } catch {
         return null;
     }
@@ -138,8 +261,7 @@ function gitCommit() {
 // ---------- команды ----------
 
 function cmdHash(name) {
-    const dir = path.join(SKILLS_DIR, name);
-    if (!fs.existsSync(dir)) fail(`скилл не найден: ${name}`);
+    const dir = skillDir(name);
     const {hash, files} = hashDir(dir);
     console.log(`sha256: ${hash}`);
     console.log(`файлов: ${files}`);
@@ -147,81 +269,128 @@ function cmdHash(name) {
 
 // Пересобирает манифест из текущих VERSION (первичное заполнение и восстановление согласованности).
 function cmdManifest() {
+    let previous = {skills: []};
+    if (fs.existsSync(MANIFEST_PATH)) {
+        const raw = readRegularFile(MANIFEST_PATH);
+        try { previous = validateManifest(JSON.parse(raw), MANIFEST_PATH); } catch (e) {
+            console.error(`Предупреждение: прежний манифест пересоздан: ${e.message}`);
+        }
+    }
     const entries = [];
     for (const e of fs.readdirSync(SKILLS_DIR, {withFileTypes: true}).sort((a, b) => a.name.localeCompare(b.name))) {
-        if (!e.isDirectory()) continue;
-        const dir = path.join(SKILLS_DIR, e.name);
-        if (!fs.existsSync(path.join(dir, 'SKILL.md'))) continue;
+        if (!e.isDirectory() && !e.isSymbolicLink()) continue;
+        if (!fs.existsSync(path.join(SKILLS_DIR, e.name, 'SKILL.md'))) continue;
+        const dir = skillDir(e.name);
         const v = readVersionFile(dir, e.name);
-        if (!v) fail(`skills/${e.name}: нет файла VERSION — сначала добавьте его (см. README, раздел «Версии и обновление»)`);
+        if (!v) throw new Error(`skills/${e.name}: нет файла VERSION — сначала добавьте его (см. README, раздел «Версии и обновление»)`);
         const {hash, files} = hashDir(dir);
-        entries.push({
-            name: e.name,
-            version: versionToString(v),
-            updated: today(),
-            files,
-            sha256: hash,
-            requires: requiresOf(dir),
-        });
+        const requires = requiresOf(dir);
+        const old = previous.skills.find((s) => s.name === e.name);
+        const version = versionToString(v);
+        const unchanged = old && old.version === version && old.sha256 === hash && old.files === files
+            && JSON.stringify(old.requires) === JSON.stringify(requires);
+        entries.push({name: e.name, version, updated: unchanged ? old.updated : today(), files, sha256: hash, requires});
     }
-    const manifest = {generated: today(), skills: entries};
-    fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n');
+    const manifest = {schemaVersion: MANIFEST_SCHEMA, generated: today(), skills: entries};
+    writeFiles([[MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n']]);
     console.log(`манифест записан: ${path.relative(ROOT, MANIFEST_PATH)} (${entries.length} скиллов)`);
 }
 
 function cmdBump(name, level) {
     if (!['patch', 'minor', 'major'].includes(level)) {
-        fail(`уровень должен быть patch | minor | major, получено: ${level}`);
+        throw new Error(`уровень должен быть patch | minor | major, получено: ${level}`);
     }
-    const dir = path.join(SKILLS_DIR, name);
-    if (!fs.existsSync(path.join(dir, 'SKILL.md'))) fail(`скилл не найден: ${name}`);
+    const dir = skillDir(name);
     const cur = readVersionFile(dir, name);
-    if (!cur) fail(`skills/${name}: нет файла VERSION`);
+    if (!cur) throw new Error(`skills/${name}: нет файла VERSION`);
+    const manifest = loadManifest(MANIFEST_PATH);
     const next = {...cur};
     if (level === 'patch') next.patch += 1;
     if (level === 'minor') { next.minor += 1; next.patch = 0; }
     if (level === 'major') { next.major += 1; next.minor = 0; next.patch = 0; }
     const nextStr = versionToString(next);
-
-    fs.writeFileSync(path.join(dir, 'VERSION'), nextStr + '\n');
-    setFrontmatterVersion(dir, nextStr);
-
-    const manifest = loadManifest(MANIFEST_PATH);
-    const {hash, files} = hashDir(dir);
+    const contents = new Map([['VERSION', nextStr + '\n'], ['SKILL.md', frontmatterText(dir, nextStr)]]);
+    const {hash, files} = hashDir(dir, contents);
     let entry = manifest.skills.find((s) => s.name === name);
     if (!entry) {
-        entry = {name, requires: requiresOf(dir)};
+        entry = {name};
         manifest.skills.push(entry);
     }
-    entry.version = nextStr;
-    entry.updated = today();
-    entry.files = files;
-    entry.sha256 = hash;
-    if (!Array.isArray(entry.requires)) entry.requires = requiresOf(dir);
+    Object.assign(entry, {version: nextStr, updated: today(), files, sha256: hash, requires: requiresOf(dir)});
+    manifest.schemaVersion = MANIFEST_SCHEMA;
     manifest.generated = today();
-    fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n');
+    const changes = [...contents].map(([rel, content]) => [path.join(dir, rel), content]);
+    changes.push([MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n']);
+    writeFiles(changes);
     console.log(`${name}: ${versionToString(cur)} → ${nextStr} (VERSION, SKILL.md, манифест обновлены)`);
 }
 
 function cmdInstall(name, flags) {
-    const src = path.join(SKILLS_DIR, name);
-    if (!fs.existsSync(path.join(src, 'SKILL.md'))) fail(`скилл не найден: ${name}`);
+    const src = skillDir(name);
+    readRegularFile(path.join(src, 'SKILL.md'));
+    const v = readVersionFile(src, name);
+    if (!v) throw new Error(`skills/${name}: нет корректного VERSION`);
     const to = resolveInstallDir(flags, '--to');
     const dest = path.join(to, name);
-    fs.mkdirSync(dest, {recursive: true});
-    fs.cpSync(src, dest, {recursive: true});
-    const {hash, files} = hashDir(dest);
-    const v = readVersionFile(dest, name);
-    const meta = {
-        name,
-        version: v ? versionToString(v) : null,
-        hash,
-        files,
-        date: today(),
-        commit: gitCommit(),
-    };
-    fs.writeFileSync(path.join(dest, '.installed.json'), JSON.stringify(meta, null, 2) + '\n');
-    console.log(`${name} → ${dest} (версия ${meta.version}, файлов ${files}, хеш записан в .installed.json)`);
+    const srcReal = fs.realpathSync(src);
+    const destReal = realPath(dest);
+    if (insideDir(srcReal, destReal) || insideDir(destReal, srcReal)) {
+        throw new Error('источник и назначение установки пересекаются');
+    }
+    if (!insideDir(realPath(to), destReal)) throw new Error(`назначение вне каталога установки: ${dest}`);
+    let exists = false;
+    try {
+        const stat = fs.lstatSync(dest);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`назначение не является обычным каталогом: ${dest}`);
+        exists = true;
+    } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+    }
+    fs.mkdirSync(to, {recursive: true});
+    const stage = fs.mkdtempSync(path.join(to, '.' + name + '-install-'));
+    const staged = path.join(stage, 'skill');
+    const backup = path.join(stage, 'previous');
+    let movedOld = false;
+    let installed = false;
+    let preserveBackup = false;
+    let meta;
+    try {
+        fs.cpSync(src, staged, {
+            recursive: true,
+            filter: (file) => {
+                const rel = path.relative(src, file).split(path.sep).join('/');
+                if (rel && isExcluded(rel)) return false;
+                if (fs.lstatSync(file).isSymbolicLink()) throw new Error(`ссылки внутри скилла не устанавливаются: ${rel}`);
+                return true;
+            },
+        });
+        const {hash, files} = hashDir(staged);
+        const version = readVersionFile(staged, name);
+        if (!version) throw new Error(`skills/${name}: VERSION изменился во время копирования`);
+        meta = {name, version: versionToString(version), hash, files, date: today(), commit: gitCommit()};
+        fs.writeFileSync(path.join(staged, '.installed.json'), JSON.stringify(meta, null, 2) + '\n', {flag: 'wx'});
+        if (exists) {
+            fs.renameSync(dest, backup);
+            movedOld = true;
+        }
+        fs.renameSync(staged, dest);
+        installed = true;
+    } catch (e) {
+        if (movedOld && !installed) {
+            try { fs.renameSync(backup, dest); } catch (rollback) {
+                preserveBackup = true;
+                throw new Error(`${e.message}; прежняя копия сохранена в ${backup}: ${rollback.message}`);
+            }
+        }
+        throw e;
+    } finally {
+        if (!preserveBackup) {
+            try { fs.rmSync(stage, {recursive: true, force: true}); } catch (e) {
+                console.error(`Предупреждение: временный каталог сохранён ${stage}: ${e.message}`);
+            }
+        }
+    }
+    console.log(`${name} → ${dest} (версия ${meta.version}, файлов ${meta.files}, хеш записан в .installed.json)`);
 }
 
 // Статусы установки: актуально | изменён локально | устарело | не установлен | неизвестно (установлен вручную).
@@ -231,13 +400,20 @@ function collectStatuses(manifest, installDir) {
         if (!fs.existsSync(inst)) {
             return {name: s.name, manifest: s.version, status: 'не установлен'};
         }
+        const stat = fs.lstatSync(inst);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || !insideDir(realPath(installDir), fs.realpathSync(inst))) {
+            return {name: s.name, manifest: s.version, status: 'неизвестно (небезопасный каталог установки)'};
+        }
         const metaPath = path.join(inst, '.installed.json');
         if (!fs.existsSync(metaPath)) {
             return {name: s.name, manifest: s.version, status: 'неизвестно (установлен вручную)'};
         }
         let meta;
         try {
-            meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+            meta = JSON.parse(readRegularFile(metaPath));
+            if (!meta || meta.name !== s.name || !parseVersion(meta.version) || !/^[a-f0-9]{64}$/.test(meta.hash)) {
+                throw new Error('некорректная метка установки');
+            }
         } catch {
             return {name: s.name, manifest: s.version, status: 'неизвестно (битый .installed.json)'};
         }
@@ -246,7 +422,14 @@ function collectStatuses(manifest, installDir) {
         if (mv && iv && compareVersions(mv, iv) > 0) {
             return {name: s.name, installed: meta.version, manifest: s.version, status: `устарело (${meta.version} → ${s.version})`};
         }
-        const {hash} = hashDir(inst);
+        if (mv && iv && compareVersions(iv, mv) > 0) {
+            return {name: s.name, installed: meta.version, manifest: s.version, status: `новее манифеста (${meta.version} > ${s.version})`};
+        }
+        let hash;
+        try { ({hash} = hashDir(inst)); } catch (e) {
+            if (e.code !== 'UNSAFE_SKILL_LINK') throw e;
+            return {name: s.name, manifest: s.version, status: 'неизвестно (небезопасный каталог установки)'};
+        }
         if (meta.version === s.version && hash === s.sha256) {
             return {name: s.name, installed: meta.version, manifest: s.version, status: 'актуально'};
         }
@@ -285,12 +468,12 @@ function cmdVerify() {
     const errors = [];
     const manifest = loadManifest(MANIFEST_PATH);
     const dirs = fs.readdirSync(SKILLS_DIR, {withFileTypes: true})
-        .filter((e) => e.isDirectory() && fs.existsSync(path.join(SKILLS_DIR, e.name, 'SKILL.md')))
+        .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && fs.existsSync(path.join(SKILLS_DIR, e.name, 'SKILL.md')))
         .map((e) => e.name)
         .sort();
 
     for (const name of dirs) {
-        const dir = path.join(SKILLS_DIR, name);
+        const dir = skillDir(name);
         const vf = readVersionFile(dir, name);
         if (!vf) {
             errors.push(`skills/${name}: нет файла VERSION`);
@@ -306,6 +489,9 @@ function cmdVerify() {
         if (!entry) {
             errors.push(`skills/${name}: нет записи в манифесте — прогоните node skills.js bump или manifest`);
             continue;
+        }
+        if (JSON.stringify(entry.requires) !== JSON.stringify(requiresOf(dir))) {
+            errors.push(`skills/${name}: requires в манифесте не соответствуют составу файлов`);
         }
         if (entry.version !== versionToString(vf)) {
             errors.push(`skills/${name}: версия в манифесте (${entry.version}) ≠ VERSION (${versionToString(vf)})`);

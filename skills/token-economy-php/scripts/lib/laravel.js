@@ -22,7 +22,7 @@ const RES_ACTIONS = ['index', 'create', 'store', 'show', 'edit', 'update', 'dest
 const API_RES = ['index', 'store', 'show', 'update', 'destroy'];
 const RES_MAP = {
   index: ['GET', ''], create: ['GET', '/create'], store: ['POST', ''],
-  show: ['GET', '/{p}'], edit: ['GET', '/{p}/edit'], update: ['PUT', '/{p}'], destroy: ['DELETE', '/{p}'],
+  show: ['GET', '/{p}'], edit: ['GET', '/{p}/edit'], update: ['PUT|PATCH', '/{p}'], destroy: ['DELETE', '/{p}'],
 };
 
 // ---------- определение проекта и версии ----------
@@ -32,13 +32,17 @@ function readComposer(root) {
 }
 
 function detectLaravel(root) {
-  try { if (fs.statSync(path.join(root, 'artisan')).isFile()) return true; } catch (e) { /* нет artisan */ }
   const c = readComposer(root);
   if (c) {
     const req = { ...(c.require || {}), ...(c['require-dev'] || {}) };
     if (req['laravel/framework'] || req['laravel/lumen-framework']) return true;
   }
-  return false;
+  // Один пустой artisan не отличает Laravel от произвольного PHP-проекта.
+  try {
+    const artisan = fs.readFileSync(path.join(root, 'artisan'), 'utf8');
+    return /\bLARAVEL_START\b/.test(artisan) && /bootstrap[\\/]app\.php/.test(artisan)
+      && fs.statSync(path.join(root, 'bootstrap/app.php')).isFile();
+  } catch (e) { return false; }
 }
 
 function composerFramework(root) {

@@ -11,8 +11,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const zlib = require('zlib');
+const crypto = require('crypto');
 
-const VERSION = '1.1.0';
+const CACHE_VERSION = 2;
 const CACHE_DIR = '.kt-cache';
 const SKIP_DIRS = new Set(['.git', '.gradle', 'build', 'out', '.idea', '.kotlin', '.kilo', 'node_modules', CACHE_DIR, '.jv-cache']);
 const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.jar', '.aar', '.class', '.zip', '.apk', '.aab', '.so', '.ttf', '.otf', '.bin', '.jks', '.keystore', '.prof', '.wav', '.mp3', '.mp4', '.webm']);
@@ -95,7 +96,15 @@ function parseArgs(argv) {
   for (const a of argv) {
     if (a.startsWith('@')) {
       const fp = path.resolve(a.slice(1));
-      Object.assign(p, JSON.parse(fs.readFileSync(fp, 'utf8')));
+      try {
+        if (!insideDir(process.cwd(), fp) || !insideDir(fs.realpathSync(process.cwd()), fs.realpathSync(fp))) {
+          die('путь файла параметров вне рабочей директории: ' + a.slice(1));
+        }
+        if (!fs.statSync(fp).isFile()) die('файл параметров не является файлом: ' + a.slice(1));
+        const value = JSON.parse(fs.readFileSync(fp, 'utf8').replace(/^\uFEFF/, ''));
+        if (!value || typeof value !== 'object' || Array.isArray(value)) die('JSON параметров должен содержать объект: ' + a.slice(1));
+        Object.assign(p, value);
+      } catch (e) { die('не удалось прочитать JSON параметров: ' + a.slice(1)); }
       continue;
     }
     const eq = a.indexOf('=');
@@ -120,30 +129,71 @@ function pint(p, key, def) {
 function die(msg) { process.stderr.write('Ошибка: ' + msg + '\n'); process.exit(1); }
 
 function insideDir(root, p) {
-  const r = path.resolve(root);
-  const q = path.resolve(p);
-  return q === r || q.startsWith(r + path.sep);
+  const rel = path.relative(path.resolve(root), path.resolve(p));
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
+}
+
+// Для нового файла разрешаем только отсутствующий хвост пути, но не битую ссылку.
+function safeInside(root, file) {
+  const abs = path.resolve(root, file);
+  if (!insideDir(root, abs)) throw new Error('путь вне рабочей директории: ' + file);
+  const realRoot = fs.realpathSync(root);
+  let parent = abs;
+  const missing = [];
+  while (true) {
+    try {
+      const real = path.resolve(fs.realpathSync(parent), ...missing);
+      if (!insideDir(realRoot, real)) throw new Error('путь вне рабочей директории: ' + file);
+      return real;
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+      try {
+        fs.lstatSync(parent);
+        throw new Error('недоступная ссылка: ' + file);
+      } catch (statError) { if (statError.code !== 'ENOENT') throw statError; }
+      const next = path.dirname(parent);
+      if (next === parent) throw e;
+      missing.unshift(path.basename(parent));
+      parent = next;
+    }
+  }
 }
 
 // ---------- обход файловой системы ----------
 
 function walkFiles(root, relDir, out) {
-  const dir = relDir ? path.join(root, relDir) : root;
-  let names;
-  try { names = fs.readdirSync(dir); } catch (e) { return; }
-  for (const name of names.sort()) {
-    const rel = relDir ? relDir + '/' + name : name;
-    let st;
-    try { st = fs.statSync(path.join(dir, name)); } catch (e) { continue; }
-    if (st.isDirectory()) {
-      if (SKIP_DIRS.has(name) || (name.startsWith('.') && name !== '.')) continue;
-      walkFiles(root, rel, out);
-    } else if (st.isFile()) {
-      const ext = path.extname(name).toLowerCase();
-      if (BINARY_EXT.has(ext) || st.size > 3 * 1024 * 1024) continue;
-      out.push({ rel, size: st.size, mtime: Math.round(st.mtimeMs) });
+  const pending = [relDir];
+  const seen = new Set();
+  while (pending.length) {
+    const relBase = pending.pop();
+    let dir, names;
+    try {
+      dir = safeInside(root, relBase || '.');
+      const key = process.platform === 'win32' ? dir.toLowerCase() : dir;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      names = fs.readdirSync(dir).sort();
+    } catch (e) { continue; }
+    for (const name of names) {
+      const rel = relBase ? relBase + '/' + name : name;
+      try {
+        const fp = path.join(dir, name);
+        const st = fs.lstatSync(fp);
+        // Включая junction: обход ссылок не нужен для анализа исходного дерева.
+        if (st.isSymbolicLink()) continue;
+        if (st.isDirectory()) {
+          if (SKIP_DIRS.has(name.toLowerCase()) || name.startsWith('.')) continue;
+          pending.push(rel);
+        } else if (st.isFile()) {
+          const ext = path.extname(name).toLowerCase();
+          if (BINARY_EXT.has(ext) || st.size > 3 * 1024 * 1024) continue;
+          const hash = crypto.createHash('sha256').update(fs.readFileSync(safeInside(root, rel))).digest('hex');
+          out.push({ rel, size: st.size, mtime: st.mtimeMs, hash });
+        }
+      } catch (e) { /* исчезнувший или недоступный файл пропускаем */ }
     }
   }
+  out.sort((a, b) => a.rel.localeCompare(b.rel));
 }
 
 // Классификация файла проекта по его пути.
@@ -170,10 +220,10 @@ function classifyFile(rel) {
 
 function parseSettingsGradle(text) {
   const modules = [];
-  const re = /include\s*\(([^)]*)\)/g;
+  const re = /^\s*include(?:\s*\(([^)]*)\)|[^\S\r\n]+([^\r\n;]+))/gm;
   let m;
   while ((m = re.exec(text))) {
-    for (const part of m[1].split(',')) {
+    for (const part of (m[1] === undefined ? m[2] : m[1]).split(',')) {
       const mm = /['"]([^'"]+)['"]/.exec(part);
       if (mm) modules.push(mm[1]);
     }
@@ -265,6 +315,7 @@ function xmlAttrs(s) {
 }
 
 function parseManifestXml(text) {
+  text = text.replace(/<!--[\s\S]*?(?:-->|$)/g, comment => comment.replace(/[^\r\n]/g, ' '));
   const man = { permissions: [], features: [], application: null, components: [] };
   for (const m of text.matchAll(/<uses-permission\b([^>]*?)\/>/g)) {
     const a = xmlAttrs(m[1]);
@@ -352,7 +403,7 @@ function localeOfValuesRel(rel) {
 
 // локаль-квалификатор (en, en-rGB, b+es), а не конфигурация (night, land, w600dp)
 function isLocaleQualifier(q) {
-  return /^[a-z]{2,3}(-r[A-Z]{2}|-b\+.+)?$/.test(q);
+  return /^(?:[a-z]{2,3}(?:-r(?:[A-Z]{2}|\d{3}))?|b\+[a-z]{2,3}(?:\+[A-Za-z0-9]{2,8})*)$/.test(q);
 }
 
 function parseNavXml(text) {
@@ -401,6 +452,7 @@ function sanitize(src) {
   let i = 0;
   while (i < n) {
     const c = src[i];
+    if (c === '`') { i = backtickEnd(src, i); continue; }
     if (c === '/' && src[i + 1] === '/') {
       while (i < n && src[i] !== '\n') { out[i] = ' '; i++; }
       continue;
@@ -460,6 +512,12 @@ function computeDepths(t) {
   const nest = new Int32Array(n);
   let b = 0, k = 0;
   for (let i = 0; i < n; i++) {
+    if (t[i] === '`') {
+      const end = backtickEnd(t, i);
+      for (; i < end; i++) { brace[i] = b; nest[i] = b + k; }
+      i--;
+      continue;
+    }
     brace[i] = b;
     nest[i] = b + k;
     const c = t[i];
@@ -542,6 +600,7 @@ function matchBraceForward(brace, t, openPos) {
   // brace[i] — глубина ДО символа i, значит парная '}' имеет глубину на 1 больше открывающей
   const target = brace[openPos] + 1;
   for (let j = openPos + 1; j < t.length; j++) {
+    if (t[j] === '`') { j = backtickEnd(t, j) - 1; continue; }
     if (t[j] === '}' && brace[j] === target) return j;
   }
   return -1;
@@ -552,6 +611,7 @@ function splitTop(s, sep) {
   let d = 0, start = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
+    if (c === '`') { i = backtickEnd(s, i) - 1; continue; }
     if (c === '(' || c === '[' || c === '{' || c === '<') d++;
     else if (c === ')' || c === ']' || c === '}' || c === '>') { if (d > 0) d--; }
     else if (c === sep && d === 0) { parts.push(s.slice(start, i)); start = i + 1; }
@@ -561,9 +621,14 @@ function splitTop(s, sep) {
 }
 
 function identAt(t, i) {
-  let j = i;
-  while (j < t.length && /[\w]/.test(t[j])) j++;
-  return { id: t.slice(i, j), end: j };
+  const m = /^(?:`([^`\r\n]+)`|([\p{L}_][\p{L}\p{N}_]*))/u.exec(t.slice(i));
+  return m ? { id: m[1] || m[2], end: i + m[0].length } : { id: '', end: i };
+}
+
+function backtickEnd(t, i) {
+  const end = t.indexOf('`', i + 1);
+  const nl = t.indexOf('\n', i + 1);
+  return end >= 0 && (nl < 0 || end < nl) ? end + 1 : (nl < 0 ? t.length : nl);
 }
 
 function skipWs(t, i) { while (i < t.length && /\s/.test(t[i])) i++; return i; }
@@ -599,7 +664,7 @@ function parseKtParams(s) {
     if (!p) continue;
     const annos = [...p.matchAll(/@([\w.]+)/g)].map(x => '@' + x[1]);
     // отрезаем модификаторы и выравниваем "name : Type = default"
-    const m = /^(?:@[\w.]+(?:\([^)]*\))?\s+)*(?:(?:\w+)\s+)*(`[\w]+`|[\w]+)\s*:\s*([^=]+?)(?:\s*=\s*(.*))?$/.exec(p.replace(/\s+/g, ' ').trim());
+    const m = /^(?:@[\p{L}\p{N}_.]+(?:\([^)]*\))?\s+)*(?:(?:\w+)\s+)*(`[^`\r\n]+`|[\p{L}_][\p{L}\p{N}_]*)\s*:\s*([^=]+?)(?:\s*=\s*(.*))?$/u.exec(p.replace(/\s+/g, ' ').trim());
     if (!m) continue;
     let kind = 'param';
     const valRe = /\b(val|var)\s+/.exec(p.replace(/\s+/g, ' '));
@@ -654,12 +719,13 @@ function parseKtDeclAt(t, raw, ctx, pos, kw, matches, mi, to) {
   const mk = (o) => Object.assign({ mods: back.mods, annos: back.annos, lineStart, lineEnd: lineStart }, o);
 
   if (kw === 'typealias') {
-    const m = /typealias\s+(\w+)([\s\S]*?)(?:\n|$)/.exec(t.slice(pos, Math.min(t.length, pos + 400)));
-    if (!m) return null;
-    const eq = m[2].indexOf('=');
-    const target = eq >= 0 ? m[2].slice(eq + 1).trim() : '';
-    const nl = t.indexOf('\n', pos);
-    return { decl: mk({ kind: 'typealias', name: m[1], target }), end: nl < 0 ? to : nl + 1 };
+    const nm = identAt(t, skipWs(t, pos + kw.length));
+    if (!nm.id) return null;
+    const nl = t.indexOf('\n', nm.end);
+    const rest = t.slice(nm.end, nl < 0 ? to : nl);
+    const eq = rest.indexOf('=');
+    const target = eq >= 0 ? rest.slice(eq + 1).trim() : '';
+    return { decl: mk({ kind: 'typealias', name: nm.id, target }), end: nl < 0 ? to : nl + 1 };
   }
 
   const isCompanion = back.mods.includes('companion') && kw === 'object';
@@ -700,7 +766,7 @@ function parseKtDeclAt(t, raw, ctx, pos, kw, matches, mi, to) {
     }
     const consW = identAt(t, j2);
     if (consW.id === 'constructor') j2 = skipWs(t, consW.end);
-    let ctorEnd = i;
+    let ctorEnd = nameM.end;
     if (t[j2] === '(') {
       const close = skipParens(t, j2);
       ctorParams = parseKtParams(t.slice(j2 + 1, close - 1));
@@ -724,7 +790,7 @@ function parseKtDeclAt(t, raw, ctx, pos, kw, matches, mi, to) {
       headerEnd = k2;
     } else if (t[j2] !== '{') {
       // без супертипов: заголовок кончается на этой строке
-      const nl = t.indexOf('\n', j2);
+      const nl = t.indexOf('\n', ctorEnd);
       headerEnd = (nl >= 0 && nl < to) ? nl : Math.max(j2, ctorEnd);
     }
     // окно тела: до следующей декларации ЗА пределами заголовка
@@ -748,21 +814,24 @@ function parseKtDeclAt(t, raw, ctx, pos, kw, matches, mi, to) {
     const lineEnd = hasBody && bodyEnd > 0 ? lineOf(starts, bodyEnd) : lineStart;
     if (hasBody && bodyEnd > 0) {
       if (kind === 'enum') {
-        // записи enum до ';' на базовой глубине
+        // Записи enum заканчиваются на ';' либо на закрывающей скобке тела.
         let j = bs + 1, d = 0, semi = -1;
         while (j < bodyEnd) {
           const c = t[j];
+          if (c === '`') { j = backtickEnd(t, j); continue; }
           if (c === '(' || c === '[' || c === '{' || c === '<') d++;
           else if (c === ')' || c === ']' || c === '}' || c === '>') { if (d > 0) d--; }
           else if (c === ';' && d === 0) { semi = j; break; }
           j++;
         }
-        const region = semi > 0 ? t.slice(bs + 1, semi) : '';
-        if (region.trim()) {
-          for (const e of splitTop(region, ',')) {
-            const em = /^\s*(\w+)/.exec(e);
-            if (em) entries.push({ name: em[1], line: lineOf(starts, bs + 1 + e.length) });
-          }
+        const region = t.slice(bs + 1, semi > 0 ? semi : bodyEnd);
+        let cursor = bs + 1;
+        for (const e of splitTop(region, ',')) {
+          const offset = t.indexOf(e, cursor);
+          const nameStart = skipWs(e, 0);
+          const em = identAt(e, nameStart);
+          if (em.id) entries.push({ name: em.id, line: lineOf(starts, offset + nameStart) });
+          cursor = offset + e.length + 1;
         }
         if (semi > 0) {
           const sub = parseKtRegion(t, raw, ctx, semi + 1, bodyEnd, nest[semi + 1], null);
@@ -792,6 +861,7 @@ function parseKtDeclAt(t, raw, ctx, pos, kw, matches, mi, to) {
     let j = i;
     while (j < to && j < t.length) {
       const c = t[j];
+      if (c === '`') { j = backtickEnd(t, j); continue; }
       if (c === '(') { lastParen = j; break; }
       if (c === '<') { j = skipAngles(t, j); continue; }
       if (c === '{' || c === '\n') break;
@@ -799,7 +869,7 @@ function parseKtDeclAt(t, raw, ctx, pos, kw, matches, mi, to) {
     }
     if (lastParen < 0) return { decl: null, end: nextMatchPos > 0 ? nextMatchPos : to };
     const sigText = t.slice(i, lastParen).trim();
-    const parts = sigText.split('.');
+    const parts = splitTop(sigText, '.');
     const name = (parts[parts.length - 1] || '').replace(/`/g, '');
     const receiver = parts.length > 1 ? parts.slice(0, -1).join('.').replace(/<[^>]*>/g, '').trim() : null;
     if (!name) return { decl: null, end: nextMatchPos > 0 ? nextMatchPos : to };
@@ -851,11 +921,18 @@ function parseKtDeclAt(t, raw, ctx, pos, kw, matches, mi, to) {
 
   if (kw === 'val' || kw === 'var') {
     i = skipWs(t, pos + kw.length);
+    const parts = [];
     let nameEnd = i;
-    while (nameEnd < to && nameEnd < t.length && /[\w.]/.test(t[nameEnd])) nameEnd++;
-    let nameRaw = t.slice(i, nameEnd);
-    const parts = nameRaw.split('.');
-    const name = (parts[parts.length - 1] || '').replace(/`/g, '');
+    while (nameEnd < to) {
+      const nm = identAt(t, nameEnd);
+      if (!nm.id) break;
+      parts.push(nm.id);
+      nameEnd = nm.end;
+      if (t[nameEnd] !== '.') break;
+      nameEnd++;
+    }
+    const name = parts[parts.length - 1] || '';
+    if (!name) return { decl: null, end: nextMatchPos > 0 ? nextMatchPos : to };
     const receiver = parts.length > 1 ? parts.slice(0, -1).join('.') : null;
     let j = skipWs(t, nameEnd);
     let type = null;
@@ -911,13 +988,13 @@ function parseKtDeclAt(t, raw, ctx, pos, kw, matches, mi, to) {
 function parseKtRegion(t, raw, ctx, from, to, base, owner) {
   const { nest } = ctx;
   const decls = [];
-  const re = /\b(fun\s+interface|class|interface|object|fun|val|var|typealias|constructor|init)\b/g;
+  const re = /`[^`\r\n]*`|(?<![\p{L}\p{N}_])(fun\s+interface|class|interface|object|fun|val|var|typealias|constructor|init)(?![\p{L}\p{N}_])/gu;
   const matches = [];
   re.lastIndex = from;
   let m;
   while ((m = re.exec(t))) {
     if (m.index >= to) break;
-    if (nest[m.index] !== base) continue;
+    if (!m[1] || nest[m.index] !== base) continue;
     matches.push({ pos: m.index, kw: m[1] });
   }
   for (let mi = 0; mi < matches.length; mi++) {
@@ -937,10 +1014,11 @@ function parseKotlin(raw) {
   const { brace, nest } = computeDepths(t);
   const starts = buildLineStarts(t);
   const ctx = { t, raw, brace, nest, starts };
-  const pkgM = /\bpackage\s+([\w.]+)/.exec(t);
-  const imports = [...t.matchAll(/\bimport\s+([\w.]+?)(?:\s+as\s+(\w+))?(?=\s|$)/g)].map(x => ({ name: x[1], alias: x[2] || null }));
+  const pkgM = /^\s*package\s+((?:`[^`\r\n]+`|[\p{L}_][\p{L}\p{N}_]*)(?:\.(?:`[^`\r\n]+`|[\p{L}_][\p{L}\p{N}_]*))*)/mu.exec(t);
+  const imports = [...t.matchAll(/^\s*import\s+((?:`[^`\r\n]+`|[\p{L}_][\p{L}\p{N}_]*)(?:\.(?:`[^`\r\n]+`|[\p{L}_][\p{L}\p{N}_]*))*(?:\.\*)?)(?:[^\S\r\n]+as[^\S\r\n]+(`[^`\r\n]+`|[\p{L}_][\p{L}\p{N}_]*))?(?=[\s;]|$)/gmu)]
+    .map(x => ({ name: x[1].replace(/`/g, ''), alias: x[2] ? x[2].replace(/`/g, '') : null }));
   const top = parseKtRegion(t, raw, ctx, 0, t.length, 0, null);
-  return { package: pkgM ? pkgM[1] : '', imports, decls: top.decls, sanitized: t, starts, brace, nest };
+  return { package: pkgM ? pkgM[1].replace(/`/g, '') : '', imports, decls: top.decls, sanitized: t, starts, brace, nest };
 }
 
 // ---------- парсер Java (базовая поддержка смешанных проектов) ----------
@@ -1077,7 +1155,7 @@ function parseJava(raw) {
 function collectClasses(parsed, fileRel, module, out) {
   const walk = (decls, prefix) => {
     for (const d of decls) {
-      if (d.kind && ['class', 'interface', 'object', 'enum', 'companion'].includes(d.kind)) {
+      if (d.kind && ['class', 'interface', 'object', 'enum', 'companion', 'record'].includes(d.kind)) {
         const path = prefix ? prefix + '.' + d.name : d.name;
         const fq = (parsed.package ? parsed.package + '.' : '') + path;
         const annos = (d.annos || []).map(a => a.name);
@@ -1152,7 +1230,7 @@ function buildIndex(root, fileList) {
       continue;
     }
     let rd;
-    try { rd = readSmart(path.join(root, rel)); } catch (e) { continue; }
+    try { rd = readSmart(safeInside(root, rel)); } catch (e) { continue; }
     filesMeta.push({ rel, cls, enc: rd.enc, bom: rd.bom, lines: rd.lines, module: null });
     if (cls === 'gradle') {
       const base = path.posix.basename(rel);
@@ -1322,8 +1400,11 @@ function addEdge(edges, seen, from, to, type, line) {
   if (!from || !to || from === to) return;
   const key = from + '|' + to + '|' + type;
   const prev = seen.get(key);
-  if (prev === undefined) { seen.set(key, line); edges.push({ from, to, type, line }); }
-  else if (line < prev) { seen.set(key, line); const e = edges.find(x => x.from === from && x.to === to && x.type === type); if (e) e.line = line; }
+  if (!prev) {
+    const edge = { from, to, type, line };
+    seen.set(key, edge);
+    edges.push(edge);
+  } else if (line !== null && (prev.line === null || line < prev.line)) prev.line = line;
 }
 
 function buildEdges(data, ktByRel) {
@@ -1341,7 +1422,6 @@ function buildEdges(data, ktByRel) {
       const targets = classByName.get(st);
       if (!targets) continue;
       for (const tgt of targets) {
-        const type = (tgt.kind === 'interface' && c.kind !== 'interface') || (c.kind === 'class' && tgt.kind === 'class') ? (tgt.kind === 'interface' ? 'implements' : 'extends') : (tgt.kind === 'interface' ? 'implements' : 'extends');
         addEdge(edges, seen, c.file, tgt.file, tgt.kind === 'interface' ? 'implements' : 'extends', c.lineStart);
       }
     }
@@ -1375,7 +1455,7 @@ function buildEdges(data, ktByRel) {
     const t = parsed.sanitized;
     for (const [name, targets] of classByName) {
       if (!t.includes(name)) continue;
-      const re = new RegExp('\\b' + name.replace(/\$/g, '\\$') + '\\b', 'g');
+      const re = new RegExp('(?<![\\p{L}\\p{N}_`])(?:`' + reEsc(name) + '`|' + reEsc(name) + ')(?![\\p{L}\\p{N}_`])', 'gu');
       let m;
       while ((m = re.exec(t))) {
         for (const tgt of targets) {
@@ -1394,7 +1474,7 @@ function buildEdges(data, ktByRel) {
     for (const fn of data.functions) {
       if (fn.prop || !fn.name) continue;
       // вызов функции: с аргументами Name( — или trailing-lambda Compose: Name {
-      const re = new RegExp('(?<![.\\w])' + fn.name.replace(/\$/g, '\\$') + '\\s*[(\\{]', 'g');
+      const re = new RegExp('(?<![.\\p{L}\\p{N}_`])(?:`' + reEsc(fn.name) + '`|' + reEsc(fn.name) + ')(?![\\p{L}\\p{N}_`])\\s*[(\\{]', 'gu');
       let m;
       while ((m = re.exec(t))) {
         if (fn.file !== f.rel) addEdge(edges, seen, f.rel, fn.file, 'calls', lineOf(parsed.starts, m.index));
@@ -1437,7 +1517,7 @@ function findDecl(data, c) {
   const segs = c.path.split('.');
   let list = f.decls;
   for (let i = 0; i < segs.length; i++) {
-    decl = (list || []).find(d => d.name === segs[i] && ['class', 'interface', 'object', 'enum', 'companion'].includes(d.kind));
+    decl = (list || []).find(d => d.name === segs[i] && ['class', 'interface', 'object', 'enum', 'companion', 'record'].includes(d.kind));
     if (!decl) return null;
     list = decl.members;
   }
@@ -1483,22 +1563,37 @@ function buildWarnings(data) {
 }
 
 function loadIndex(root) {
-  const cachePath = path.join(root, CACHE_DIR, 'index.json');
   const fileList = [];
   walkFiles(root, '', fileList);
   const meta = {};
-  for (const f of fileList) meta[f.rel] = f.size + ':' + f.mtime;
-  let cached = null;
+  for (const f of fileList) meta[f.rel] = f.size + ':' + f.mtime + ':' + f.hash;
+  let cachePath = null;
   try {
-    const j = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-    if (j.version === VERSION && JSON.stringify(j.meta) === JSON.stringify(meta)) cached = j;
-  } catch (e) { /* кэша нет или битый — пересобираем */ }
-  if (cached) { cached.data.root = root; return cached.data; }
+    const cacheDir = safeInside(root, CACHE_DIR);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const ignorePath = safeInside(root, path.join(CACHE_DIR, '.gitignore'));
+    if (!fs.existsSync(ignorePath)) fs.writeFileSync(ignorePath, '*\n', { flag: 'wx' });
+    cachePath = safeInside(root, path.join(CACHE_DIR, 'index.json'));
+  } catch (e) {
+    process.stderr.write('Предупреждение: кэш недоступен; используется свежий индекс.\n');
+  }
+  if (cachePath) {
+    try {
+      const j = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+      if (j.version === CACHE_VERSION && JSON.stringify(j.meta) === JSON.stringify(meta) &&
+          j.data && Array.isArray(j.data.files) && Array.isArray(j.data.filesMeta) &&
+          Array.isArray(j.data.classes) && Array.isArray(j.data.edges) && j.data.xml) {
+        j.data.root = root;
+        return j.data;
+      }
+    } catch (e) { /* кэша нет или битый — пересобираем */ }
+  }
   const data = buildIndex(root, fileList);
-  try {
-    fs.mkdirSync(path.join(root, CACHE_DIR), { recursive: true });
-    fs.writeFileSync(cachePath, JSON.stringify({ version: VERSION, meta, data }));
-  } catch (e) { /* кэш не критичен */ }
+  if (cachePath) {
+    try {
+      fs.writeFileSync(safeInside(root, path.join(CACHE_DIR, 'index.json')), JSON.stringify({ version: CACHE_VERSION, meta, data }));
+    } catch (e) { process.stderr.write('Предупреждение: не удалось сохранить кэш.\n'); }
+  }
   return data;
 }
 
@@ -1657,7 +1752,7 @@ function opSearch(data, p, out) {
     }
     for (const f of candidates) {
       let rd;
-      try { rd = readSmart(path.join(data.root, f.rel)); } catch (e) { continue; }
+      try { rd = readSmart(safeInside(data.root, f.rel)); } catch (e) { continue; }
       const text = rd.text;
       const lines = text.split('\n');
       let count = 0;
@@ -2501,7 +2596,7 @@ function opRes(data, p, out) {
       const ext = path.posix.extname(f.rel);
       if (!['.kt', '.java', '.xml'].includes(ext)) continue;
       let rd;
-      try { rd = readSmart(path.join(data.root, f.rel)); } catch (e) { continue; }
+      try { rd = readSmart(safeInside(data.root, f.rel)); } catch (e) { continue; }
       const re = new RegExp('(?:R\\.string\\.|@string\\/)' + reEsc(key) + '\\b');
       const lines = rd.text.split('\n');
       for (let i = 0; i < lines.length; i++) {
@@ -2560,7 +2655,7 @@ function opApi(data, p, out) {
       const ext = path.posix.extname(f.rel);
       if (ext !== '.kt' && ext !== '.java') continue;
       let rd;
-      try { rd = readSmart(path.join(data.root, f.rel)); } catch (e) { continue; }
+      try { rd = readSmart(safeInside(data.root, f.rel)); } catch (e) { continue; }
       const m = /baseUrl\s*\(\s*"([^"]+)"/.exec(rd.text);
       if (m) { baseUrl = m[1]; break; }
     }
@@ -2604,216 +2699,330 @@ function opApi(data, p, out) {
 
 // ---------- sig: сигнатуры из jar/aar ----------
 
-function zipEntries(buf) {
-  // EOCD
-  let eocd = -1;
-  const start = Math.max(0, buf.length - 65557);
-  for (let i = buf.length - 22; i >= start; i--) {
-    if (buf[i] === 0x50 && buf[i + 1] === 0x4b && buf[i + 2] === 0x05 && buf[i + 3] === 0x06) { eocd = i; break; }
+const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
+const MAX_INNER_JAR_BYTES = 128 * 1024 * 1024;
+const MAX_CLASS_BYTES = 16 * 1024 * 1024;
+
+function requireBytes(buf, offset, size, end = buf.length) {
+  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0 || offset > end || size > end - offset) {
+    throw new Error('обрезанные данные или смещение вне файла');
   }
-  if (eocd < 0) return null;
-  const cdOffset = buf.readUInt32LE(eocd + 16);
-  const cdCount = buf.readUInt16LE(eocd + 10);
-  const entries = [];
-  let p = cdOffset;
-  for (let i = 0; i < cdCount; i++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) break;
-    const method = buf.readUInt16LE(p + 10);
-    const compSize = buf.readUInt32LE(p + 20);
-    const uncompSize = buf.readUInt32LE(p + 24);
-    const nameLen = buf.readUInt16LE(p + 28);
-    const extraLen = buf.readUInt16LE(p + 30);
-    const commentLen = buf.readUInt16LE(p + 32);
-    const lho = buf.readUInt32LE(p + 42);
-    const name = buf.slice(p + 46, p + 46 + nameLen).toString('utf8');
-    entries.push({ name, method, compSize, uncompSize, lho });
-    p += 46 + nameLen + extraLen + commentLen;
-  }
-  return entries;
 }
 
-function zipRead(buf, entry) {
+function zipEntries(buf) {
+  const start = Math.max(0, buf.length - 65557);
+  let failure = 'ZIP: EOCD не найден';
+  let budget = 100000;
+  for (let eocd = buf.length - 22; eocd >= start; eocd--) {
+    if (buf.readUInt32LE(eocd) !== 0x06054b50) continue;
+    try {
+      if (eocd + 22 + buf.readUInt16LE(eocd + 20) !== buf.length) throw new Error('ZIP: неверная длина комментария EOCD');
+      const count = buf.readUInt16LE(eocd + 10);
+      const size = buf.readUInt32LE(eocd + 12);
+      const offset = buf.readUInt32LE(eocd + 16);
+      if (buf.readUInt16LE(eocd + 4) !== 0 || buf.readUInt16LE(eocd + 6) !== 0 || buf.readUInt16LE(eocd + 8) !== count) {
+        throw new Error('ZIP: многотомные архивы не поддерживаются');
+      }
+      if (count === 0xffff || size === 0xffffffff || offset === 0xffffffff) throw new Error('ZIP64 не поддерживается');
+      requireBytes(buf, offset, size, eocd);
+      if (offset + size !== eocd || count > Math.floor(size / 46)) throw new Error('ZIP: неверные границы центрального каталога');
+      const entries = [];
+      let p = offset;
+      for (let i = 0; i < count; i++) {
+        if (--budget < 0) throw new Error('ZIP: превышен лимит разбора каталога');
+        requireBytes(buf, p, 46, eocd);
+        if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('ZIP: неверная запись центрального каталога');
+        const flags = buf.readUInt16LE(p + 8);
+        const method = buf.readUInt16LE(p + 10);
+        const compSize = buf.readUInt32LE(p + 20);
+        const uncompSize = buf.readUInt32LE(p + 24);
+        const nameLen = buf.readUInt16LE(p + 28);
+        const extraLen = buf.readUInt16LE(p + 30);
+        const commentLen = buf.readUInt16LE(p + 32);
+        const lho = buf.readUInt32LE(p + 42);
+        if (buf.readUInt16LE(p + 34) !== 0 || lho === 0xffffffff || compSize === 0xffffffff || uncompSize === 0xffffffff) throw new Error('ZIP: ZIP64 или многотомная запись');
+        requireBytes(buf, p + 46, nameLen + extraLen + commentLen, eocd);
+        requireBytes(buf, lho, 30, offset);
+        const name = buf.subarray(p + 46, p + 46 + nameLen).toString('utf8');
+        entries.push({ name, flags, method, compSize, uncompSize, lho, end: offset });
+        p += 46 + nameLen + extraLen + commentLen;
+      }
+      if (p !== eocd) throw new Error('ZIP: размер каталога не соответствует записям');
+      return entries;
+    } catch (e) {
+      failure = e.message;
+      if (budget < 0) break;
+    }
+  }
+  throw new Error(failure);
+}
+
+function zipRead(buf, entry, limit = MAX_CLASS_BYTES) {
   const p = entry.lho;
-  if (buf.readUInt32LE(p) !== 0x04034b50) return null;
+  requireBytes(buf, p, 30, entry.end);
+  if (buf.readUInt32LE(p) !== 0x04034b50) throw new Error('ZIP: неверный локальный заголовок');
+  if (entry.flags & 1) throw new Error('ZIP: шифрованные записи не поддерживаются');
+  if (buf.readUInt16LE(p + 6) !== entry.flags || buf.readUInt16LE(p + 8) !== entry.method) throw new Error('ZIP: локальный и центральный заголовки не совпадают');
   const nameLen = buf.readUInt16LE(p + 26);
   const extraLen = buf.readUInt16LE(p + 28);
+  requireBytes(buf, p + 30, nameLen + extraLen, entry.end);
+  if (buf.subarray(p + 30, p + 30 + nameLen).toString('utf8') !== entry.name) throw new Error('ZIP: имя локальной записи не совпадает');
   const dataStart = p + 30 + nameLen + extraLen;
-  const raw = buf.slice(dataStart, dataStart + entry.compSize);
-  if (entry.method === 0) return raw;
-  if (entry.method === 8) return zlib.inflateRawSync(raw);
-  return null;
+  requireBytes(buf, dataStart, entry.compSize, entry.end);
+  if (entry.uncompSize > limit) throw new Error('ZIP: превышен лимит распакованной записи');
+  const raw = buf.subarray(dataStart, dataStart + entry.compSize);
+  let result;
+  if (entry.method === 0) result = raw;
+  else if (entry.method === 8) result = zlib.inflateRawSync(raw, { maxOutputLength: Math.max(1, entry.uncompSize) });
+  else throw new Error('ZIP: метод сжатия не поддерживается: ' + entry.method);
+  if (result.length !== entry.uncompSize) throw new Error('ZIP: размер распакованной записи не совпадает');
+  return result;
 }
 
-function zipFind(buf, name) {
-  const entries = zipEntries(buf);
-  if (!entries) return null;
-  const e = entries.find(x => x.name === name);
-  return e ? zipRead(buf, e) : null;
-}
-
-function zipHas(buf, name) {
-  const entries = zipEntries(buf);
-  if (!entries) return false;
-  return entries.some(x => x.name === name);
+function zipFind(buf, name, limit) {
+  const e = zipEntries(buf).find(x => x.name === name);
+  return e ? zipRead(buf, e, limit) : null;
 }
 
 // Разбор .class (только public/protected члены, generic из Signature).
 function parseClassFile(buf) {
-  if (buf.length < 10 || buf.readUInt32BE(0) !== 0xCAFEBABE) return null;
+  requireBytes(buf, 0, 10);
+  if (buf.readUInt32BE(0) !== 0xCAFEBABE) throw new Error('неверная сигнатура .class');
   let p = 8;
-  const cpCount = buf.readUInt16BE(p); p += 2;
+  const take = (size) => { requireBytes(buf, p, size); const start = p; p += size; return start; };
+  const u1 = () => buf[take(1)];
+  const u2 = () => buf.readUInt16BE(take(2));
+  const u4 = () => buf.readUInt32BE(take(4));
+  const cpCount = u2();
+  if (cpCount === 0) throw new Error('пустой constant pool');
   const cp = new Array(cpCount);
   for (let i = 1; i < cpCount; i++) {
-    const tag = buf[p]; p++;
+    const tag = u1();
     switch (tag) {
-      case 1: { const len = buf.readUInt16BE(p); p += 2; cp[i] = { tag, str: buf.slice(p, p + len).toString('utf8') }; p += len; break; }
-      case 3: case 4: cp[i] = { tag }; p += 4; break;
-      case 5: case 6: cp[i] = { tag }; p += 8; i++; break;
-      case 7: cp[i] = { tag, idx: buf.readUInt16BE(p) }; p += 2; break;
-      case 8: case 16: case 19: case 20: cp[i] = { tag, idx: buf.readUInt16BE(p) }; p += 2; break;
-      case 9: case 10: case 11: case 12: case 17: case 18: cp[i] = { tag, a: buf.readUInt16BE(p), b: buf.readUInt16BE(p + 2) }; p += 4; break;
-      case 15: cp[i] = { tag, a: buf[p], idx: buf.readUInt16BE(p + 1) }; p += 3; break;
-      default: return null;
+      case 1: { const len = u2(); const start = take(len); cp[i] = { tag, str: buf.subarray(start, start + len).toString('utf8') }; break; }
+      case 3: case 4: cp[i] = { tag }; take(4); break;
+      case 5: case 6:
+        if (i + 1 >= cpCount) throw new Error('неверная двойная запись constant pool');
+        cp[i] = { tag }; take(8); i++; break;
+      case 7: case 8: case 16: case 19: case 20: cp[i] = { tag, idx: u2() }; break;
+      case 9: case 10: case 11: case 12: case 17: case 18: cp[i] = { tag, a: u2(), b: u2() }; break;
+      case 15: cp[i] = { tag, a: u1(), idx: u2() }; break;
+      default: throw new Error('неподдерживаемый тег constant pool: ' + tag);
     }
   }
-  const utf = (i) => (cp[i] && cp[i].tag === 1) ? cp[i].str : null;
-  const clsName = (i) => {
-    const e = cp[i];
-    if (!e || e.tag !== 7) return null;
-    const s = utf(e.idx);
-    return s ? s.replace(/\//g, '.') : null;
+  const utf = (i) => {
+    if (!cp[i] || cp[i].tag !== 1) throw new Error('неверная строковая ссылка constant pool');
+    return cp[i].str;
   };
-  const acc = buf.readUInt16BE(p); p += 2;
-  const thisClass = clsName(buf.readUInt16BE(p)); p += 2;
-  const superClassIdx = buf.readUInt16BE(p); p += 2;
+  const clsName = (i) => {
+    if (!cp[i] || cp[i].tag !== 7) throw new Error('неверная ссылка класса constant pool');
+    return utf(cp[i].idx).replace(/\//g, '.');
+  };
+  const attributes = () => {
+    let signature = null, deprecated = false;
+    const count = u2();
+    for (let j = 0; j < count; j++) {
+      const name = utf(u2());
+      const len = u4();
+      const start = take(len);
+      if (name === 'Signature') {
+        if (len !== 2) throw new Error('неверная длина атрибута Signature');
+        signature = utf(buf.readUInt16BE(start));
+      }
+      if (name === 'Deprecated') deprecated = true;
+    }
+    return { signature, deprecated };
+  };
+  const acc = u2();
+  const thisClass = clsName(u2());
+  const superClassIdx = u2();
   const superClass = superClassIdx ? clsName(superClassIdx) : null;
-  const ifCount = buf.readUInt16BE(p); p += 2;
   const interfaces = [];
-  for (let i = 0; i < ifCount; i++) { interfaces.push(clsName(buf.readUInt16BE(p))); p += 2; }
-  const out = { thisClass, superClass, interfaces, acc, fields: [], methods: [] };
-  const readMembers = () => {
-    const count = buf.readUInt16BE(p); p += 2;
+  const ifCount = u2();
+  for (let i = 0; i < ifCount; i++) interfaces.push(clsName(u2()));
+  // Один CP-текст может использоваться десятками тысяч членов. Контексты
+  // field/method и descriptor/Signature не взаимозаменяемы.
+  const parsedTypes = new Map();
+  const parseType = (text, parser) => {
+    let cache = parsedTypes.get(parser);
+    if (!cache) { cache = new Map(); parsedTypes.set(parser, cache); }
+    if (!cache.has(text)) cache.set(text, parser(text));
+    return cache.get(text);
+  };
+  const readMembers = (method) => {
+    const count = u2();
     const members = [];
     for (let i = 0; i < count; i++) {
-      const mAcc = buf.readUInt16BE(p); p += 2;
-      const mName = utf(buf.readUInt16BE(p)); p += 2;
-      const mDesc = utf(buf.readUInt16BE(p)); p += 2;
-      let signature = null, deprecated = false;
-      const aCount = buf.readUInt16BE(p); p += 2;
-      for (let j = 0; j < aCount; j++) {
-        const aName = utf(buf.readUInt16BE(p)); p += 2;
-        const aLen = buf.readUInt32BE(p); p += 4;
-        const aBody = buf.slice(p, p + aLen); p += aLen;
-        if (aName === 'Signature') signature = utf(aBody.readUInt16BE(0));
-        if (aName === 'Deprecated') deprecated = true;
-      }
-      members.push({ acc: mAcc, name: mName, desc: mDesc, signature, deprecated });
+      const acc = u2(), name = utf(u2()), desc = utf(u2());
+      const attrs = attributes();
+      const descriptor = parseType(desc, method ? parseMethodDesc : parseFieldDesc);
+      const parsed = attrs.signature === null ? descriptor : parseType(attrs.signature, method ? parseMethodSig : genericSigToType);
+      members.push({ acc, name, desc, ...attrs, parsed });
     }
     return members;
   };
-  out.fields = readMembers();
-  out.methods = readMembers();
-  out.utf = utf;
-  return out;
+  const fields = readMembers(false);
+  const methods = readMembers(true);
+  const classAttrs = attributes();
+  if (classAttrs.signature !== null) {
+    const sig = parseGenericSig(classAttrs.signature);
+    let i = 0;
+    while (i < sig.length) {
+      if (sig[i] !== 'L') throw new Error('неверная Signature класса');
+      i = parseSigType(sig, i).i;
+    }
+    if (i === 0) throw new Error('пустая Signature класса');
+  }
+  if (p !== buf.length) throw new Error('лишние данные после .class');
+  return { thisClass, superClass, interfaces, acc, fields, methods };
+}
+
+function parseDescType(s, start, allowVoid = false) {
+  let i = start;
+  while (s[i] === '[') {
+    if (i - start >= 255) throw new Error('дескриптор массива превышает 255 измерений');
+    i++;
+  }
+  const dims = i - start;
+  let text;
+  if (s[i] === 'L') {
+    const end = s.indexOf(';', i + 1);
+    if (end < 0 || end === i + 1 || /[.\[()<>]/.test(s.slice(i + 1, end))) throw new Error('неверный дескриптор ссылочного типа');
+    text = s.slice(i + 1, end).replace(/\//g, '.');
+    i = end + 1;
+  } else {
+    text = { B: 'byte', C: 'char', D: 'double', F: 'float', I: 'int', J: 'long', S: 'short', Z: 'boolean', V: 'void' }[s[i]];
+    if (!text || (s[i] === 'V' && (!allowVoid || dims))) throw new Error('неверный дескриптор типа');
+    i++;
+  }
+  return { text: text + '[]'.repeat(dims), i };
 }
 
 function parseFieldDesc(d) {
-  // "Ljava/lang/String;" -> "java.lang.String"
-  let dims = 0;
-  while (d.startsWith('[')) { dims++; d = d.slice(1); }
-  let base;
-  if (d.startsWith('L')) base = d.slice(1, -1).replace(/\//g, '.');
-  else base = { B: 'byte', C: 'char', D: 'double', F: 'float', I: 'int', J: 'long', S: 'short', Z: 'boolean', V: 'void' }[d[0]] || d;
-  return base + '[]'.repeat(dims);
+  const r = parseDescType(d, 0);
+  if (r.i !== d.length) throw new Error('лишние данные дескриптора поля');
+  return r.text;
 }
 
 function parseMethodDesc(desc) {
+  if (desc[0] !== '(') throw new Error('неверный дескриптор метода');
   const params = [];
   let i = 1;
   while (i < desc.length && desc[i] !== ')') {
-    let dims = 0;
-    while (desc[i] === '[') { dims++; i++; }
-    let base;
-    if (desc[i] === 'L') {
-      const e = desc.indexOf(';', i);
-      base = desc.slice(i + 1, e).replace(/\//g, '.');
-      i = e + 1;
-    } else {
-      base = { B: 'byte', C: 'char', D: 'double', F: 'float', I: 'int', J: 'long', S: 'short', Z: 'boolean', V: 'void' }[desc[i]] || desc[i];
-      i++;
-    }
-    params.push(base + '[]'.repeat(dims));
+    const r = parseDescType(desc, i);
+    params.push(r.text);
+    i = r.i;
   }
-  const retStart = desc.indexOf(')') + 1;
-  const ret = parseFieldDesc(desc.slice(retStart));
-  return { params, ret };
+  if (desc[i] !== ')') throw new Error('дескриптор метода без закрывающей скобки');
+  const ret = parseDescType(desc, i + 1, true);
+  if (ret.i !== desc.length) throw new Error('лишние данные дескриптора метода');
+  return { params, ret: ret.text };
 }
 
 function parseGenericSig(sig) {
-  // Упрощённый разбор Signature-атрибута: <K:Ljava/lang/Object;>Lkotlin/Pair<TK;TV;>;
-  let s = sig;
-  const gt = s.indexOf('<');
-  if (gt === 0) {
-    // пропуск объявления type-параметров класса
-    let d = 0, i = 0;
-    while (i < s.length) {
-      if (s[i] === '<') d++;
-      else if (s[i] === '>') { d--; if (d === 0) { i++; break; } }
-      i++;
+  if (!sig || sig[0] !== '<') return sig;
+  let i = 1, count = 0;
+  while (i < sig.length && sig[i] !== '>') {
+    const colon = sig.indexOf(':', i);
+    if (colon <= i || /[.;\[<>/]/.test(sig.slice(i, colon))) throw new Error('неверный параметр Signature');
+    i = colon + 1;
+    if (sig[i] !== ':') {
+      if (!['L', 'T', '['].includes(sig[i])) throw new Error('неверная граница типа Signature');
+      i = parseSigType(sig, i).i;
     }
-    s = s.slice(i);
+    while (sig[i] === ':') {
+      i++;
+      if (!['L', 'T', '['].includes(sig[i])) throw new Error('неверная граница интерфейса Signature');
+      i = parseSigType(sig, i).i;
+    }
+    count++;
   }
-  return s;
+  if (!count || sig[i] !== '>') throw new Error('незавершённые параметры Signature');
+  return sig.slice(i + 1);
 }
 
-function parseSigType(s, i0) {
-  // Разбор одного типа из generic-сигнатуры. Возвращает { text, i }.
-  let i = i0;
-  let variance = '';
-  if (s[i] === '+' || s[i] === '-') { variance = s[i] === '+' ? '? extends ' : '? super '; i++; }
-  else if (s[i] === '*') return { text: '?', i: i + 1 };
+function parseSigType(s, i0, depth = 0, allowVoid = false, argument = false) {
+  if (depth > 64 || i0 >= s.length) throw new Error('незавершённая или слишком глубокая Signature');
+  let i = i0, variance = '';
+  if (argument && s[i] === '*') return { text: '?', i: i + 1 };
+  if (argument && (s[i] === '+' || s[i] === '-')) {
+    variance = s[i++] === '+' ? '? extends ' : '? super ';
+  }
   let dims = 0;
-  while (s[i] === '[') { dims++; i++; }
+  while (s[i] === '[') {
+    if (dims >= 255) throw new Error('Signature массива превышает 255 измерений');
+    dims++; i++;
+  }
   let text;
   if (s[i] === 'T') {
-    const e = s.indexOf(';', i);
-    text = s.slice(i + 1, e);
-    i = e + 1;
+    const end = s.indexOf(';', i + 1);
+    if (end <= i + 1 || /[.;\[<>:/()]/.test(s.slice(i + 1, end))) throw new Error('неверная переменная типа Signature');
+    text = s.slice(i + 1, end);
+    i = end + 1;
   } else if (s[i] === 'L') {
     i++;
-    let name = '';
-    const args = [];
-    while (i < s.length) {
-      const c = s[i];
-      if (c === '<') {
+    text = '';
+    while (true) {
+      const start = i;
+      while (i < s.length && !'<.;'.includes(s[i])) {
+        if ('[:>()'.includes(s[i])) throw new Error('неверное имя типа Signature');
+        i++;
+      }
+      if (i === start) throw new Error('пустое имя типа Signature');
+      text += s.slice(start, i).replace(/[/$]/g, '.');
+      if (s[i] === '<') {
+        const args = [];
         i++;
         while (i < s.length && s[i] !== '>') {
-          const r = parseSigType(s, i);
+          const r = parseSigType(s, i, depth + 1, false, true);
+          if (r.i <= i) throw new Error('нет прогресса разбора Signature');
           args.push(r.text);
           i = r.i;
         }
-        i++; // '>'
-        continue;
+        if (!args.length || s[i] !== '>') throw new Error('незавершённые аргументы типа Signature');
+        text += '<' + args.join(', ') + '>';
+        i++;
       }
-      if (c === ';') { i++; break; }
-      name += (c === '/' || c === '.' || c === '$') ? '.' : c;
+      if (s[i] === ';') { i++; break; }
+      if (s[i] !== '.') throw new Error('незавершённый ссылочный тип Signature');
+      text += '.';
       i++;
     }
-    text = args.length ? name + '<' + args.join(', ') + '>' : name;
   } else {
-    const prim = { B: 'byte', C: 'char', D: 'double', F: 'float', I: 'int', J: 'long', S: 'short', Z: 'boolean', V: 'void' }[s[i]];
-    text = prim || s[i];
+    text = { B: 'byte', C: 'char', D: 'double', F: 'float', I: 'int', J: 'long', S: 'short', Z: 'boolean', V: 'void' }[s[i]];
+    if (!text || (argument && !dims) || (s[i] === 'V' && (!allowVoid || dims))) throw new Error('неверный тип Signature');
     i++;
   }
   return { text: variance + text + '[]'.repeat(dims), i };
 }
 
+function parseMethodSig(sig) {
+  const s = parseGenericSig(sig);
+  if (s[0] !== '(') throw new Error('неверная Signature метода');
+  const params = [];
+  let i = 1;
+  while (i < s.length && s[i] !== ')') {
+    const r = parseSigType(s, i);
+    if (r.i <= i) throw new Error('нет прогресса разбора Signature');
+    params.push(r.text);
+    i = r.i;
+  }
+  if (s[i] !== ')') throw new Error('Signature метода без закрывающей скобки');
+  const ret = parseSigType(s, i + 1, 0, true);
+  i = ret.i;
+  while (s[i] === '^') {
+    i++;
+    if (s[i] !== 'L' && s[i] !== 'T') throw new Error('неверная Signature исключения');
+    i = parseSigType(s, i).i;
+  }
+  if (i !== s.length) throw new Error('лишние данные Signature метода');
+  return { params, ret: ret.text };
+}
+
 function genericSigToType(sig) {
-  // Lkotlin/Pair<TK;TV;>; -> kotlin.Pair<K, V>
-  try {
-    const r = parseSigType(sig, 0);
-    return r.text;
-  } catch (e) { return sig; }
+  const r = parseSigType(sig, 0);
+  if (r.i !== sig.length) throw new Error('лишние данные Signature типа');
+  return r.text;
 }
 
 function accFlags(a) {
@@ -2831,11 +3040,14 @@ function accFlags(a) {
 function findJarsFor(data, p) {
   const dirs = [];
   if (p.jars) for (const d of String(p.jars).split(',')) if (d.trim()) dirs.push({ path: path.resolve(d.trim()), hint: false });
-  if (process.env.KT_JARS) for (const d of process.env.KT_JARS.split(path.delimiter)) if (d.trim()) dirs.push({ path: d.trim(), hint: false });
+  if (process.env.KT_JARS) for (const d of process.env.KT_JARS.split(path.delimiter)) if (d.trim()) dirs.push({ path: path.resolve(d.trim()), hint: false });
   // libs-каталоги модулей
   for (const m of data.modules) {
     const libs = m.dir ? path.join(data.root, m.dir, 'libs') : path.join(data.root, 'libs');
-    if (fs.existsSync(libs)) dirs.push({ path: libs, hint: false });
+    try {
+      const real = safeInside(data.root, libs);
+      if (fs.statSync(real).isDirectory()) dirs.push({ path: real, hint: false });
+    } catch (e) { /* внешние ссылки из проекта не являются каталогами библиотек */ }
   }
   // gradle cache — большой, фильтруем по сегменту пакета
   const gradleCache = path.join(os.homedir(), '.gradle', 'caches', 'modules-2', 'files-2.1');
@@ -2851,16 +3063,25 @@ function searchJarFiles(dirs, hint, jarFilter) {
     const segs = hint.split('.');
     segHint = segs[segs.length - 2] || segs[0];
   }
-  const walk = (dir, depth, useHint) => {
-    if (out.length > 2000 || depth > 9) return;
+  const seen = new Set();
+  const walk = (root, dir, depth, useHint) => {
+    if (out.length >= 2000 || depth > 9) return;
     let names;
-    try { names = fs.readdirSync(dir); } catch (e) { return; }
+    try {
+      dir = safeInside(root, dir);
+      const key = (process.platform === 'win32' ? dir.toLowerCase() : dir) + '|' + useHint;
+      if (seen.has(key)) return;
+      seen.add(key);
+      names = fs.readdirSync(dir).sort();
+    } catch (e) { return; }
     for (const n of names) {
+      if (out.length >= 2000) break;
       const fp = path.join(dir, n);
       let st;
-      try { st = fs.statSync(fp); } catch (e) { continue; }
-      if (st.isDirectory()) walk(fp, depth + 1, useHint);
-      else if (/\.(jar|aar)$/.test(n)) {
+      try { st = fs.lstatSync(fp); } catch (e) { continue; }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(root, fp, depth + 1, useHint);
+      else if (st.isFile() && /\.(jar|aar)$/i.test(n)) {
         const norm = fp.replace(/\\/g, '/');
         if (jarFilter && !norm.toLowerCase().includes(String(jarFilter).toLowerCase())) continue;
         if (useHint && !jarFilter && segHint && !norm.toLowerCase().includes(segHint.toLowerCase())) continue;
@@ -2868,7 +3089,11 @@ function searchJarFiles(dirs, hint, jarFilter) {
       }
     }
   };
-  for (const d of dirs) walk(d.path, 0, !!d.hint);
+  for (const d of dirs) {
+    let root;
+    try { root = fs.realpathSync(path.resolve(d.path)); } catch (e) { continue; }
+    walk(root, root, 0, !!d.hint);
+  }
   return out;
 }
 
@@ -2896,13 +3121,15 @@ function cmpVer(a, b) {
 }
 
 function shortToFull(data, name) {
-  if (name.includes('.')) return name;
+  if (name.includes('.')) return [name];
+  const exact = new Set(), wildcard = new Set();
   for (const f of data.files) {
     for (const imp of f.imports || []) {
-      if (imp.name.endsWith('.' + name)) return imp.name;
+      if (imp.alias === name || (!imp.alias && imp.name.endsWith('.' + name))) exact.add(imp.name);
+      else if (imp.name.endsWith('.*')) wildcard.add(imp.name.slice(0, -1) + name);
     }
   }
-  return null;
+  return exact.size ? [...exact] : [...wildcard, name];
 }
 
 function opSig(data, p, out) {
@@ -2910,26 +3137,34 @@ function opSig(data, p, out) {
   if (!name) die('sig: нужен name=');
   let member = null;
   if (name.includes('#')) { member = name.slice(name.indexOf('#') + 1); name = name.slice(0, name.indexOf('#')); }
-  const full = shortToFull(data, name) || name;
+  const names = shortToFull(data, name);
+  const full = names.length === 1 ? names[0] : name;
   const jarFilter = p.jar ? String(p.jar) : null;
   const dirs = findJarsFor(data, p);
-  const candidates = searchJarFiles(dirs, full, jarFilter);
-  const classEntry = full.replace(/\./g, '/') + '.class';
+  const candidates = [...new Map(names.flatMap(fullName => searchJarFiles(dirs, fullName, jarFilter)).map(c => [c.fp, c])).values()];
+  const classEntries = names.map(fullName => fullName.replace(/\./g, '/') + '.class');
 
   const found = [];
   for (const c of candidates) {
-    let buf;
-    try { buf = fs.readFileSync(c.fp); } catch (e) { continue; }
-    let classBytes = null, jarName = c.fp;
-    if (c.fp.endsWith('.aar')) {
-      const inner = zipFind(buf, 'classes.jar');
-      if (!inner) continue;
-      classBytes = zipFind(inner, classEntry);
-    } else {
-      if (!zipHas(buf, classEntry)) continue;
-      classBytes = zipFind(buf, classEntry);
+    try {
+      if (c.size > MAX_ARCHIVE_BYTES) throw new Error('превышен лимит размера архива');
+      let buf = fs.readFileSync(c.fp);
+      if (buf.length > MAX_ARCHIVE_BYTES) throw new Error('превышен лимит размера архива');
+      if (c.fp.toLowerCase().endsWith('.aar')) {
+        buf = zipFind(buf, 'classes.jar', MAX_INNER_JAR_BYTES);
+        if (!buf) continue;
+      }
+      const entries = zipEntries(buf);
+      for (const classEntry of classEntries) {
+        const entry = entries.find(e => e.name === classEntry);
+        if (!entry) continue;
+        const cf = parseClassFile(zipRead(buf, entry));
+        found.push({ path: c.fp, cf, ver: versionOfJarPath(c.fp) });
+        break;
+      }
+    } catch (e) {
+      out.push(`Предупреждение: пропущен ${c.fp}: ${String(e.message).replace(/[\r\n]+/g, ' ')}`);
     }
-    if (classBytes) found.push({ path: jarName, buf: classBytes, ver: versionOfJarPath(c.fp) });
     if (found.length >= 30) break;
   }
   if (!found.length) {
@@ -2939,8 +3174,7 @@ function opSig(data, p, out) {
   }
   found.sort((a, b) => cmpVer(b.ver, a.ver));
   const best = found[0];
-  const cf = parseClassFile(best.buf);
-  if (!cf) { out.push('Не удалось разобрать .class (версия файла не поддерживается).'); return; }
+  const cf = best.cf;
 
   const L = [];
   const accs = accFlags(cf.acc);
@@ -2956,7 +3190,7 @@ function opSig(data, p, out) {
     const fl = accFlags(m.acc);
     if (!fl.includes('public') && !fl.includes('protected')) continue;
     if (m.name.includes('$')) continue;
-    const type = m.signature ? genericSigToType(m.signature) : parseFieldDesc(m.desc);
+    const type = m.parsed;
     const extra = fl.filter(x => !['public', 'protected', 'private'].includes(x)).join(' ');
     fieldLines.push(`  ${extra ? extra + ' ' : ''}${type} ${m.name}${m.deprecated ? ' [deprecated]' : ''}`);
   }
@@ -2967,19 +3201,7 @@ function opSig(data, p, out) {
     if (!fl.includes('public') && !fl.includes('protected')) continue;
     if (m.name.includes('$') || m.name === '<clinit>') continue;
     if (member && m.name !== member && m.name !== '<init>') continue;
-    const d = parseMethodDesc(m.desc);
-    let params = d.params.slice();
-    let ret = d.ret;
-    if (m.signature) {
-      const par = /^\((.*)\)(.*)$/.exec(m.signature);
-      if (par) {
-        const ps = [];
-        let i = 0;
-        while (i < par[1].length) { const r = parseSigType(par[1], i); ps.push(r.text); i = r.i; }
-        if (ps.length) params = ps;
-        if (par[2]) ret = genericSigToType(par[2]);
-      }
-    }
+    const { params, ret } = m.parsed;
     const argList = params.map((x, i2) => `arg${i2}: ${x}`).join(', ');
     const extra = fl.filter(x => !['public', 'protected', 'private', 'synchronized', 'abstract'].includes(x)).join(' ');
     if (m.name === '<init>') {
@@ -2997,9 +3219,8 @@ function opSig(data, p, out) {
 // ---------- read / patch / create ----------
 
 function checkInside(data, file) {
-  const abs = path.resolve(data.root, file);
-  if (!insideDir(data.root, abs)) die('путь вне рабочей директории: ' + file);
-  return abs;
+  try { return safeInside(data.root, file); }
+  catch (e) { die(e.code ? 'путь недоступен: ' + file : e.message); }
 }
 
 // Путь для read/patch: точный либо короткое имя через индекс
@@ -3015,6 +3236,7 @@ function opRead(data, p, out) {
   if (!p.file) die('read: нужен file=');
   const abs = resolveFilePath(data, p.file);
   if (!fs.existsSync(abs)) die('файл не найден: ' + p.file);
+  if (!fs.statSync(abs).isFile()) die('путь не является файлом: ' + p.file);
   const rd = readSmart(abs);
   const offset = pint(p, 'offset', 1);
   const limit = pint(p, 'limit', 400);
@@ -3029,8 +3251,11 @@ function opRead(data, p, out) {
 
 function opPatch(data, p, out) {
   if (!p.file || p.old === undefined || p.new === undefined) die('patch: нужны file, old, new');
+  if (typeof p.old !== 'string' || typeof p.new !== 'string') die('patch: old и new должны быть строками');
+  if (p.old.length === 0) die('patch: пустой old');
   const abs = resolveFilePath(data, p.file);
   if (!fs.existsSync(abs)) die('файл не найден: ' + p.file);
+  if (!fs.statSync(abs).isFile()) die('путь не является файлом: ' + p.file);
   const rd = readSmart(abs);
   let text = rd.text;
   let count = 0;
@@ -3065,12 +3290,12 @@ function encodeText(text, rd) {
     buf = Buffer.from(text, 'utf8');
     if (rd.bom) buf = Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), buf]);
   } else if (rd.enc === 'cp1251') buf = encodeCp1251(text);
-  else if (rd.enc === 'utf-16le') {
+  else if (rd.enc === 'utf-16le' || rd.enc === 'utf-16be') {
     buf = Buffer.from(text, 'utf16le');
-    if (rd.bom) buf = Buffer.concat([Buffer.from([0xFF, 0xFE]), buf]);
-  } else {
-    buf = Buffer.from(text, 'utf8');
-  }
+    const be = rd.enc === 'utf-16be';
+    if (be) buf.swap16();
+    if (rd.bom) buf = Buffer.concat([Buffer.from(be ? [0xFE, 0xFF] : [0xFF, 0xFE]), buf]);
+  } else die('неподдерживаемая кодировка: ' + rd.enc);
   return buf;
 }
 
@@ -3091,9 +3316,11 @@ function opCreate(data, p, out) {
   const eol = crlfFiles > data.files.length / 2 ? 'crlf' : 'lf';
   let finalText = text;
   if (eol === 'crlf' && !finalText.includes('\r\n')) finalText = finalText.replace(/\n/g, '\r\n');
+  const bom = enc === 'utf-16le' || enc === 'utf-16be';
+  const buf = encodeText(finalText, { enc, bom, eol });
   fs.mkdirSync(path.dirname(abs), { recursive: true });
-  fs.writeFileSync(abs, encodeText(finalText, { enc, bom: false, eol }));
-  out.push(`Создан ${p.file} (${enc}, ${eol}, ${Buffer.byteLength(finalText, enc === 'utf-8' ? 'utf8' : 'binary')} байт)`);
+  fs.writeFileSync(checkInside(data, p.file), buf, { flag: 'wx' });
+  out.push(`Создан ${p.file} (${enc}${bom ? ' BOM' : ''}, ${eol}, ${buf.length} байт)`);
 }
 
 // ---------- самопроверка ----------
@@ -3150,6 +3377,36 @@ function opSelftest() {
   chk('sanitize: позиции сохранены, строки/комментарии убраны', parsed.sanitized.length === kt.length && !parsed.sanitized.includes('привет') && !parsed.sanitized.includes('комментарий') && parsed.sanitized.includes('load'));
   chk('splitTop: разделение верхнего уровня', splitTop('a, b(c, d), e', ',').length === 3 && splitTop('Map<K, V>, other', ',').length === 2);
 
+  // Регрессии аудита; файловые сценарии проверяет tests/token-economy-kt/audit.test.js.
+  const be = encodeText(cyr, { enc: 'utf-16be', bom: true });
+  chk('utf16be: BOM и roundtrip', be[0] === 0xFE && be[1] === 0xFF && Buffer.from(be.subarray(2)).swap16().toString('utf16le') === cyr);
+  chk('utf16be: без BOM', encodeText(cyr, { enc: 'utf-16be', bom: false }).equals(Buffer.from(cyr, 'utf16le').swap16()));
+  chk('utf16le: BOM сохранён', encodeText(cyr, { enc: 'utf-16le', bom: true }).equals(Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(cyr, 'utf16le')])));
+  chk('gradle: Groovy include', parseSettingsGradle("include ':app', ':core'\n").modules.join('|') === ':app|:core');
+  chk('locale: BCP47', ['b+es', 'b+sr+Latn+RS', 'b+en+US'].every(isLocaleQualifier));
+  const commented = parseManifestXml('<!-- <activity android:name=".Ghost"/> -->\n<activity android:name=".Real"/>');
+  chk('manifest: комментарии и строки', commented.components.length === 1 && commented.components[0].attrs['android:name'] === '.Real' && commented.components[0].line === 2);
+  const unicode = parseKotlin('class Экран { fun `fun val class`(имя: String) = имя\nval свойство = 1 }\nfun привет() = 1');
+  chk('kotlin: Unicode и backticks', unicode.decls[0].name === 'Экран' && unicode.decls[0].members[0].name === 'fun val class' && unicode.decls[0].members[0].params[0].name === 'имя');
+  chk('kotlin: Unicode-свойство', unicode.decls[0].members.some(d => d.name === 'свойство') && unicode.decls.some(d => d.name === 'привет'));
+  chk('kotlin: enum без точки с запятой', parseKotlin('enum class Color { RED, GREEN, BLUE }').decls[0].entries.map(e => e.name).join('|') === 'RED|GREEN|BLUE');
+  chk('kotlin: wildcard import', parseKotlin('import a.b.*\n').imports[0].name === 'a.b.*');
+  chk('kotlin: деструктуризация без пустых имён', parseKotlin('val (a, b) = pair\nclass Kept').decls.every(d => !!d.name));
+  const records = [];
+  collectClasses(parseJava('record Person(String name) {}'), 'Person.java', '', records);
+  chk('java: record индексируется', records.length === 1 && records[0].name === 'Person');
+  chk('insideDir: сегменты, а не префикс', insideDir(process.cwd(), path.join(process.cwd(), '..local')) && !insideDir(process.cwd(), path.resolve(process.cwd(), '..')));
+  const rejects = (fn) => { try { fn(); return false; } catch (e) { return true; } };
+  chk('zip: обрезанный EOCD отклоняется', rejects(() => zipEntries(Buffer.from([0x50, 0x4B, 0x05, 0x06]))));
+  chk('class: обрезанный заголовок отклоняется', rejects(() => parseClassFile(Buffer.alloc(9))));
+  chk('descriptor: нет зависания без точки с запятой', rejects(() => parseMethodDesc('(Ljava/lang/String)V')));
+  chk('Signature: нет зависания без точки с запятой', rejects(() => parseMethodSig('(TT)Ljava/lang/String;')));
+  chk('Signature: type-параметры и generics', parseMethodSig('<T:Ljava/lang/Object;>(TT;)Ljava/util/List<TT;>;').ret === 'java.util.List<T>');
+  const edges = [], edgeMap = new Map();
+  addEdge(edges, edgeMap, 'a', 'b', 'uses', 10);
+  addEdge(edges, edgeMap, 'a', 'b', 'uses', 2);
+  chk('graph: Map-дедуп сохраняет раннюю строку', edges.length === 1 && edges[0].line === 2);
+
   if (bad.length) {
     process.stdout.write('\nпровалено: ' + bad.join(', ') + '\n');
     process.exit(1);
@@ -3180,6 +3437,7 @@ function main() {
   if (op === 'selftest') { opSelftest(); return; } // индекс проекта не нужен
   const root = p.root ? path.resolve(String(p.root)) : process.cwd();
   if (!fs.existsSync(root)) die('корень не найден: ' + root);
+  if (!fs.statSync(root).isDirectory()) die('корень не является каталогом: ' + root);
   const data = loadIndex(root);
   const out = [];
   OPS[op](data, p, out);

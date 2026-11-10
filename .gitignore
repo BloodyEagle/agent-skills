@@ -3,9 +3,15 @@ tests/**/.bx-cache/
 tests/**/.kt-cache/
 tests/**/.jv-cache/
 tests/**/.token-economy/
+.token-economy/
 tests/token-economy-ts/graph-deps.json
 tests/token-economy-ts/.graph-deps-cache.json
 __pycache__/
 *.pyc
+node_modules/
+graph-deps.json
+.graph-deps-cache.json
+.kilo-edit-body.txt
+.env
 .idea/
 .megamemory/

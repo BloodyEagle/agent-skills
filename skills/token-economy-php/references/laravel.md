@@ -4,7 +4,7 @@
 
 ## Как распознаётся проект и версия
 
-Laravel-режим включается, если в корне есть `artisan` или в `composer.json` (`require` и `require-dev`) указан `laravel/framework` / `laravel/lumen-framework`. Этот маркер проверяется первым, до структурных признаков Битрикса и MODX: проект Laravel с папкой `local/` остаётся Laravel. Простые PHP и Битрикс-проекты работают как раньше — на них Laravel-ветки не влияют.
+Laravel-режим включается, если в `composer.json` (`require` и `require-dev`) указан `laravel/framework` / `laravel/lumen-framework` либо есть непустой `artisan` с `LARAVEL_START`, ссылкой на `bootstrap/app.php` и сам файл bootstrap. Пустой файл `artisan` маркером не считается. Этот маркер проверяется первым, до структурных признаков Битрикса и MODX: проект Laravel с папкой `local/` остаётся Laravel.
 
 `info` показывает версию из `composer.json` и структуру каркаса:
 
@@ -48,7 +48,7 @@ PHP-файлы проекта и Blade-шаблоны `resources/views/**/*.blad
 ## Чего скрипт не видит
 
 - **Динамические маршруты**: URI и контроллеры из переменных; маршруты, заданные в `bootstrap/app.php` через `->withRouting(...)` напрямую (ссылки на файлы `routes/*.php` разбираются сами), и алиасы middleware из `withMiddleware` — смотри `read` по `bootstrap/app.php`.
-- **`route` не проверяет middleware и имя**: URL сопоставляется только по методу и URI; при нескольких совпадениях показываются и остальные.
+- **`route` не проверяет middleware и имя**: URL сопоставляется по `method` и URI; по умолчанию `method=GET`. Регистр метода не важен, HEAD подходит к GET, учитываются `any`, `match` и PUT/PATCH у resource update. При нескольких совпадениях показываются и остальные. Путь рендеримого view выводится только для шаблона в индексе; отсутствующий или namespaced view помечается как не найденный.
 - **События Laravel** (`Event::listen`, `protected $listen` в провайдерах) не разбираются — ищи через `search` или `outline`.
 - **Livewire/Inertia/Volt**: PHP-части индексируются как обычные классы, компоненты и Blade-ответы (`Route::get(..., Inertia::render)` на конкретный view) не связываются.
 - **Очереди и jobs**: классы заданий в индексе есть, но подписки (`dispatch`, `ShouldQueue`) не дают рёбер — используй `rdeps`/`search`.
@@ -58,7 +58,7 @@ PHP-файлы проекта и Blade-шаблоны `resources/views/**/*.blad
 
 ## Кэш
 
-Тот же `.bx-cache` (формат индекса — версия 2). После обновления скилла при подозрении на устаревший разбор удали папку или вызови `build`. В Laravel-проекте кэш лежит в корне проекта, в git он не попадает (внутри `.gitignore` со звёздочкой).
+Тот же `.bx-cache`; версия формата задана в `scripts/lib/index.js`. При несовпадении версии кэш перестраивается автоматически. Принудительное обновление — `build`. В Laravel-проекте кэш лежит в корне проекта, в git он не попадает (внутри `.gitignore` со звёздочкой). Запись использует уникальный временный файл и атомарную публикацию.
 
 ---
 
@@ -86,5 +86,6 @@ PHP-файлы проекта и Blade-шаблоны `resources/views/**/*.blad
     node "<SCRIPTS_DIR>\bx.js" op=container type=App\Contracts\PaymentGateway
     node "<SCRIPTS_DIR>\bx.js" op=blade name=layouts.app
     node "<SCRIPTS_DIR>\bx.js" op=console
-    node "<SCRIPTS_DIR>\bx.js" op=route url=/users/5
+    node "<SCRIPTS_DIR>\bx.js" op=route url=/users/5 method=GET
+    node "<SCRIPTS_DIR>\bx.js" op=route url=/users/5 method=DELETE
     node "<SCRIPTS_DIR>\bx.js" op=lang query='Добавить в корзину'

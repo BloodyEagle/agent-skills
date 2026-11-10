@@ -12,7 +12,9 @@ const ANGULAR_ERROR = 'Angular не найден в проекте: команд
  * @returns {string[]} Абсолютные пути файлов.
  */
 function walk(root, {ext = SOURCE_EXT, ignored = IGNORED_DIRS} = {}) {
-    const skipped = new Set(ignored);
+    const key = name => process.platform === 'win32' ? name.toLowerCase() : name;
+    const skipped = new Set(ignored.map(key));
+    const extensions = ext.map(key);
     const directories = new Map();
     const files = [];
     function visit(dir) {
@@ -28,8 +30,8 @@ function walk(root, {ext = SOURCE_EXT, ignored = IGNORED_DIRS} = {}) {
         for (const entry of entries) {
             const file = path.join(dir, entry.name);
             if (entry.isDirectory()) {
-                if (!skipped.has(entry.name)) visit(file);
-            } else if (entry.isFile() && ext.some(e => entry.name.endsWith(e))) {
+                if (!skipped.has(key(entry.name))) visit(file);
+            } else if (entry.isFile() && extensions.some(e => key(entry.name).endsWith(e))) {
                 files.push(file);
             }
         }

@@ -1,6 +1,8 @@
 // sig-reader.js — сигнатуры классов, интерфейсов, функций и членов сторонних библиотек
 // из node_modules (.d.ts / .ts) без чтения исходников: package.json → types/exports →
-// файл деклараций → компактный список; реэкспорты (export … from) проходятся автоматически.
+// файл деклараций → компактный список. С member ищет именованные и export * реэкспорты;
+// без member раскрывает export *, только если в текущем файле нет деклараций.
+// Пути ограничены realpath проекта; bare dependencies — реальным корнем выбранного пакета.
 // Итог: одна строка JSON с несколькими десятками сигнатур вместо Read файла на тысячи строк.
 
 const fs = require('fs');
@@ -30,6 +32,7 @@ if (!Object.keys(args).length && process.stdin.isTTY !== true) {
 }
 
 const cwd = process.cwd();
+const projectRoot = fs.realpathSync(cwd);
 const MAX_SIG = 200;        // максимум символов в одной сигнатуре
 const MAX_DEPTH = 10;       // глубина прохода по реэкспортам
 const MAX_STARS = 6;        // сколько export * проверяем в поиске члена
@@ -179,7 +182,7 @@ function memberName(chunk) {
     let t = chunk.replace(/^\s+/, '');
     let m;
     while ((m = t.match(/^(export\s+|declare\s+|public\s+|private\s+|protected\s+|static\s+|readonly\s+|abstract\s+|override\s+|async\s+|get\s+|set\s+|\*|[+#-]\s*)/))) t = t.slice(m[0].length);
-    m = t.match(/^([A-Za-z_$][\w$]*)/);
+    m = t.match(/^([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u);
     return m ? m[1] : '';
 }
 
@@ -290,7 +293,7 @@ function scanDecls(text) {
         }
         return lo + 1;
     };
-    const re = /^[ \t]*(export\s+)?(declare\s+)?(abstract\s+)?(async\s+)?(class|interface|enum|namespace|function|const|let|var|type)\s+([A-Za-z_$][\w$]*)/gm;
+    const re = /^[ \t]*(export\s+)?(declare\s+)?(abstract\s+)?(async\s+)?(class|interface|enum|namespace|function|const|let|var|type)\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/gmu;
     const decls = [];
     let skipUntil = -1, m;
     while ((m = re.exec(text))) {
@@ -342,23 +345,36 @@ function collectReexports(text) {
 
 // ---------- резолвинг пакетов ----------
 
-function probeFile(p) {
+function insideDir(root, file) {
+    const rel = path.relative(root, file);
+    return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
+
+function confinedFile(file, root) {
+    if (!insideDir(root, file)) return null;
+    try {
+        const real = fs.realpathSync(file);
+        if (insideDir(root, real) && fs.statSync(real).isFile()) return {file: real, root};
+    } catch (e) { /* отсутствует или недоступен */ }
+    return null;
+}
+
+function probeFile(p, root) {
     const ext = path.extname(p);
     const list = [];
     if (!ext) list.push(p + '.d.ts', path.join(p, 'index.d.ts'), p);
-    if (p.endsWith('.js')) list.push(p.slice(0, -3) + '.d.ts');
-    if (p.endsWith('.mjs')) list.push(p.slice(0, -4) + '.d.mts');
-    if (p.endsWith('.cjs')) list.push(p.slice(0, -4) + '.d.cts');
-    list.push(p);
+    if (/\.js$/i.test(p)) list.push(p.slice(0, -3) + '.d.ts');
+    if (/\.mjs$/i.test(p)) list.push(p.slice(0, -4) + '.d.mts');
+    if (/\.cjs$/i.test(p)) list.push(p.slice(0, -4) + '.d.cts');
+    // Runtime exports — лишь адрес для поиска деклараций, не успешный результат sig.
+    if (!/\.[cm]?js$/i.test(p)) list.push(p);
     if (ext && ext !== '.d.ts') {
         const noExt = p.slice(0, p.length - ext.length);
         list.push(noExt + '.d.ts', path.join(noExt, 'index.d.ts'));
     }
     for (const f of list) {
-        try {
-            if (fs.existsSync(f) && fs.statSync(f).isFile()) return f;
-        } catch (e) { /* недоступен — пробуем следующий вариант */
-        }
+        const hit = confinedFile(f, root);
+        if (hit) return hit;
     }
     return null;
 }
@@ -368,7 +384,7 @@ function probeFile(p) {
  */
 function pickTypesFromTarget(target, pkgDir, star, depth) {
     if (depth > 4 || target == null) return null;
-    if (typeof target === 'string') return probeFile(path.resolve(pkgDir, star ? target.replace(/\*/g, star) : target));
+    if (typeof target === 'string') return probeFile(path.resolve(pkgDir, star === null ? target : target.replace(/\*/g, star)), pkgDir);
     if (Array.isArray(target)) {
         for (const t of target) {
             const r = pickTypesFromTarget(t, pkgDir, star, depth + 1);
@@ -376,7 +392,7 @@ function pickTypesFromTarget(target, pkgDir, star, depth) {
         }
         return null;
     }
-    for (const key of ['types', 'typings', 'default']) {
+    for (const key of ['types', 'typings', 'import', 'require', 'node', 'default']) {
         if (target[key]) {
             const r = pickTypesFromTarget(target[key], pkgDir, star, depth + 1);
             if (r) return r;
@@ -386,35 +402,45 @@ function pickTypesFromTarget(target, pkgDir, star, depth) {
 }
 
 /**
- * Спецификатор импорта → файл деклараций внутри node_modules рабочей директории.
+ * Bare-спецификатор → декларации установленного пакета; поиск node_modules от импортёра вверх.
  */
-function resolveModuleFile(spec) {
-    const nm = path.join(cwd, 'node_modules');
-    if (!fs.existsSync(nm)) fail('node_modules не найден в ' + cwd + ' — сначала npm install');
+function resolveModuleFile(spec, fromDir = cwd) {
     const clean = spec.replace(/^node_modules\//, '').replace(/[?#].*$/, '');
-    const pkgName = clean.startsWith('@') ? clean.split('/').slice(0, 2).join('/') : clean.split('/')[0];
-    if (!pkgName) fail('не удалось разобрать имя пакета: ' + spec);
+    const parts = clean.split('/');
+    if (parts.some(p => !p || p === '.' || p === '..' || /[\\:]/.test(p))
+        || (clean.startsWith('@') && parts.length < 2)) throw new Error('недопустимое имя пакета: ' + spec);
+    const pkgName = clean.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
     const sub = clean.slice(pkgName.length).replace(/^\//, '');
-    const pkgDir = path.join(nm, pkgName);
-    if (!fs.existsSync(pkgDir)) fail('пакет ' + pkgName + ' не найден в node_modules (установлен?)');
+    let pkgDir = null;
+    for (let dir = path.resolve(fromDir); ; dir = path.dirname(dir)) {
+        const candidate = path.join(dir, 'node_modules', pkgName);
+        try {
+            if (fs.statSync(candidate).isDirectory()) { pkgDir = fs.realpathSync(candidate); break; }
+        } catch (e) { /* пакет может быть установлен в родительском workspace */ }
+        if (path.dirname(dir) === dir) break;
+    }
+    if (!pkgDir) throw new Error('пакет ' + pkgName + ' не найден в node_modules (установлен?)');
     let pj = null;
     try {
-        pj = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
-    } catch (e) { /* нет package.json — работаем прямыми пробами файлов */
-    }
+        const manifest = confinedFile(path.join(pkgDir, 'package.json'), pkgDir);
+        if (manifest) pj = JSON.parse(fs.readFileSync(manifest.file, 'utf8'));
+    } catch (e) { /* нет package.json — работаем прямыми пробами файлов */ }
 
-    // 1) exports из package.json: точный ключ, затем ключи с '*'
-    if (pj && pj.exports && typeof pj.exports === 'object') {
-        const key = './' + sub;
-        const tryTarget = (t) => pickTypesFromTarget(t, pkgDir, null, 0);
-        let hit = hasKey(pj.exports, key) ? tryTarget(pj.exports[key]) : null;
-        if (!hit) {
-            for (const [k, v] of Object.entries(pj.exports)) {
+    // 1) exports: корень '.', shorthand/условия корня, точный subpath, затем '*'.
+    if (pj && pj.exports != null) {
+        const exp = pj.exports;
+        const key = sub ? './' + sub : '.';
+        const subpaths = exp && typeof exp === 'object' && !Array.isArray(exp)
+            && Object.keys(exp).some(k => k.startsWith('.'));
+        let hit = subpaths && hasKey(exp, key) ? pickTypesFromTarget(exp[key], pkgDir, null, 0)
+            : !subpaths && !sub ? pickTypesFromTarget(exp, pkgDir, null, 0) : null;
+        if (!hit && subpaths) {
+            for (const [k, v] of Object.entries(exp)) {
                 if (!k.includes('*')) continue;
                 const cut = k.indexOf('*');
                 if (key.startsWith(k.slice(0, cut)) && key.endsWith(k.slice(cut + 1))) {
-                    const star = key.slice(k.slice(0, cut).length, key.length - (k.length - cut - 1));
-                    hit = pickTypesFromTarget(v, pkgDir, star, 0) || null;
+                    const star = key.slice(cut, key.length - (k.length - cut - 1));
+                    hit = pickTypesFromTarget(v, pkgDir, star, 0);
                     if (hit) break;
                 }
             }
@@ -422,23 +448,22 @@ function resolveModuleFile(spec) {
         if (hit) return hit;
     }
 
-    // 2) прямые пробы файлов
+    // 2) прямые пробы файлов, ограниченные реальным корнем выбранного пакета.
     if (sub) {
         const base = path.join(pkgDir, sub);
-        const hit = probeFile(base + '.d.ts') || probeFile(path.join(base, 'index.d.ts')) || probeFile(base);
+        const hit = probeFile(base + '.d.ts', pkgDir) || probeFile(path.join(base, 'index.d.ts'), pkgDir) || probeFile(base, pkgDir);
         if (hit) return hit;
     } else if (pj) {
         for (const k of ['types', 'typings']) {
             if (typeof pj[k] === 'string') {
-                const hit = probeFile(path.resolve(pkgDir, pj[k]));
+                const hit = probeFile(path.resolve(pkgDir, pj[k]), pkgDir);
                 if (hit) return hit;
             }
         }
     }
-    const fallback = sub ? null : probeFile(path.join(pkgDir, 'index.d.ts'));
+    const fallback = sub ? null : probeFile(path.join(pkgDir, 'index.d.ts'), pkgDir);
     if (fallback) return fallback;
-
-    fail('не удалось найти декларации для ' + clean + ' (в package.json нет exports/types, файлы .d.ts не найдены)');
+    throw new Error('не удалось найти декларации для ' + clean + ' (в package.json нет exports/types, файлы .d.ts не найдены)');
 }
 
 function hasKey(obj, key) {
@@ -448,11 +473,11 @@ function hasKey(obj, key) {
 /**
  * Спецификатор реэкспорта → файл (относительный путь или другой пакет).
  */
-function followSpec(spec, fromFile) {
-    if (spec.startsWith('.')) return probeFile(path.resolve(path.dirname(fromFile), spec));
+function followSpec(spec, fromFile, root) {
+    if (spec.startsWith('.')) return probeFile(path.resolve(path.dirname(fromFile), spec), root);
     if (!/^[a-z@]/i.test(spec)) return null;
     try {
-        return resolveModuleFile(spec);
+        return resolveModuleFile(spec, path.dirname(fromFile));
     } catch (e) {
         return null;
     }
@@ -463,7 +488,10 @@ function followSpec(spec, fromFile) {
  * С member: сначала декларация с этим именем, затем реэкспорты; если в файле есть
  * классы/интерфейсы — отдаём их, main поищет member среди членов.
  */
-function analyze(fileAbs, member, depth, visited) {
+function analyze(target, member, depth, visited) {
+    const checked = confinedFile(target.file, target.root);
+    if (!checked) return null;
+    const fileAbs = checked.file;
     if (visited.has(fileAbs)) return null;
     visited.add(fileAbs);
     let text;
@@ -478,11 +506,11 @@ function analyze(fileAbs, member, depth, visited) {
     const follow = () => {
         const found = [];
         if (depth < MAX_DEPTH && member && named.has(member)) {
-            const f = followSpec(named.get(member), fileAbs);
+            const f = followSpec(named.get(member), fileAbs, target.root);
             if (f) found.push(f);
         }
         if (depth < MAX_DEPTH) for (const s of stars.slice(0, member ? MAX_STARS : 3)) {
-            const f = followSpec(s, fileAbs);
+            const f = followSpec(s, fileAbs, target.root);
             if (f) found.push(f);
         }
         return found;
@@ -529,15 +557,27 @@ function analyze(fileAbs, member, depth, visited) {
     member = args.member || member || null;
     const limit = Math.max(1, Number(args.limit) || 40);
 
-    // Прямой путь к файлу деклараций внутри проекта (редко, но полезно)
-    let fileAbs;
-    if (/\.d\.ts$/.test(spec) && fs.existsSync(path.resolve(cwd, spec))) {
-        fileAbs = path.resolve(cwd, spec);
+    // Прямые пути проверяются и лексически, и по realpath до чтения деклараций.
+    const direct = path.isAbsolute(spec) || /^[a-z]:/i.test(spec) || /^\.{1,2}(?:[\\/]|$)/.test(spec)
+        || spec.includes('\\') || (/\.d\.[cm]?ts$/i.test(spec) && fs.existsSync(path.resolve(cwd, spec)));
+    let target;
+    if (direct) {
+        const abs = path.resolve(cwd, spec);
+        if (!insideDir(cwd, abs) || (process.platform !== 'win32' && /^[a-z]:/i.test(spec)))
+            fail('Путь вне рабочей директории запрещён: ' + spec);
+        try {
+            const real = fs.realpathSync(abs);
+            if (!insideDir(projectRoot, real)) fail('Путь вне рабочей директории запрещён: ' + spec);
+            target = confinedFile(real, projectRoot);
+        } catch (e) { /* ниже — единая ошибка отсутствующего файла */ }
+        if (!target) fail('Файл деклараций не найден: ' + spec);
     } else {
-        fileAbs = resolveModuleFile(spec);
+        try { target = resolveModuleFile(spec); }
+        catch (e) { fail(e.message); }
     }
 
-    const r = analyze(fileAbs, member, 0, new Set());
+    const r = analyze(target, member, 0, new Set());
+    if (!r) fail('Файл деклараций недоступен: ' + spec);
     const rel = toPosix(r.file);
     const base = {name: String(args.name), member: member || null, file: rel};
 

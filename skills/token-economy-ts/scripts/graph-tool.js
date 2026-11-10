@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, ANGULAR_ERROR} = require('./lib/files');
-const {parseSymbols} = require('./lib/symbols');
+const {parseSymbols, sourceCodeMask, isArrowExpression} = require('./lib/symbols');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
@@ -54,7 +54,7 @@ const rootArg = args.root || (fs.existsSync(path.join(cwd, 'src')) ? 'src' : '.'
 const ROOT = path.resolve(cwd, rootArg);
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
-const GRAPH_VERSION = 7; // baseUrl fallback и проверяемая схема parsed cache
+const GRAPH_VERSION = 8; // единая маска символов, Unicode и учёт JSON-ресурсов
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const NG_KINDS = {
     Component: 'component',
@@ -66,6 +66,7 @@ const NG_KINDS = {
 const KIND_PRI = {component: 5, directive: 4, pipe: 3, injectable: 3, ngmodule: 2, class: 1};
 const KNOWN_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|html|css|scss|sass|less)$/i;
 const ASSET_EXT = /\.(html|css|scss|sass|less)(\?.*)?$/i;
+const JSON_RESOURCE_EXT = /\.json(?:[?#].*)?$/i;
 const CONFIG_FILES = ['angular.json', '.angular.json', 'tsconfig.json', 'package.json'];
 
 const emit = (obj) => console.log(JSON.stringify(obj));
@@ -119,7 +120,8 @@ function collectFiles(dir) {
         catch (e) { scanIssues.add('source-unreadable'); return; }
         for (const entry of entries) {
             if (entry.isSymbolicLink()) { scanIssues.add('source-symlink-skipped'); continue; }
-            if (entry.isDirectory() && !IGNORED_DIRS.includes(entry.name) && entry.name !== '.megamemory') check(path.join(directory, entry.name));
+            const name = process.platform === 'win32' ? entry.name.toLowerCase() : entry.name;
+            if (entry.isDirectory() && !IGNORED_DIRS.includes(name) && name !== '.megamemory') check(path.join(directory, entry.name));
         }
     }
     check(dir);
@@ -596,10 +598,12 @@ function extractMembersTs(body, lineAt) {
         start = -1;
         let t = raw.replace(/\s+/g, ' ').trim(), m;
         while ((m = t.match(/^(public|private|protected|static|readonly|abstract|override|async|declare|get|set)\s+/))) t = t.slice(m[0].length);
-        m = t.match(/^([A-Za-z_$][\w$]*)/);
+        m = t.match(/^([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u);
         if (!m) return;
         const rest = t.slice(m[0].length).replace(/^\s+/, '');
-        const isMethod = /^\??\(/.test(rest) || rest.startsWith('<');
+        const assignment = rest.indexOf('=');
+        const isMethod = /^\??\(/.test(rest) || rest.startsWith('<')
+            || (assignment >= 0 && isArrowExpression(rest.slice(assignment + 1)));
         out.push({name: m[1], kind: isMethod ? 'method' : 'property', line});
     };
     for (let i = 0; i < body.length; i++) {
@@ -640,79 +644,6 @@ function extractMembersTs(body, lineAt) {
 }
 
 /**
- * Маска исходника для отсеивания импортов в комментариях, строках и regex.
- * Позиции сохраняются; выражения ${…} внутри шаблонных строк остаются кодом.
- */
-function sourceCodeMask(text) {
-    const out = text.split('');
-    const stack = [{kind: 'code', depth: 0}];
-    const regexWords = new Set(['return', 'throw', 'case', 'typeof', 'void', 'delete', 'yield', 'await', 'new']);
-    let i = 0, last = '', word = '';
-    const blank = (start, end) => {
-        for (let k = start; k < end; k++) if (text[k] !== '\n' && text[k] !== '\r') out[k] = ' ';
-    };
-    while (i < text.length) {
-        const c = text[i], next = text[i + 1], top = stack[stack.length - 1];
-        if (top.kind === 'template') {
-            if (c === '\\') { blank(i, Math.min(i + 2, text.length)); i += 2; continue; }
-            if (c === '`') { blank(i, i + 1); stack.pop(); i++; last = 'w'; word = ''; continue; }
-            if (c === '$' && next === '{') {
-                blank(i, i + 2); stack.push({kind: 'code', depth: 0}); i += 2; last = ''; word = ''; continue;
-            }
-            blank(i, i + 1); i++; continue;
-        }
-        if (c === '/' && (next === '/' || next === '*')) {
-            const start = i;
-            i += 2;
-            if (next === '/') while (i < text.length && text[i] !== '\n') i++;
-            else {
-                while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
-                i = Math.min(i + 2, text.length);
-            }
-            blank(start, i); continue;
-        }
-        if (c === "'" || c === '"') {
-            const start = i++;
-            while (i < text.length && text[i] !== c && text[i] !== '\n' && text[i] !== '\r') {
-                if (text[i] === '\\') i++;
-                i++;
-            }
-            if (text[i] === c) i++;
-            blank(start, i); last = 'w'; word = ''; continue;
-        }
-        if (c === '`') { blank(i, i + 1); stack.push({kind: 'template'}); i++; continue; }
-        if (c === '/' && (last === '' || '([=!:&|?,;{+-*%^~<>'.includes(last) || regexWords.has(word))) {
-            let end = i + 1, inClass = false, closed = false;
-            while (end < text.length && text[end] !== '\n' && text[end] !== '\r') {
-                const d = text[end];
-                if (d === '\\') { end += 2; continue; }
-                if (d === '[') inClass = true;
-                else if (d === ']') inClass = false;
-                else if (d === '/' && !inClass) { end++; closed = true; break; }
-                end++;
-            }
-            if (closed) {
-                while (end < text.length && /[a-z]/i.test(text[end])) end++;
-                blank(i, end); i = end; last = 'w'; word = ''; continue;
-            }
-        }
-        if (c === '{' && stack.length > 1) top.depth++;
-        if (c === '}' && stack.length > 1) {
-            if (top.depth === 0) { blank(i, i + 1); stack.pop(); i++; continue; }
-            top.depth--;
-        }
-        if (/[A-Za-z_$]/.test(c)) {
-            const start = i++;
-            while (i < text.length && /[\w$]/.test(text[i])) i++;
-            word = text.slice(start, i); last = 'w'; continue;
-        }
-        if (!/\s/.test(c)) { last = c; word = ''; }
-        i++;
-    }
-    return out.join('');
-}
-
-/**
  * Разбирает содержимое TS/JS: импорты, экспорты, объявления с номерами строк,
  * а для @Component — templateUrl, styleUrl(s) и использование в inline-template.
  */
@@ -750,19 +681,19 @@ function parseTs(content, sourceType = 'ts') {
             if (name && name !== '*') exports.push(name);
         }
 
-    const reDecl = /(?:^|\n)[ \t]*(export\s+)?(?:default\s+)?(?:abstract\s+)?(class|interface|enum|type|function|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
-    while (sourceType === 'ts' && (m = reDecl.exec(content))) {
+    const reDecl = /^[ \t]*(export\s+)?(?:default\s+)?(?:abstract\s+)?(class|interface|enum|type|function|const|let|var)\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/gmu;
+    while (sourceType === 'ts' && (m = reDecl.exec(codeMask))) {
         const kind = m[2] === 'let' || m[2] === 'var' ? 'const' : m[2];
-        entities.push({name: m[3], kind, line: lineAt(m.index)});
+        entities.push({name: m[3], kind, line: lineAt(m.index + m[0].search(/\S/))});
         if (m[1]) exports.push(m[3]);
         // члены класса/интерфейса — для graph symbol по методам и свойствам
         if (kind === 'class' || kind === 'interface') {
-            const brace = nextBrace(content, m.index + m[0].length);
+            const brace = nextBrace(codeMask, m.index + m[0].length);
             if (brace !== -1) {
-                const close = matchBrace(content, brace);
+                const close = matchBrace(codeMask, brace);
                 if (close !== -1)
                     entities[entities.length - 1].members =
-                        extractMembersTs(content.slice(brace + 1, close), (off) => lineAt(brace + 1 + off));
+                        extractMembersTs(codeMask.slice(brace + 1, close), (off) => lineAt(brace + 1 + off));
             }
         }
     }
@@ -790,8 +721,9 @@ function parseTs(content, sourceType = 'ts') {
     }
 
     // Angular-декораторы: вид сущности, selector / имя пайпа, шаблон и стили
-    const reNg = /@(Component|Directive|Pipe|Injectable|NgModule)\s*\(([\s\S]{0,30000}?)\)\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/g;
+    const reNg = /@(Component|Directive|Pipe|Injectable|NgModule)\s*\(([\s\S]{0,30000}?)\)\s*(?:export\s+)?(?:abstract\s+)?class\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/gu;
     while ((m = reNg.exec(content))) {
+        if (codeMask[m.index] !== '@') continue;
         const body = m[2];
         // members собраны в reDecl-сущности «class» — переносим: дедупликация ниже оставит только эту
         const prev = entities.find((e) => e.name === m[3] && e.kind === 'class');
@@ -840,12 +772,25 @@ function parseFile(content, rel) {
 
 // ---------- резолвинг ссылок ----------
 
+const pathKey = file => process.platform === 'win32' ? file.toLowerCase() : file;
+
+function jsonResourceExists(file) {
+    if (!insideProject(file)) return false;
+    try {
+        const root = fs.realpathSync(cwd);
+        const real = fs.realpathSync(file);
+        const rel = path.relative(root, real);
+        return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel) && fs.statSync(real).isFile();
+    } catch (e) { return false; }
+}
+
 /**
  * Превращает спецификатор TS-импорта в файл проекта либо имя внешнего пакета.
  * Импорты ресурсов ('./x.scss?inline', './x.html') резолвятся по точному пути.
  */
-function resolveSpec(spec, fromAbs, fileSet, alias) {
-    if (ASSET_EXT.test(spec)) spec = spec.replace(/\?.*$/, '');
+function resolveSpec(spec, fromAbs, fileSet, alias, resources) {
+    const isJson = JSON_RESOURCE_EXT.test(spec);
+    if (isJson || ASSET_EXT.test(spec)) spec = spec.replace(/[?#].*$/, '');
     let bases, baseUrlFallback = false;
     if (spec.startsWith('.') || path.isAbsolute(spec)) bases = [path.resolve(path.dirname(fromAbs), spec)];
     else {
@@ -855,6 +800,12 @@ function resolveSpec(spec, fromAbs, fileSet, alias) {
         bases = hits || [path.resolve(alias.baseUrl, spec)];
     }
     for (const b of bases) {
+        if (isJson) {
+            const exists = jsonResourceExists(b);
+            if (resources && insideProject(b)) resources[toPosix(b)] = exists;
+            if (exists) return {resource: b};
+            continue;
+        }
         const js = [b + '.js', b + '.jsx', path.join(b, 'index.js'), path.join(b, 'index.jsx')];
         const ts = [b + '.ts', b + '.tsx', path.join(b, 'index.ts'), path.join(b, 'index.tsx')];
         const modules = [b + '.mjs', b + '.cjs', path.join(b, 'index.mjs'), path.join(b, 'index.cjs')];
@@ -862,7 +813,7 @@ function resolveSpec(spec, fromAbs, fileSet, alias) {
         const candidates = fileType(fromAbs) === 'js'
             ? [b, ...source, ...js, ...ts, ...modules]
             : [...source, b, ...ts, ...js, ...modules];
-        for (const v of candidates) if (fileSet.has(v)) return {file: v};
+        for (const v of candidates) if (fileSet.has(pathKey(v))) return {file: fileSet.get(pathKey(v))};
     }
     if (baseUrlFallback) return {external: spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]};
     return null;
@@ -906,7 +857,7 @@ function resolveStyleSpec(spec, fromAbs, fileSet, includePaths) {
         if (tilde) bases.push(path.resolve(cwd, s));
     }
     for (const b of bases)
-        for (const v of styleCandidates(b, styleFamily(fromAbs))) if (fileSet.has(v)) return {file: v};
+        for (const v of styleCandidates(b, styleFamily(fromAbs))) if (fileSet.has(pathKey(v))) return {file: fileSet.get(pathKey(v))};
     if (s.startsWith('.') || s.startsWith('/')) return null;
     const pkg = s.startsWith('@') ? s.split('/').slice(0, 2).join('/') : s.split('/')[0];
     if (tilde || s.startsWith('@') || fs.existsSync(path.join(cwd, 'node_modules', pkg))) return {external: pkg};
@@ -920,7 +871,7 @@ function resolveFileRef(ref, fromAbs, fileSet) {
     const clean = ref.replace(/[?#].*$/, '');
     if (!clean || /^(https?:|data:|\/)/i.test(clean)) return null;
     for (const b of [path.resolve(path.dirname(fromAbs), clean), path.resolve(ROOT, clean)])
-        if (fileSet.has(b)) return b;
+        if (fileSet.has(pathKey(b))) return fileSet.get(pathKey(b));
     return null;
 }
 
@@ -949,28 +900,42 @@ function tarjan(nodes) {
     const idx = new Array(n + 1).fill(-1), low = new Array(n + 1).fill(0), on = new Array(n + 1).fill(false);
     const stack = [], sccs = [];
     let cnt = 0;
-    const strong = (v) => {
-        idx[v] = low[v] = cnt++;
-        stack.push(v);
-        on[v] = true;
-        for (const w of nodes[v - 1].imports) {
-            if (idx[w] < 0) {
-                strong(w);
-                low[v] = Math.min(low[v], low[w]);
-            } else if (on[w]) low[v] = Math.min(low[v], idx[w]);
+    for (let root = 1; root <= n; root++) {
+        if (idx[root] >= 0) continue;
+        const frames = [{id: root, next: 0}];
+        idx[root] = low[root] = cnt++;
+        stack.push(root);
+        on[root] = true;
+        while (frames.length) {
+            const frame = frames[frames.length - 1], v = frame.id;
+            const imports = nodes[v - 1].imports;
+            if (frame.next < imports.length) {
+                const w = imports[frame.next++];
+                if (idx[w] < 0) {
+                    idx[w] = low[w] = cnt++;
+                    stack.push(w);
+                    on[w] = true;
+                    frames.push({id: w, next: 0});
+                } else if (on[w]) low[v] = Math.min(low[v], idx[w]);
+                continue;
+            }
+            frames.pop();
+            if (low[v] === idx[v]) {
+                const comp = [];
+                let w;
+                do {
+                    w = stack.pop();
+                    on[w] = false;
+                    comp.push(w);
+                } while (w !== v);
+                if (comp.length > 1) sccs.push(comp.map(id => nodes[id - 1].path).sort());
+            }
+            if (frames.length) {
+                const parent = frames[frames.length - 1].id;
+                low[parent] = Math.min(low[parent], low[v]);
+            }
         }
-        if (low[v] === idx[v]) {
-            const comp = [];
-            let w;
-            do {
-                w = stack.pop();
-                on[w] = false;
-                comp.push(w);
-            } while (w !== v);
-            if (comp.length > 1) sccs.push(comp.map((id) => nodes[id - 1].path).sort());
-        }
-    };
-    for (let i = 1; i <= n; i++) if (idx[i] < 0) strong(i);
+    }
     return sccs;
 }
 
@@ -998,7 +963,8 @@ function buildGraph(files, inputs = graphInputs()) {
     files = (files || collectAll()).sort();
     if (!files.length) fail('Не найдено TS/JS/HTML/стилей в ' + rootArg);
 
-    const fileSet = new Set(files);
+    const fileSet = new Map(files.map(file => [pathKey(file), file]));
+    const resources = Object.create(null);
     const alias = inputs.alias;
     const includePaths = loadStyleIncludePaths();
     let cache = {};
@@ -1038,7 +1004,8 @@ function buildGraph(files, inputs = graphInputs()) {
             // ts-спецификаторы приходят объектами {m, line}; стили — строками
             const isObj = spec && typeof spec === 'object';
             const s = isObj ? spec.m : spec;
-            const r = type === 'style' ? resolveStyleSpec(s, abs, fileSet, includePaths) : resolveSpec(s, abs, fileSet, alias);
+            const r = type === 'style' ? resolveStyleSpec(s, abs, fileSet, includePaths) : resolveSpec(s, abs, fileSet, alias, resources);
+            if (r && r.resource) continue;
             if (r && r.file) {
                 const id = idByAbs.get(r.file);
                 n.imports.push(id);
@@ -1068,6 +1035,7 @@ function buildGraph(files, inputs = graphInputs()) {
 
     // 2. Индексы символов, селекторов и пайпов
     const symbols = Object.create(null), selectors = Object.create(null);
+    const selectorFiles = new Map();
     const byTag = new Map(), byAttr = new Map(), byClass = new Map(), pipes = new Map();
     const put = (map, key, val) => {
         if (!map.has(key)) map.set(key, []);
@@ -1082,6 +1050,8 @@ function buildGraph(files, inputs = graphInputs()) {
             }
             if (e.selector) {
                 selectors[e.selector] = n.id;
+                if (!selectorFiles.has(e.selector)) selectorFiles.set(e.selector, new Set());
+                selectorFiles.get(e.selector).add(n.path);
                 for (const part of parseSelector(e.selector)) {
                     const p = {...part, id: n.id};
                     if (part.tag) put(byTag, part.tag, p);
@@ -1127,15 +1097,18 @@ function buildGraph(files, inputs = graphInputs()) {
         byKind[n.kind] = (byKind[n.kind] || 0) + 1;
     }
 
+    const duplicateSelectors = [...selectorFiles].filter(([, files]) => files.size > 1)
+        .map(([selector, files]) => ({selector, files: [...files]}));
     const cycles = tarjan(nodes);
     const graph = {
         version: GRAPH_VERSION,
         root: rootArg,
         inputs: inputs.manifest,
+        resources,
         sourceStats: Object.fromEntries(files.map(f => [toPosix(f), {mtime: statOf(f).mtimeMs, size: statOf(f).size}])),
         configIssues: [...configIssues],
         files: nodes,
-        symbols, selectors,
+        symbols, selectors, duplicateSelectors,
         externals: [...externals].sort(),
         cycles,
         stats: {
@@ -1184,6 +1157,9 @@ function ensureGraph() {
         const st = statOf(f);
         return !old || old.mtime !== st.mtimeMs || old.size !== st.size;
     });
+    if (!stale) stale = !graph.resources || typeof graph.resources !== 'object'
+        || Object.entries(graph.resources).some(([file, exists]) => typeof exists !== 'boolean'
+            || jsonResourceExists(path.resolve(cwd, file)) !== exists);
     return stale ? buildGraph(files, inputs) : {graph, reparsed: 0};
 }
 
@@ -1230,11 +1206,18 @@ function findNode(graph, q) {
     return {node: list[0]};
 }
 
+function selectorWarnings(graph, selector) {
+    return (graph.duplicateSelectors || []).filter(item => !selector || item.selector === selector).slice(0, 5)
+        .map(item => 'Дубликат селектора ' + item.selector + ': ' + item.files.slice(0, 5).join(', ')
+            + (item.files.length > 5 ? ' (ещё ' + (item.files.length - 5) + ')' : ''));
+}
+
 function structuralStatus(graph, truncated = 0, extra = []) {
     const unresolved = graph.files.flatMap(f => f.unresolved.map(specifier => ({file: f.path, specifier})));
     const reasons = [...new Set([
         ...(unresolved.length ? ['unresolved-imports'] : []),
         ...(scanExcluded.size ? ['excluded-source-files'] : []),
+        ...(graph.duplicateSelectors && graph.duplicateSelectors.length ? ['duplicate-selectors'] : []),
         ...scanIssues, ...configIssues, ...(graph.configIssues || []),
         ...(graph.cacheIssue ? [graph.cacheIssue] : []), ...extra
     ])];
@@ -1292,6 +1275,8 @@ function walk(graph, startId, depth, reverse, why) {
 // ---------- диспетчер ----------
 const op = args.op;
 if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats');
+if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'selftest'].includes(op))
+    fail('Неизвестный op: ' + op);
 if (op === 'selector' && !isAngular(cwd)) {
     console.log(ANGULAR_ERROR);
     process.exit(1);
@@ -1438,7 +1423,7 @@ if (op === 'info') {
             return null;
         }
     };
-    const warnings = [];
+    const warnings = selectorWarnings(graph);
     const pkg = readJson('package.json');
     if (!pkg) warnings.push('package.json не найден в ' + cwd);
     if (pkg && !fs.existsSync(path.join(cwd, 'node_modules'))) warnings.push('node_modules не найден — выполните npm install');
@@ -1558,8 +1543,10 @@ if (op === 'selector') {
     const n = byId(graph.selectors[key]);
     const rev = reverseIndex(graph);
     const templates = (rev.get(n.id) || []).map(byId).filter((f) => f.kind === 'template').map((f) => f.path);
+    const warnings = selectorWarnings(graph, key);
     emit({
         selector: key, file: n.path, kind: n.kind,
+        ...(warnings.length ? {warnings} : {}),
         usedInTemplatesTotal: templates.length,
         usedInTemplates: templates.slice(0, 30)
     });

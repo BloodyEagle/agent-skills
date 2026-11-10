@@ -81,6 +81,42 @@ def join(a, b):
 
 # ---------- файлы проекта ----------
 
+def project_root(value):
+    try:
+        root = Path(value).resolve()
+        if root.is_dir():
+            return str(root)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    fail("корень проекта не существует или не является каталогом: " + str(value))
+
+
+def project_path(root, value):
+    """Реальный путь внутри root; разрешаем ссылки до обработки следующего сегмента, включая '..'."""
+    base, path = Path(root).resolve(), Path(value)
+    if path.drive and not path.is_absolute():
+        raise ValueError("путь вне рабочей директории: " + str(value))
+    current = Path(path.anchor) if path.is_absolute() else base
+    parts = path.parts[1:] if path.is_absolute() else path.parts
+    entered = current == base
+    for part in parts:
+        current = (current / part).resolve()
+        inside = current == base or base in current.parents
+        if entered and not inside:
+            raise ValueError("путь вне рабочей директории: " + str(value))
+        entered = entered or inside
+    if current != base and base not in current.parents:
+        raise ValueError("путь вне рабочей директории: " + str(value))
+    return current
+
+
+def safe_path(root, value):
+    try:
+        return project_path(root, value)
+    except (OSError, RuntimeError, ValueError) as e:
+        fail(str(e))
+
+
 def _excluded(parts):
     return any(p in EXCLUDE_DIRS or p.endswith(".egg-info") for p in parts)
 
@@ -94,51 +130,86 @@ def _pyvenv_dirs(root, rels):
             d = "/".join(parts[:i])
             if d not in checked:
                 checked.add(d)
-                if os.path.exists(os.path.join(root, d, "pyvenv.cfg")):
+                try:
+                    if project_path(root, join(d, "pyvenv.cfg")).is_file():
+                        bad.add(d)
+                except (OSError, RuntimeError, ValueError):
                     bad.add(d)
     return bad
 
 
-def project_files(root, exts=(".py",)):
-    """Файлы проекта (относительные posix-пути): через git ls-files (учитывает .gitignore), иначе обход."""
+def project_files(root, exts=(".py",), aliases=None):
+    """Канонические файлы проекта; aliases получает безопасные lexical→canonical пути."""
+    root = project_root(root)
+    base = Path(root)
     exts_l = tuple(e.lower() for e in exts) if exts else None
     rel = None
     try:
-        r = subprocess.run(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
+        r = subprocess.run(["git", "-C", root, "ls-files", "-co", "--exclude-standard", "-z"],
                            capture_output=True, timeout=30)
         if r.returncode == 0:
             rel = [n for n in r.stdout.decode("utf-8", "replace").split("\0") if n]
     except Exception:
         rel = None
     if rel is None:
-        rel = []
-        for dp, dns, fns in os.walk(root):
-            dns[:] = [d for d in dns if d not in EXCLUDE_DIRS and not d.endswith(".egg-info")
-                      and not os.path.exists(os.path.join(dp, d, "pyvenv.cfg"))]
-            for fn in fns:
-                rel.append(posix(os.path.relpath(os.path.join(dp, fn), root)))
-    else:
-        venv = _pyvenv_dirs(root, rel)
-        if venv:
-            def under_venv(n):
-                parts = n.split("/")
-                return any("/".join(parts[:i]) in venv for i in range(1, len(parts)))
-
-            rel = [n for n in rel if not under_venv(n)]
-    out = []
+        rel, ancestors = [], {}
+        for dp, dns, fns in os.walk(root, followlinks=True):
+            try:
+                directory = project_path(root, dp)
+            except (OSError, RuntimeError, ValueError):
+                dns[:] = []
+                continue
+            parents = ancestors.pop(dp, set())
+            if directory in parents:
+                dns[:] = []
+                continue
+            parents = parents | {directory}
+            keep = []
+            for d in dns:
+                try:
+                    child = project_path(root, Path(dp, d))
+                    parts = child.relative_to(base).parts
+                    if (d not in EXCLUDE_DIRS and not d.endswith(".egg-info") and not _excluded(parts)
+                            and child not in parents and not (child / "pyvenv.cfg").exists()):
+                        keep.append(d)
+                        ancestors[os.path.join(dp, d)] = parents
+                except (OSError, RuntimeError, ValueError):
+                    continue
+            dns[:] = keep
+            rel.extend(posix(os.path.relpath(os.path.join(dp, fn), root)) for fn in fns)
+    out, paths, directory_aliases = [], {}, []
     for n in rel:
-        n = posix(n)
-        if exts_l and not n.lower().endswith(exts_l):
-            continue
+        n = posix(n).rstrip("/")
         if _excluded(n.split("/")[:-1]):
             continue
         try:
-            st = os.stat(os.path.join(root, n))
-        except OSError:
+            p = project_path(root, n)
+            canonical = posix(p.relative_to(base))
+            if p.is_dir():
+                if n != canonical and not _excluded(n.split("/")) and not _excluded(canonical.split("/")):
+                    directory_aliases.append((n, canonical))
+                continue
+            if exts_l and not n.lower().endswith(exts_l):
+                continue
+            if _excluded(canonical.split("/")[:-1]):
+                continue
+            st = p.stat()
+        except (OSError, RuntimeError, ValueError):
             continue
         if stat.S_ISREG(st.st_mode) and st.st_size <= MAX_BYTES:
-            out.append(n)
-    return sorted(set(out))
+            out.append(canonical)
+            paths[n] = canonical
+    for alias, target in directory_aliases:
+        for canonical in set(paths.values()):
+            if canonical.startswith(target + "/"):
+                paths[alias + canonical[len(target):]] = canonical
+    venv = _pyvenv_dirs(root, list(paths) + out)
+    if venv:
+        paths = {n: p for n, p in paths.items()
+                 if not any(n.startswith(d + "/") or p.startswith(d + "/") for d in venv)}
+    if aliases is not None:
+        aliases.update(paths)
+    return sorted(set(paths.values()))
 
 
 def is_test_path(rel):
@@ -296,22 +367,23 @@ def parse_file(path):
 
 # ---------- построение графа ----------
 
-def load_json(p):
+def load_json(root, rel):
+    p = safe_path(root, rel)
     try:
-        with open(p, "r", encoding="utf-8") as f:
+        with p.open("r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None
 
 
-def save_json(p, obj):
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    gi = os.path.join(os.path.dirname(p), ".gitignore")
-    if not os.path.exists(gi):
-        with open(gi, "w", encoding="utf-8") as f:
-            f.write("*\n")
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+def save_json(root, rel, obj):
+    p = safe_path(root, rel)
+    gi = safe_path(root, str(Path(rel).parent / ".gitignore"))
+    tmp = safe_path(root, rel + ".tmp")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if not gi.exists():
+        gi.write_text("*\n", encoding="utf-8")
+    with tmp.open("w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp, p)
 
@@ -319,7 +391,8 @@ def save_json(p, obj):
 def source_roots(root, extra):
     roots = []
     for s in list(extra or []) + (["src"] if os.path.isdir(os.path.join(root, "src")) else []):
-        s = posix(os.path.normpath(s))
+        p = safe_path(root, s)
+        s = posix(p.relative_to(Path(root)))
         if s == ".":
             s = ""
         if s and s not in roots:
@@ -340,33 +413,45 @@ def module_name(rel, sroot):
 
 
 def build_graph(root, extra_src):
-    files = project_files(root)
-    cache = load_json(os.path.join(root, CACHE_DIR, "cache.json")) or {}
+    root = project_root(root)
+    roots = source_roots(root, extra_src)
+    aliases = {}
+    files = project_files(root, aliases=aliases)
+    cache = load_json(root, join(CACHE_DIR, "cache.json")) or {}
     if cache.get("v") != VERSION:
         cache = {}
     old = cache.get("files", {})
     new = {}
     nodes = []
-    for i, rel in enumerate(files):
-        st = os.stat(os.path.join(root, rel))
-        m, s = st.st_mtime_ns, st.st_size
-        c = old.get(rel)
-        data = c["d"] if c and c["m"] == m and c["s"] == s else parse_file(os.path.join(root, rel))
+    for rel in files:
+        try:
+            p = project_path(root, rel)
+            st = p.stat()
+            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_BYTES:
+                continue
+            m, s = st.st_mtime_ns, st.st_size
+            c = old.get(rel)
+            data = c["d"] if c and c["m"] == m and c["s"] == s else parse_file(p)
+        except (OSError, RuntimeError, ValueError):
+            continue
         new[rel] = {"m": m, "s": s, "d": data}
-        nodes.append({"id": i + 1, "path": rel, "m": m, "s": s, "raw": data})
+        nodes.append({"id": len(nodes) + 1, "path": rel, "m": m, "s": s, "raw": data})
 
-    roots = source_roots(root, extra_src)
     mods = {}
+    path_id = {n["path"]: n["id"] for n in nodes}
+    path_id.update({p: path_id[target] for p, target in aliases.items() if target in path_id})
     for n in nodes:
         n["names"] = []
+    for p, node_id in path_id.items():
+        n = nodes[node_id - 1]
         for sr in roots:
-            if sr and not n["path"].startswith(sr + "/"):
+            if sr and not p.startswith(sr + "/"):
                 continue
-            nm = module_name(n["path"], sr)
+            nm = module_name(p, sr)
             if nm:
-                n["names"].append(nm)
-                mods.setdefault(nm, n["id"])
-    path_id = {n["path"]: n["id"] for n in nodes}
+                if nm not in n["names"]:
+                    n["names"].append(nm)
+                mods.setdefault(nm, node_id)
     tops = {nm.split(".")[0] for nm in mods}
 
     def find_path_mod(base):
@@ -427,23 +512,26 @@ def build_graph(root, extra_src):
         n["kind"] = ("test" if is_test_path(n["path"]) else "package" if n["path"].endswith("__init__.py")
                      else "script" if raw["main"] else "module")
 
-    graph = {"v": VERSION, "src": extra_src or [], "nodes": nodes}
-    save_json(os.path.join(root, CACHE_DIR, "graph.json"), graph)
-    save_json(os.path.join(root, CACHE_DIR, "cache.json"), {"v": VERSION, "files": new})
+    graph = {"v": VERSION, "src": extra_src or [], "aliases": aliases, "nodes": nodes}
+    save_json(root, join(CACHE_DIR, "graph.json"), graph)
+    save_json(root, join(CACHE_DIR, "cache.json"), {"v": VERSION, "files": new})
     return graph
 
 
 def ensure_graph(root, extra_src):
-    g = load_json(os.path.join(root, CACHE_DIR, "graph.json"))
+    root = project_root(root)
+    source_roots(root, extra_src)
+    g = load_json(root, join(CACHE_DIR, "graph.json"))
     if g and g.get("v") == VERSION and g.get("src") == (extra_src or []):
-        files = project_files(root)
+        aliases = {}
+        files = project_files(root, aliases=aliases)
         have = {n["path"]: (n["m"], n["s"]) for n in g["nodes"]}
-        fresh = len(files) == len(have)
+        fresh = len(files) == len(have) and g.get("aliases") == aliases
         if fresh:
             for rel in files:
                 try:
-                    st = os.stat(os.path.join(root, rel))
-                except OSError:
+                    st = project_path(root, rel).stat()
+                except (OSError, RuntimeError, ValueError):
                     fresh = False
                     break
                 if have.get(rel) != (st.st_mtime_ns, st.st_size):
@@ -455,6 +543,14 @@ def ensure_graph(root, extra_src):
 
 
 # ---------- операции над графом ----------
+
+def graph_query(root, query):
+    q = posix(query).strip()
+    p = safe_path(root, q)
+    if p.exists() or "/" in q or Path(q).drive or q in (".", ".."):
+        return posix(p.relative_to(Path(root)))
+    return q  # имя модуля/файла или фрагмент пути; неоднозначность обработает find_node
+
 
 def find_node(g, q):
     q = posix(q).strip()
@@ -558,7 +654,9 @@ def tarjan_runtime(nodes):
 
 
 def cmd_graph(a):
-    root = os.path.abspath(a.root)
+    root = a.root
+    if a.op in ("deps", "rdeps", "node", "path"):
+        a.args = [graph_query(root, q) for q in a.args]
     if a.op == "build":
         g = build_graph(root, a.src)
         print(f"граф построен: {len(g['nodes'])} файлов, {sum(len(n['imports']) for n in g['nodes'])} связей")
@@ -801,11 +899,7 @@ def _doc1(node):
 
 
 def safe_file(root, f):
-    p = Path(root, f).resolve() if not os.path.isabs(f) else Path(f).resolve()
-    try:
-        p.relative_to(Path(root).resolve())
-    except ValueError:
-        fail("путь вне рабочей директории: " + f)
+    p = safe_path(root, f)
     if not p.is_file():
         fail("файл не найден: " + f)
     return p
@@ -883,7 +977,7 @@ def cmd_search(a):
         rx = re.compile(a.query if a.re else re.escape(a.query), flags)
     except re.error as e:
         fail("некорректное регулярное выражение: " + str(e))
-    sub = posix(a.path).strip("/") if a.path else ""
+    sub = posix(safe_path(root, a.path).relative_to(Path(root))) if a.path else ""
     if sub == ".":
         sub = ""
     files = [f for f in project_files(root, exts) if not sub or f == sub or f.startswith(sub + "/")]
@@ -891,8 +985,8 @@ def cmd_search(a):
     out, cur, hit_files = [], None, []
     for f in files:
         try:
-            raw = Path(root, f).read_bytes()
-        except OSError:
+            raw = project_path(root, f).read_bytes()
+        except (OSError, RuntimeError, ValueError):
             continue
         if b"\0" in raw[:2048]:
             continue
@@ -1470,6 +1564,7 @@ def main():
     a.root = getattr(a, "root", ".")  # SUPPRESS не кладёт дефолты в namespace — ставим сами
     a.src = getattr(a, "src", None)
     try:
+        a.root = project_root(a.root)
         {"graph": cmd_graph, "outline": cmd_outline, "search": cmd_search,
          "sig": cmd_sig, "info": cmd_info, "selftest": cmd_selftest}[a.cmd](a)
         sys.stdout.flush()

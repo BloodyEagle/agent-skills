@@ -1,6 +1,6 @@
 # Правила памяти Hindsight
 
-Файл проектный: положи его в репозиторий проекта (например, `.zcode/rules/` в ZCode или `.kilocode/rules/` в Kilo Code), общие правила остаются в rules.md.
+Файл проектный: положи его в репозиторий проекта (например, `.zcode/rules/` в ZCode или `.kilocode/rules/` в Kilo Code), общие правила остаются в RULES.md.
 
 ## Банк
 

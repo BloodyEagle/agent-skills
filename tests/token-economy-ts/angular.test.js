@@ -36,3 +36,22 @@ test('Angular generate сохраняет прежний отказ при от�
     assert.equal(result.status, 1);
     assert.match(JSON.parse(result.stdout).error, /Локальный Angular CLI не найден/);
 }, {'angular.json': '{}'}));
+
+test('audit: Angular-декораторы в comments/templates не создают entities', () => project(root => {
+    const result = json(root, 'graph-tool', {op: 'node', file: 'src/masked.ts'});
+    assert.deepEqual(result.entities.map(item => item.name), ['Настоящий']);
+    for (const selector of ['ghost-comment', 'ghost-template']) {
+        assert.equal(json(root, 'graph-tool', {op: 'selector', selector}).file, null);
+    }
+}, {'angular.json': '{}', 'src/masked.ts': '/*\n@Component({selector: "ghost-comment"})\nexport class CommentGhost {}\n*/\n`\n@Component({selector: "ghost-template"})\nexport class TemplateGhost {}\n`;\n@Component({selector: "real"})\nexport class Настоящий {}\n'}, {empty: true}));
+
+test('audit: дубликат selector возвращает предупреждение вместо тихого выбора', () => project(root => {
+    const selector = json(root, 'graph-tool', {op: 'selector', selector: 'app-duplicate'});
+    assert.ok(selector.warnings.some(warning => /app-duplicate/.test(warning) && /a\.ts/.test(warning) && /b\.ts/.test(warning)));
+    const info = json(root, 'graph-tool', {op: 'info'});
+    assert.ok(info.warnings.some(warning => /app-duplicate/.test(warning)));
+    const deps = json(root, 'graph-tool', {op: 'deps', file: 'src/app.html'});
+    assert.equal(deps.completeness.complete, false);
+    assert.ok(deps.completeness.reasons.includes('duplicate-selectors'));
+}, {'angular.json': '{}', 'src/a.ts': "@Component({selector: 'app-duplicate'})\nexport class A {}",
+    'src/b.ts': "@Component({selector: 'app-duplicate'})\nexport class B {}", 'src/app.html': '<app-duplicate></app-duplicate>'}, {empty: true}));

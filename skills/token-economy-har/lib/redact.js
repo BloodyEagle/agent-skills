@@ -5,15 +5,13 @@
 
 const REDACTED = '[REDACTED]';
 
-// Подписанный JWT: header.payload.signature в base64url.
-const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\b/g;
+// Непересекающиеся кандидаты без откатов по сегментам. JSON начинается с
+// '{' (ey/ew) либо whitespace: tab/LF (C), CR (D), space (I) в base64url.
+const JOSE_CANDIDATE_RE = /\b(?:e[yw]|[CDI])[A-Za-z0-9_.-]*/g;
 const PRIVATE_PEM_RE = /-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?)(?=-|\s|$)-{0,5}[\s\S]*?(?:-----END \1-----|$)/gi;
 const PRIVATE_PEM_END_RE = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?(?=-|\s|$)/i;
-// user:pass@ сразу после scheme:// или в начале protocol-relative ссылки.
-const USERINFO_RE = /^([a-z][a-z0-9+.\-]*:)?\/\/[^/?#]*@/i;
-// user:pass@ внутри произвольного текста (схема обязательна).
-const TEXT_USERINFO_RE = /([a-z][a-z0-9+.\-]*:\/\/)[^\s/?#@]+(?::[^/\s?#@]*)?@/gi;
 const URL_START_RE = /^(?:[a-z][a-z0-9+.\-]*:)?\/\//i;
+const TEXT_URL_RE = /\/\/[^\s<>"']+/g;
 
 // Подстроки в нормализованном имени (нижний регистр, без разделителей).
 const SENSITIVE_SUBSTRINGS = [
@@ -122,10 +120,125 @@ function looksLikeUrl(value) {
         || /^[^\s?#]+[?#][^\s]*$/.test(value));
 }
 
+function isUrlAuthority(value, slashes) {
+    if (slashes === 0) return true;
+    if (value[slashes - 1] !== ':') return /[\s<>"'([{=]/.test(value[slashes - 1]);
+    let schemeAt = slashes - 1;
+    while (schemeAt > 0 && /[a-z0-9+.\-]/i.test(value[schemeAt - 1])) schemeAt--;
+    return /[a-z]/i.test(value[schemeAt]);
+}
+
+// Ищем фиксированный //, а не перебираем возможные начала длинной схемы.
+// Каждый authority просматривается один раз; длина учётных данных не ограничена.
+function scrubUserinfo(value) {
+    const start = URL_START_RE.exec(value);
+    const parts = [];
+    let copied = 0;
+    let scan = 0;
+    while (scan < value.length) {
+        const slashes = value.indexOf('//', scan);
+        if (slashes === -1) break;
+        if (!isUrlAuthority(value, slashes)) {
+            scan = slashes + 2;
+            continue;
+        }
+        const authority = slashes + 2;
+        const atStart = start && authority === start[0].length;
+        let end = authority;
+        let at = -1;
+        while (end < value.length) {
+            const char = value[end];
+            if (char === '/' || char === '?' || char === '#' || (!atStart && /\s/.test(char))) break;
+            if (char === '@') at = end;
+            end++;
+        }
+        if (at !== -1) {
+            parts.push(value.slice(copied, authority));
+            copied = at + 1;
+        }
+        scan = end;
+        // Остаток той же ссылки — path/query, а не новая authority. Вложенные
+        // URL в query отдельно проходят cleanParamValue после декодирования.
+        while (scan < value.length && !/[\s<>"']/.test(value[scan])) scan++;
+    }
+    if (!parts.length) return value;
+    parts.push(value.slice(copied));
+    return parts.join('');
+}
+
+function scrubJose(value) {
+    return value.replace(JOSE_CANDIDATE_RE, candidate => {
+        const parts = candidate.split('.');
+        // Конечная точка может быть пустой подписью или знаком предложения.
+        // Внутренний пустой encrypted key при этом сохраняется.
+        while (parts.length > 2 && parts[parts.length - 1] === '') parts.pop();
+        if (parts.length < 2) return candidate;
+        // Сохраняем прежнее покрытие подписанных JWT, в том числе битого JSON
+        // в заголовке. Если распознан префикс, не оставляем остальные сегменты.
+        for (let index = 0; index + 2 < parts.length; index++) {
+            // Граница после '-' тоже допускалась прежним JWT_RE. Проверяем
+            // только фиксированный префикс; длинный сегмент не сканируется заново.
+            const headerAt = parts[index].search(/\beyJ/);
+            if (headerAt !== -1 && parts[index].length - headerAt >= 11
+                && parts[index + 1].length >= 8 && parts[index + 2].length >= 5) return REDACTED;
+        }
+        let header;
+        try {
+            header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+        } catch {
+            return candidate;
+        }
+        if (!header || typeof header !== 'object' || Array.isArray(header) || typeof header.alg !== 'string') return candidate;
+        // У неподписанного JWT последний сегмент пуст или отсутствует.
+        const unsigned = header.alg === 'none' && parts[1].length > 0 && parts.length === 2;
+        // В JWE encrypted key может быть пустым (dir/ECDH-ES), как и ciphertext.
+        const encrypted = typeof header.enc === 'string' && parts.length === 5
+            && parts[2].length > 0 && parts[4].length > 0;
+        const signature = parts.length === 3 && parts[1].length > 0 && parts[2].length > 0;
+        return unsigned || encrypted || signature ? REDACTED : candidate;
+    });
+}
+
 function scrubSecrets(value) {
     const cleaned = value.replace(PRIVATE_PEM_RE, REDACTED);
     // Без завершающего маркера удаляем остаток блока; без начального — всю строку.
-    return PRIVATE_PEM_END_RE.test(cleaned) ? REDACTED : cleaned.replace(JWT_RE, REDACTED);
+    return PRIVATE_PEM_END_RE.test(cleaned) ? REDACTED : scrubJose(cleaned);
+}
+
+// В свободном тексте нужны граница имени и знак =. Общие code/state/key
+// чувствительны только в URL/form, иначе обычные диагностические строки теряются.
+function scrubTextParameters(value) {
+    const parts = [];
+    let copied = 0;
+    let scan = 0;
+    while (scan < value.length) {
+        const eq = value.indexOf('=', scan);
+        if (eq === -1) break;
+        scan = eq + 1;
+        let nameAt = eq;
+        while (nameAt > 0 && /[A-Za-z0-9_.%+\-]/.test(value[nameAt - 1])) nameAt--;
+        if (nameAt === eq || (nameAt > 0 && !/[\s?&#;([{<"',]/.test(value[nameAt - 1]))) continue;
+        const name = safeDecode(value.slice(nameAt, eq).replace(/\+/g, ' '));
+        if (!isSensitiveName(name)) continue;
+        const quote = value[scan] === '"' || value[scan] === "'" ? value[scan++] : '';
+        const start = scan;
+        while (scan < value.length) {
+            const char = value[scan];
+            if (quote ? char === quote : /[\s&#;,<>"'(){}\[\]]/.test(char)) break;
+            scan += quote && char === '\\' && scan + 1 < value.length ? 2 : 1;
+        }
+        // Уже очищенные URL-пары сохраняют percent-encoding и идемпотентность.
+        if (!quote && value.startsWith(REDACTED, start)) scan = start + REDACTED.length;
+        const previous = value.slice(start, scan);
+        if (previous && previous !== REDACTED && previous !== encodeURIComponent(REDACTED)) {
+            parts.push(value.slice(copied, start), REDACTED);
+            copied = scan;
+        }
+        if (quote && value[scan] === quote) scan++;
+    }
+    if (!parts.length) return value;
+    parts.push(value.slice(copied));
+    return parts.join('');
 }
 
 // Известные секреты и scheme://user:pass@ в произвольном тексте.
@@ -133,9 +246,11 @@ function scrubText(value, depth = 0) {
     if (typeof value !== 'string' || !value) return value;
     let text = scrubSecrets(value);
     if (looksLikeUrl(text)) text = scrubUrl(text, depth + 1);
-    text = text.replace(TEXT_USERINFO_RE, (match, scheme) => scheme);
-    text = text.replace(/(?:[a-z][a-z0-9+.\-]*:\/\/|\/\/)[^\s<>"']+/gi, link => scrubUrl(link, depth + 1));
-    return scrubSecrets(text);
+    if (text.includes('//')) {
+        text = scrubUserinfo(text);
+        text = text.replace(TEXT_URL_RE, (link, offset, source) => isUrlAuthority(source, offset) ? scrubUrl(link, depth + 1) : link);
+    }
+    return scrubSecrets(scrubTextParameters(text));
 }
 
 // Убирает user:pass@, чувствительные query-параметры и JWT из ссылки.
@@ -143,7 +258,7 @@ function scrubText(value, depth = 0) {
 function scrubUrl(raw, depth = 0) {
     if (typeof raw !== 'string' || !raw) return raw;
     if (depth >= MAX_DEPTH) return REDACTED;
-    let url = raw.replace(USERINFO_RE, (match, scheme) => `${scheme || ''}//`);
+    let url = scrubUserinfo(raw);
     const queryAt = url.indexOf('?');
     const hashAt = url.indexOf('#');
     if (queryAt !== -1 && (hashAt === -1 || queryAt < hashAt)) {
@@ -165,7 +280,7 @@ function scrubUrl(raw, depth = 0) {
         const parameters = routeQueryAt === -1 ? fragment : fragment.slice(routeQueryAt + 1);
         url = url.slice(0, fragmentAt + 1) + head + scrubParameters(parameters, depth + 1);
     }
-    return scrubSecrets(url.replace(TEXT_USERINFO_RE, (match, scheme) => scheme));
+    return scrubSecrets(url);
 }
 
 function cleanLooseText(value, depth) {

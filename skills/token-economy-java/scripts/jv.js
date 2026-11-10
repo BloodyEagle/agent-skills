@@ -7,10 +7,10 @@
 const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
-const { posix, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
-const { makeCtx, ensureIndex, buildIndex } = require('./lib/index');
+const { posix, safePath, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
+const { makeCtx, ensureIndex, buildIndex, loadJson } = require('./lib/index');
 const { buildInfo } = require('./lib/build');
-const { parseYaml, parseProperties, show, norm } = require('./lib/config');
+const { parseYaml, parseProperties, show, norm, isConfigFile, redactLines } = require('./lib/config');
 const S = require('./lib/spring');
 const CF = require('./lib/classfile');
 
@@ -39,10 +39,7 @@ const short = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 const EDGE = { h: 'extends/implements', i: 'inject', u: 'uses' };
 
 function safeAbs(rel) {
-  const abs = path.resolve(ctx.root, rel);
-  const r = path.relative(ctx.root, abs);
-  if (r.startsWith('..') || path.isAbsolute(r)) fail('путь вне рабочей директории: ' + rel);
-  return abs;
+  return safePath(ctx.root, rel);
 }
 
 // ---------- поиск узла ----------
@@ -107,7 +104,7 @@ const fmtEdges = (items, limit) => {
 
 // ---------- конфигурация ----------
 function configFiles() {
-  return listFiles(ctx.root, ['.yml', '.yaml', '.properties']).filter((f) => /(^|\/)(application|bootstrap)(-[\w.-]+)?\.(ya?ml|properties)$/.test(f));
+  return listFiles(ctx.root, ['.yml', '.yaml', '.properties']).filter(isConfigFile);
 }
 
 function configEntries() {
@@ -200,13 +197,14 @@ const ops = {
       if (text.includes('\0')) continue;
       let hit = false;
       const ls = text.split(/\r?\n/);
+      const visible = isConfigFile(rel) ? redactLines(text, /\.properties$/i.test(rel)) : ls;
       for (let i = 0; i < ls.length; i++) {
         const m = rx.exec(ls[i]);
         if (!m) continue;
         total++; hit = true;
         if (shown < limit) {
           if (cur !== rel) { lines.push(rel); cur = rel; }
-          let t = ls[i].trim();
+          let t = visible[i].trim();
           if (t.length > 120) { const pos = Math.max(t.indexOf(m[0]) - 40, 0); t = (pos ? '…' : '') + t.slice(pos, pos + 120) + '…'; }
           lines.push(`  ${i + 1}: ${t}`);
           shown++;
@@ -478,8 +476,19 @@ const ops = {
     const tryFind = (fqn) => CF.findClass(ctx.root, fqn, { jars: args.jars, jar: args.jar });
     if (!target.includes('.')) { // короткое имя: берём полное из импортов проекта
       const idx = ensureIndex(ctx);
-      const raw = JSON.parse(fs.readFileSync(path.join(ctx.root, '.jv-cache', 'cache.json'), 'utf8')).files;
-      for (const f of Object.values(raw)) { const imp = (f.d.imports || []).find((x) => x.endsWith('.' + target)); if (imp) { target = imp; break; } }
+      const cache = loadJson(safeAbs('.jv-cache/cache.json'));
+      const { parseJava } = require('./lib/java');
+      for (const n of idx.nodes) {
+        const entry = cache && cache.files && cache.files[n.p];
+        let imports;
+        if (entry && entry.m === n.m && entry.s === n.sz && entry.d && Array.isArray(entry.d.imports) && entry.d.imports.every((x) => typeof x === 'string')) imports = entry.d.imports;
+        else {
+          try { imports = parseJava(readText(safeAbs(n.p)).text).imports; }
+          catch (e) { continue; }
+        }
+        const imp = imports.find((x) => x.endsWith('.' + target));
+        if (imp) { target = imp; break; }
+      }
       if (!target.includes('.')) fail('для короткого имени нужен импорт этого класса в проекте; укажите полное имя');
     }
     found = tryFind(target);

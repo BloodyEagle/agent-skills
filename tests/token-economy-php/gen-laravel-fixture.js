@@ -3,8 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const root = path.join(__dirname, 'laravel-app');
-fs.rmSync(root, { recursive: true, force: true });
+const root = process.argv[2] ? path.resolve(process.argv[2]) : path.join(__dirname, 'laravel-app');
+if (fs.existsSync(root) && fs.readdirSync(root).length) throw new Error('каталог фикстуры не пуст: ' + root);
+fs.mkdirSync(root, { recursive: true });
 
 const W = (rel, text) => {
   const p = path.join(root, rel);

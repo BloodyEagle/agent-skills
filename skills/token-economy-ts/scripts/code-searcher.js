@@ -79,7 +79,7 @@ function searchInDir(dir, results = []) {
                 results.push({
                     file: path.relative(process.cwd(), filePath),
                     line: index + 1,
-                    text: line.trim().replace(/\r/g, '').substring(0, 100)
+                    text: line.trim().replace(/\r/g, '').slice(0, 100).replace(/[\uD800-\uDBFF]$/, '')
                 });
             }
         });

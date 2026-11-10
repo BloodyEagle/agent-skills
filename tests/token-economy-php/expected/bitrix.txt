@@ -1,0 +1,77 @@
+$ op=info
+корень сайта: .
+версия Битрикса: 23.0.0
+utf_mode: true  (bitrix/.settings.php)
+BX_UTF: true  (dbconn.php)
+стиль кода: файлов с классами в namespace (D7) 3, с глобальными классами (старое API) 1
+кодировка PHP-файлов проекта: utf8 3, cp1251 0, только ASCII 11
+шаблоны сайта: bitrix/templates/demo
+свои модули: local/modules/demo
+свои компоненты: local/components/demo (1)
+найдено: local/php_interface/init.php, bitrix/php_interface/dbconn.php, urlrewrite.php
+в индексе файлов: 14 (14 своих); ядро не индексируется ("core":true включит его)
+exit=0
+
+$ op=symbol name=DemoListComponent
+Demo\Components\DemoListComponent  class  local/components/demo/list/class.php:5-11
+exit=0
+
+$ op=symbol name=CIBlockElement::GetList
+CIBlockElement::GetList: не найдено
+exit=0
+
+$ op=outline file=Demo\Helper
+local/php_interface/include/helpers.php  [php_interface]  (6 строк, ascii)
+namespace Demo
+L3-5      class Helper
+L4-4        public static function fetch(int $count): array
+exit=0
+
+$ op=component id=demo:list
+demo:list
+расположение: local/components/demo/list
+файлы: .parameters.php, class.php
+класс: Demo\Components\DemoListComponent extends \CBitrixComponent
+шаблоны:
+  .default  [компонент]  local/components/demo/list/templates/.default/template.php
+вызовы (2):
+  index.php:3
+  local/news/detail.php:2  [cards]
+exit=0
+
+$ op=events query=OnAfterItemAdd
+demo:OnAfterItemAdd  add  ['Handlers', 'onAfterItemAdd']  local/php_interface/init.php:6
+exit=0
+
+$ op=search query=includeModule
+local/components/demo/list/class.php
+  7: Loader::includeModule('demo');
+local/php_interface/init.php
+  3: public static function onPageStart() { \Bitrix\Main\Loader::includeModule('demo'); }
+-- совпадений: 2, файлов: 2
+exit=0
+
+$ op=rdeps file=Demo\Helper
+local/php_interface/include/helpers.php [php_interface]: используют — 1 (глубина 1)
+1 local/components/demo/list/class.php [component demo:list] (class)
+exit=0
+
+$ op=route url=/catalog/item-1/
+/catalog/item-1/
+физического файла нет (проверено: /catalog/item-1/index.php)
+urlrewrite.php (срабатывает первое подходящее):
+  #1 #^/catalog/(.*)#i → /local/news/detail.php  RULE code=$1  (urlrewrite.php:3)
+(маршруты D7 в local/routes и правила .htaccess не проверяются)
+exit=0
+
+$ op=table name=b_demo_item
+b_demo_item  (SQL: local/modules/demo/install/db/mysql/install.sql:1)
+  колонки: ID int, TITLE varchar(255)
+  ключи: primary key (ID)
+exit=0
+
+$ op=lang query=Новости
+NEWS_TITLE
+  ru: Новости  (local/news/lang/ru/detail.php:2)
+  используется в: в проиндексированном коде нет
+exit=0

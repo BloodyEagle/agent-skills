@@ -82,8 +82,14 @@ function resolveInclude(inc, fileDocRel) {
  * Превращает PCRE-условие urlrewrite («#^/catalog/(.*)#i») в RegExp JavaScript.
  */
 function pcreToRegExp(cond) {
-  const d = cond[0];
-  const end = cond.lastIndexOf(d);
+  if (typeof cond !== 'string' || !cond || /[\w\s\\]/.test(cond[0])) return null;
+  const d = cond[0], close = { '(': ')', '[': ']', '{': '}', '<': '>' }[d] || d;
+  let end = -1, depth = 1;
+  for (let i = 1; i < cond.length; i++) {
+    if (cond[i] === '\\') { i++; continue; }
+    if (close !== d && cond[i] === d) depth++;
+    else if (cond[i] === close && --depth === 0) { end = i; break; }
+  }
   if (end <= 0) return null;
   const body = cond.slice(1, end);
   const flags = cond.slice(end + 1).replace(/[^imsu]/g, '');

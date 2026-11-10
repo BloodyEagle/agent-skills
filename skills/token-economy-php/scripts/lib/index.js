@@ -9,30 +9,29 @@
 
 const fs = require('fs');
 const path = require('path');
-const { posix, detectDocroot, listFiles, readText } = require('./fsx');
+const { posix, safePath, detectDocroot, listFiles, readText, writeAtomic } = require('./fsx');
 const { parsePhp, parseLang } = require('./php');
 const { classify, resolveInclude } = require('./bitrix');
 const { laravelClassify, parseBlade, parseLaravelPhp, parseLaravelLang, viewNameToDoc } = require('./laravel');
 const { classifyModx, parseTpl, parseModxPhp } = require('./modx');
 const { detectMode } = require('./detect');
 
-const VERSION = 4; // формат кэша и индекса; при смене разбора увеличить
+const VERSION = 5; // формат кэша и индекса; при смене разбора увеличить
 const CACHE_DIR = '.bx-cache';
 const KIND_ORDER = ['x', 't', 'i', 'c', 'e', 'm', 'f', 'l', 's', 'h'];
 
 function loadJson(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } }
 
-function saveJson(p, obj) {
+function saveJson(root, p, obj) {
+  p = safePath(root, p);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const gi = path.join(path.dirname(p), '.gitignore');
-  if (!fs.existsSync(gi)) fs.writeFileSync(gi, '*\n');
-  const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(obj));
-  fs.renameSync(tmp, p);
+  const gi = safePath(root, path.join(path.dirname(p), '.gitignore'));
+  try { fs.writeFileSync(gi, '*\n', { flag: 'wx' }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  writeAtomic(p, Buffer.from(JSON.stringify(obj)), { root });
 }
 
 /**
- * Контекст проекта: корень, режим (bitrix | laravel | generic), корень сайта, префикс путей, режим core.
+ * Контекст проекта: корень, режим (bitrix | laravel | modx | generic), корень сайта, префикс путей, режим core.
  * Корень сайта ищется только в режиме Битрикса; в остальных весь проект — рабочая область.
  */
 function makeCtx(opts) {
@@ -67,12 +66,12 @@ function classifyFor(ctx, doc) {
 function candidateFiles(ctx) {
   const exts = ctx.mode === 'modx' ? ['.php', '.tpl'] : ['.php'];
   const files = listFiles(ctx.root, ctx.docroot, exts, ctx.mode);
-  if (ctx.mode !== 'bitrix' || ctx.core) return files; // ядро Битрикса вне индекса только в режиме Битрикса
-  return files.filter((rel) => classify(docPath(ctx, rel)).origin !== 'core');
+  if (!['bitrix', 'modx'].includes(ctx.mode) || ctx.core) return files;
+  return files.filter((rel) => classifyFor(ctx, docPath(ctx, rel)).origin !== 'core');
 }
 
 function parseOne(ctx, rel, cl) {
-  const { text, enc, eol } = readText(path.join(ctx.root, rel));
+  const { text, enc, eol } = readText(safePath(ctx.root, rel));
   const base = { enc, eol };
   if (ctx.mode === 'modx' && /\.tpl$/i.test(rel)) return { ...base, ...parseTpl(text) }; // MODX-шаблон/чанк: теги и Fenom
   if (cl.view) return { ...base, ...parseBlade(text) }; // Blade-шаблон: директивы и переменные
@@ -92,23 +91,29 @@ function parseOne(ctx, rel, cl) {
 
 function buildIndex(ctx) {
   const files = candidateFiles(ctx);
-  const cacheFile = path.join(ctx.root, CACHE_DIR, 'cache.json');
+  const cacheFile = safePath(ctx.root, path.join(CACHE_DIR, 'cache.json'));
   let cache = loadJson(cacheFile) || {};
   if (cache.v !== VERSION) cache = {};
   const old = cache.files || {};
   const fresh = {};
   const nodes = [];
   let reparsed = 0;
-  files.forEach((rel, i) => {
-    const st = fs.statSync(path.join(ctx.root, rel));
+  files.forEach((rel) => {
     const doc = docPath(ctx, rel);
     const cl = classifyFor(ctx, doc);
     const c = old[rel];
-    let data;
-    if (c && c.m === st.mtimeMs && c.s === st.size) data = c.d;
-    else { data = parseOne(ctx, rel, cl); reparsed++; }
+    let st, data;
+    try {
+      st = fs.statSync(safePath(ctx.root, rel));
+      if (!st.isFile()) return;
+      if (c && c.m === st.mtimeMs && c.s === st.size) data = c.d;
+      else { data = parseOne(ctx, rel, cl); reparsed++; }
+    } catch (e) {
+      if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return; // файл исчез между обходом и чтением
+      throw e;
+    }
     fresh[rel] = { m: st.mtimeMs, s: st.size, d: data };
-    nodes.push({ id: i + 1, p: rel, d: doc, m: st.mtimeMs, sz: st.size, o: cl.origin, cl, raw: data });
+    nodes.push({ id: nodes.length + 1, p: rel, d: doc, m: st.mtimeMs, sz: st.size, o: cl.origin, cl, raw: data });
   });
 
   // индексы
@@ -246,8 +251,8 @@ function buildIndex(ctx) {
     return node;
   });
   const index = { v: VERSION, core: ctx.core, docroot: ctx.docroot, mode: ctx.mode, nodes: out };
-  saveJson(path.join(ctx.root, CACHE_DIR, 'index.json'), index);
-  saveJson(cacheFile, { v: VERSION, files: fresh });
+  saveJson(ctx.root, path.join(ctx.root, CACHE_DIR, 'index.json'), index);
+  saveJson(ctx.root, cacheFile, { v: VERSION, files: fresh });
   return { index, reparsed };
 }
 
@@ -255,7 +260,7 @@ function buildIndex(ctx) {
  * Актуальный индекс: перестраивается сам, если изменился список файлов, их размер/время или режим core.
  */
 function ensureIndex(ctx) {
-  const idx = loadJson(path.join(ctx.root, CACHE_DIR, 'index.json'));
+  const idx = loadJson(safePath(ctx.root, path.join(CACHE_DIR, 'index.json')));
   if (idx && idx.v === VERSION && idx.core === ctx.core && idx.docroot === ctx.docroot && idx.mode === ctx.mode) {
     const files = candidateFiles(ctx);
     const have = new Map(idx.nodes.map((n) => [n.p, n]));
@@ -264,7 +269,7 @@ function ensureIndex(ctx) {
       for (const rel of files) {
         const n = have.get(rel);
         let st;
-        try { st = fs.statSync(path.join(ctx.root, rel)); } catch (e) { ok = false; break; }
+        try { st = fs.statSync(safePath(ctx.root, rel)); } catch (e) { ok = false; break; }
         if (!n || n.m !== st.mtimeMs || n.sz !== st.size) { ok = false; break; }
       }
     }

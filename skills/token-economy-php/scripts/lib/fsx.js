@@ -1,10 +1,11 @@
 'use strict';
-// fsx.js — список файлов проекта, чтение и запись текста с сохранением кодировки (UTF-8 / windows-1251),
+// fsx.js — список файлов проекта, чтение и запись текста с сохранением UTF-8 / windows-1251 / UTF-16LE/BE,
 // BOM и переводов строк. Нужен, потому что многие сайты на Битриксе до сих пор в cp1251.
 
 const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
+const crypto = require('crypto');
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const SKIP_DIRS = new Set(['.git', '.idea', '.vscode', 'node_modules', '.bx-cache', '.token-economy']);
@@ -20,23 +21,49 @@ const SKIP_PREFIXES = {
 };
 
 const posix = (p) => String(p).replace(/\\/g, '/');
+const inside = (root, abs) => { const rel = path.relative(root, abs); return rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel); };
+
+/** Путь внутри корня после разрешения ссылок, в том числе у ещё не созданного файла. */
+function safePath(root, rel) {
+  const abs = path.resolve(root, rel);
+  const realRoot = fs.realpathSync(root);
+  if (!inside(path.resolve(root), abs) && !inside(realRoot, abs)) throw new Error('путь вне рабочей директории: ' + rel);
+  let parent = abs;
+  const rest = [];
+  for (;;) {
+    try {
+      const real = path.resolve(fs.realpathSync(parent), ...rest);
+      if (!inside(realRoot, real)) throw new Error('путь вне рабочей директории: ' + rel);
+      return real;
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+      // realpath не разрешил существующую ссылку: нельзя принимать её за новый каталог.
+      let st;
+      try { st = fs.lstatSync(parent); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+      if (st) throw new Error('не удалось разрешить путь: ' + rel);
+      const next = path.dirname(parent);
+      if (next === parent) throw e;
+      rest.unshift(path.basename(parent));
+      parent = next;
+    }
+  }
+}
 
 // типичные docroot-каталоги битрикс-деплоя
 const DOCROOTS = ['www', 'public_html', 'httpdocs', 'web', 'public', 'htdocs', 'site', 'docroot'];
-// local/ — распространённое имя каталога и вне Битрикса: маркер считаем действительным
-// только с одним из типичных битрикс-подкаталогов
+// bitrix/ и local/ считаются маркерами только с типичными подкаталогами.
 const BITRIX_LOCAL_SUBDIRS = ['components', 'templates', 'modules', 'php_interface'];
 
 const isDirAt = (p, name) => { try { return fs.statSync(path.join(p, name)).isDirectory(); } catch (e) { return false; } };
 
 /**
- * Маркер Битрикса в каталоге dir ('' — сам projectRoot): каталог bitrix/ либо local/
+ * Маркер Битрикса в каталоге dir ('' — сам projectRoot): bitrix/ или local/
  * с одним из типичных подкаталогов (components, templates, modules, php_interface).
  * @returns {boolean}
  */
 function bitrixMarkerAt(projectRoot, dir) {
   const base = dir ? path.join(projectRoot, dir) : projectRoot;
-  if (isDirAt(base, 'bitrix')) return true;
+  if (BITRIX_LOCAL_SUBDIRS.some((s) => isDirAt(path.join(base, 'bitrix'), s))) return true;
   if (isDirAt(base, 'local')) return BITRIX_LOCAL_SUBDIRS.some((s) => isDirAt(path.join(base, 'local'), s));
   return false;
 }
@@ -70,6 +97,7 @@ function listFiles(projectRoot, docroot, exts, mode) {
       try { ents = fs.readdirSync(path.join(projectRoot, dir), { withFileTypes: true }); } catch (e) { return; }
       for (const e of ents) {
         const p = dir ? dir + '/' + e.name : e.name;
+        if (e.isSymbolicLink()) continue;
         if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(p); } else rel.push(p);
       }
     })('');
@@ -84,7 +112,7 @@ function listFiles(projectRoot, docroot, exts, mode) {
     if (inRoot === null && docroot) continue;
     if (prefixes.some((s) => inRoot.startsWith(s))) continue;
     let st;
-    try { st = fs.statSync(path.join(projectRoot, f)); } catch (e) { continue; }
+    try { st = fs.statSync(safePath(projectRoot, f)); } catch (e) { continue; }
     if (st.isFile() && st.size <= MAX_BYTES) out.push(f);
   }
   return out.sort();
@@ -102,20 +130,26 @@ function cp1251() {
 }
 
 /**
- * Читает файл и определяет кодировку: UTF-8 (в т.ч. чистый ASCII) либо windows-1251.
- * @returns {{text: string, enc: 'utf8'|'ascii'|'cp1251', bom: boolean, eol: 'crlf'|'lf'}}
+ * Читает UTF-16LE/BE по BOM, затем UTF-8 (в т.ч. ASCII), иначе windows-1251.
+ * @returns {{text: string, enc: 'utf8'|'ascii'|'cp1251'|'utf16le'|'utf16be', bom: boolean, eol: 'crlf'|'lf'}}
  */
 function readText(abs) {
   const buf = fs.readFileSync(abs);
-  let bom = false, body = buf;
-  if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) { bom = true; body = buf.subarray(3); }
-  let ascii = true;
-  for (let i = 0; i < body.length; i++) if (body[i] > 127) { ascii = false; break; }
-  let text, enc;
-  if (ascii) { text = body.toString('latin1'); enc = 'ascii'; }
-  else {
-    try { text = new TextDecoder('utf-8', { fatal: true }).decode(body); enc = 'utf8'; }
-    catch (e) { text = cp1251().decode(body); enc = 'cp1251'; }
+  let bom = false, body = buf, text, enc;
+  if (buf.length >= 2 && ((buf[0] === 0xFF && buf[1] === 0xFE) || (buf[0] === 0xFE && buf[1] === 0xFF))) {
+    bom = true;
+    enc = buf[0] === 0xFF ? 'utf16le' : 'utf16be';
+    try { text = new TextDecoder(enc === 'utf16le' ? 'utf-16le' : 'utf-16be', { fatal: true, ignoreBOM: true }).decode(buf.subarray(2)); }
+    catch (e) { throw new Error('некорректный UTF-16: ' + abs); }
+  } else {
+    if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) { bom = true; body = buf.subarray(3); }
+    let ascii = true;
+    for (let i = 0; i < body.length; i++) if (body[i] > 127) { ascii = false; break; }
+    if (ascii) { text = body.toString('latin1'); enc = 'ascii'; }
+    else {
+      try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(body); enc = 'utf8'; }
+      catch (e) { text = cp1251().decode(body); enc = 'cp1251'; }
+    }
   }
   const crlf = (text.match(/\r\n/g) || []).length, lf = (text.match(/(?<!\r)\n/g) || []).length;
   return { text, enc, bom, eol: crlf > lf ? 'crlf' : 'lf' };
@@ -125,6 +159,12 @@ function readText(abs) {
  * Кодирует текст обратно в исходную кодировку; символ вне cp1251 — ошибка (файл не портим).
  */
 function encodeText(text, enc, bom) {
+  enc = String(enc).toLowerCase().replace(/-/g, '');
+  if (enc === 'utf16le' || enc === 'utf16be') {
+    const body = Buffer.from(text, 'utf16le');
+    if (enc === 'utf16be') body.swap16();
+    return bom ? Buffer.concat([Buffer.from(enc === 'utf16be' ? [0xFE, 0xFF] : [0xFF, 0xFE]), body]) : body;
+  }
   let body;
   if (enc === 'cp1251') {
     cp1251();
@@ -135,14 +175,26 @@ function encodeText(text, enc, bom) {
       bytes.push(b);
     }
     body = Buffer.from(bytes);
-  } else body = Buffer.from(text, 'utf8');
+  } else if (enc === 'utf8' || enc === 'ascii') body = Buffer.from(text, 'utf8');
+  else throw new Error('неподдерживаемая кодировка: ' + enc);
   return bom ? Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), body]) : body;
 }
 
-function writeAtomic(abs, buf) {
-  const tmp = abs + '.bxtmp';
-  fs.writeFileSync(tmp, buf);
-  fs.renameSync(tmp, abs);
+function writeAtomic(abs, buf, opts = {}) {
+  if (opts.root) abs = safePath(opts.root, abs);
+  // wx защищает от подложенного tmp; nonce разделяет параллельные запуски и записи в одном процессе.
+  const tmp = abs + '.' + process.pid + '.' + crypto.randomBytes(12).toString('hex') + '.bxtmp';
+  let owned = false;
+  try {
+    const fd = fs.openSync(tmp, 'wx');
+    owned = true;
+    try { fs.writeFileSync(fd, buf); } finally { fs.closeSync(fd); }
+    if (opts.root) safePath(opts.root, abs);
+    if (opts.create) fs.linkSync(tmp, abs); // атомарно не перезаписывает появившийся файл
+    else fs.renameSync(tmp, abs);
+  } finally {
+    if (owned) { try { fs.unlinkSync(tmp); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
+  }
 }
 
-module.exports = { posix, detectDocroot, bitrixMarkerAt, DOCROOTS, listFiles, readText, encodeText, writeAtomic, MAX_BYTES, SKIP_PREFIXES };
+module.exports = { posix, safePath, detectDocroot, bitrixMarkerAt, DOCROOTS, listFiles, readText, encodeText, writeAtomic, MAX_BYTES, SKIP_PREFIXES };

@@ -20,7 +20,13 @@ node --test tests/token-economy-ts/edit-docs.test.js
 node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/edit-docs.test.js
 ```
 
-Тесты создают и удаляют только собственные временные проекты; зависимости проекта не загружаются.
+Тесты создают и удаляют только собственные временные проекты; зависимости проекта не загружаются. `npm install` не нужен. В существующих suites проверяются также сигнатуры (`symbols.test.js`), realpath/junction confinement, root exports, missing-dependency fallback, Unicode, Windows-регистр, фантомы из комментариев/шаблонов, JSON completeness и две цепочки по 6200 файлов (линейная и замкнутая).
+
+Штатная самопроверка скилла:
+
+```text
+node skills/token-economy-ts/scripts/graph-tool.js op=selftest
+```
 
 Тип проекта определяется автоматически при `graph op=info` (`projectType`: `angular` / `nest` / `node` / `ts` — по angular.json, `@angular/*`, `@nestjs/*`, серверным пакетам в package.json). Универсальные правила — в SKILL.md; Angular-специфика (селекторы, пайпы, generate) вынесена в references/angular.md и подключается только для Angular.
 

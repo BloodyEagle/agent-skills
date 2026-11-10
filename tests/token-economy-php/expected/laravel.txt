@@ -1,0 +1,79 @@
+$ op=info
+проект Laravel ^12.0 (composer.json), структура 11+ (bootstrap/app.php)
+пространство имён: App\
+маршруты: 5 (web.php: 5)
+модели: 2, миграций: 1, views: 2, провайдеры: 0, локали: ru
+стиль кода: файлов с классами в namespace 3, глобальные классы 0
+кодировка PHP-файлов проекта: utf8 1, cp1251 0, только ASCII 8
+найдено: routes/web.php, app/Models, bootstrap/app.php, database/migrations, resources/views, lang, composer.json
+в индексе файлов: 9 (9 своих)
+exit=0
+
+$ op=routes
+маршруты: 5, показано 5
+routes/web.php:
+  GET     /posts  PostController@index  [posts.index]  L5
+  GET     /posts/{post}  PostController@show  [posts.show]  L6
+  GET     /comments  CommentController@index  [comments.index]  L7
+  POST    /comments  CommentController@store  [comments.store]  L7
+  GET     /about  Closure  [about]  L8
+exit=0
+
+$ op=model name=Post
+App\Models\Post extends Model  (app/Models/Post.php:5)
+  таблица: posts (явно $table)
+  создание: 2026_01_01_000000_create_posts_table.php:8
+    колонки: id id, title string, body text, user_id foreignId [constrained], created_at timestamps, updated_at timestamps
+    внешние ключи: user_id → users
+  fillable: title, body, user_id
+  связи:
+    hasMany       comments → Comment  (app/Models/Comment.php)  L8
+    belongsTo     author → User  fk: user_id  L9
+  обратные связи:
+    Comment::post (belongsTo)  (app/Models/Comment.php:7)
+  scopes: published
+  используется из: app/Http/Controllers/PostController.php, app/Models/Comment.php
+exit=0
+
+$ op=container type=App\Contracts\PaymentGateway
+App\Contracts\PaymentGateway в контейнере:
+  явных привязок и инжекций не найдено (разрешится автосвязыванием, если класс конкретный)
+exit=0
+
+$ op=blade name=posts.index
+posts.index — resources/views/posts/index.blade.php  [view]  (8 строк, ascii)
+расширяет: layouts.app L1
+@section: content
+переменные: p
+@lang: posts.title
+рендерится из (1):
+  app/Http/Controllers/PostController.php:8  (PostController::index)
+exit=0
+
+$ op=console
+команды и расписание не найдены (app/Console/Commands, routes/console.php, Kernel::schedule)
+exit=0
+
+$ op=route url=/posts method=GET
+GET /posts
+маршрут: GET /posts → PostController@index  [posts.index]  (routes/web.php:5)
+контроллер: App\Http\Controllers\PostController (app/Http/Controllers/PostController.php:6-9)
+  public function index()
+  рендерит view: posts.index  →  resources/views/posts/index.blade.php  (app/Http/Controllers/PostController.php:8)
+exit=0
+
+$ op=lang query=Записи
+posts.title
+  ru: Записи  (lang/ru/posts.php:2)
+  используется в: resources/views/posts/index.blade.php:6
+exit=0
+
+$ op=symbol name=App\Models\Post
+App\Models\Post  class  app/Models/Post.php:5-11
+exit=0
+
+$ op=deps file=app/Http/Controllers/PostController.php
+app/Http/Controllers/PostController.php [controller]: использует — 2 (глубина 1)
+1 app/Models/Post.php [model] (class)
+1 resources/views/posts/index.blade.php [view] (template)
+exit=0

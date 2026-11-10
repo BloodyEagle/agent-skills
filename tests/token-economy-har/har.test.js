@@ -260,6 +260,139 @@ test('redact CLI: секреты удалены, размеры сохранен
     });
 });
 
+test('search/entry не являются redaction: секреты видны до очистки HAR', () => {
+    const entry = {
+        request: {
+            method: 'GET', url: 'https://example.test/?token=fixture_query_secret',
+            headers: [{ name: 'Authorization', value: 'fixture_header_secret' }]
+        },
+        response: { status: 200, content: { mimeType: 'application/json', text: '{"token":"fixture_body_secret"}' } }
+    };
+    withDocument({ log: { entries: [entry] } }, (file, directory) => {
+        const search = cli(['search', 'GET', '-f', file, '--json']).stdout;
+        assert.ok(search.includes('fixture_query_secret'));
+        const detail = cli(['entry', '0', '-f', file, '--body', '2k', '--json']).stdout;
+        assert.ok(detail.includes('fixture_header_secret'));
+        assert.ok(detail.includes('fixture_body_secret'));
+        const output = path.join(directory, 'clean.har');
+        cli(['redact', '-f', file, '-o', output]);
+        const clean = cli(['entry', '0', '-f', output, '--body', '2k', '--json']).stdout;
+        assert.ok(!clean.includes('fixture_query_secret') && !clean.includes('fixture_header_secret') && !clean.includes('fixture_body_secret'));
+    });
+});
+
+test('redact CLI: JOSE/query/long blobs в обычном и потоковом режиме', () => {
+    const unsigned = `${Buffer.from('{"alg":"none"}').toString('base64url')}.e30.`;
+    const jwe = `${Buffer.from('{"alg":"dir","enc":"A256GCM"}').toString('base64url')}..a.b.c`;
+    const blob = 'A'.repeat(64 * 1024);
+    const longToken = 'fixture_' + 's'.repeat(64 * 1024) + '_tail';
+    const document = {
+        log: {
+            pages: [{ id: 'p', title: `audit token=${longToken}` }],
+            entries: [{
+                request: { url: `https://user:${longToken}@example.test/?q=keep` },
+                response: { bodySize: 999, content: {
+                    size: 1999, mimeType: 'application/json', encoding: 'base64',
+                    text: Buffer.from(JSON.stringify({ blob, unsigned, encrypted: jwe, label: `access_token=${longToken}\nnext=kept` })).toString('base64')
+                } }
+            }]
+        }
+    };
+    withDocument(document, (file, directory) => {
+        let first;
+        for (const flags of [[], ['--stream']]) {
+            const output = path.join(directory, flags.length ? 'stream.har' : 'clean.har');
+            cli(['redact', '-f', file, '-o', output, ...flags]);
+            const raw = fs.readFileSync(output, 'utf8');
+            const clean = JSON.parse(raw);
+            assert.ok(!raw.includes('fixture_') && !raw.includes('_tail'));
+            const entry = clean.log.entries[0];
+            const body = JSON.parse(Buffer.from(entry.response.content.text, 'base64').toString('utf8'));
+            assert.equal(body.blob, blob);
+            assert.equal(body.unsigned, '[REDACTED]');
+            assert.equal(body.encrypted, '[REDACTED]');
+            assert.equal(body.label, 'access_token=[REDACTED]\nnext=kept');
+            assert.equal(clean.log.pages[0].title, 'audit token=[REDACTED]');
+            assert.equal(entry.request.url, 'https://example.test/?q=keep');
+            assert.equal(entry.response.bodySize, 999);
+            assert.equal(entry.response.content.size, 1999);
+            if (first) assert.deepEqual(clean, first);
+            else first = clean;
+        }
+    });
+});
+
+test('redact CLI: bounded 100 MiB HAR сохраняет blobs и не оставляет секретов', { timeout: 180000 }, async t => {
+    const { openHar } = require('../../skills/token-economy-har/lib/parse');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'har-redaction-100m-'));
+    const file = path.join(directory, 'input.har');
+    const output = path.join(directory, 'clean.har');
+    const blob = 'A'.repeat(256 * 1024);
+    const secret = 'fixture_redaction_sentinel';
+    const unsigned = Buffer.from('{"alg":"none"}').toString('base64url') + '.e30.';
+    const jwe = Buffer.from('{"alg":"dir","enc":"A256GCM"}').toString('base64url') + '..a.b.c';
+    const body = JSON.stringify({ blob, token: secret, label: `access_token=${secret}`, unsigned, encrypted: jwe });
+    const header = '{"log":{"version":"1.2","pages":[],"entries":[';
+    const limit = 100 * 1024 ** 2;
+    let bytes = Buffer.byteLength(header) + 3;
+    let count = 0;
+    try {
+        const fd = fs.openSync(file, 'wx', 0o600);
+        try {
+            fs.writeFileSync(fd, header);
+            while (bytes < limit) {
+                const entry = {
+                    time: 10, request: { method: 'GET', url: `https://example.test/${count}?token=${secret}&q=keep` },
+                    response: { status: 200, bodySize: blob.length, content: {
+                        size: blob.length, mimeType: 'application/json',
+                        text: count % 2 ? Buffer.from(body).toString('base64') : body,
+                        ...(count % 2 ? { encoding: 'base64' } : {})
+                    } }
+                };
+                const encoded = `${count ? ',' : ''}${JSON.stringify(entry)}`;
+                fs.writeFileSync(fd, encoded);
+                bytes += Buffer.byteLength(encoded);
+                count++;
+            }
+            fs.writeFileSync(fd, ']}}');
+        } finally {
+            fs.closeSync(fd);
+        }
+        const started = performance.now();
+        const child = spawnSync(process.execPath, [CLI, 'redact', '-f', file, '-o', output, '--stream', '--json'], {
+            encoding: 'utf8', timeout: 120000, maxBuffer: 16 * 1024, windowsHide: true
+        });
+        const durationMs = performance.now() - started;
+        assert.ifError(child.error);
+        assert.equal(child.status, 0, child.stderr);
+        assert.ok(durationMs < 120000, '100 MiB redaction должен уложиться в 120 секунд');
+        assert.ok(Buffer.byteLength(child.stdout) <= 8192);
+        assert.ok(!child.stdout.includes(secret) && !child.stderr.includes(secret));
+        assert.equal(JSON.parse(child.stdout).requests, count);
+        const cleaned = await openHar(output, { stream: true });
+        let checked = 0;
+        for await (const { entry } of cleaned.entries) {
+            const content = entry.response.content;
+            const decoded = content.encoding === 'base64' ? Buffer.from(content.text, 'base64').toString('utf8') : content.text;
+            const value = JSON.parse(decoded);
+            assert.ok(!JSON.stringify(entry).includes(secret) && !decoded.includes(secret), 'секрет не должен оставаться и в base64');
+            assert.equal(value.blob, blob);
+            assert.equal(value.token, '[REDACTED]');
+            assert.equal(value.label, 'access_token=[REDACTED]');
+            assert.equal(value.unsigned, '[REDACTED]');
+            assert.equal(value.encrypted, '[REDACTED]');
+            assert.equal(content.size, blob.length);
+            assert.equal(entry.response.bodySize, blob.length);
+            checked++;
+        }
+        assert.equal(checked, count);
+        assert.equal(fs.statSync(file).size, bytes);
+        t.diagnostic(JSON.stringify({ inputBytes: bytes, outputBytes: fs.statSync(output).size, stdoutBytes: Buffer.byteLength(child.stdout), requests: count, durationMs }));
+    } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});
+
 test('битый HAR: код 2, нет traceback/фрагмента тела/частичного clean.har', () => {
     for (const flags of [[], ['--stream']]) {
         const result = cli(['info', '-f', fixture('invalid'), '--json', ...flags], 2);

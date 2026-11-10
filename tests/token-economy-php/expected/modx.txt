@@ -1,0 +1,66 @@
+$ op=info
+проект MODX Revolution
+версия: 3.1.2-pl
+файловых элементов: 2 (extras: acme), tpl-файлов: 1
+ВНИМАНИЕ: сниппеты, плагины, чанки и шаблоны, созданные в БД, файловому индексу недоступны — ищи их вызовы тегами через search (например query=[[$) или op=element / op=tpl по файловым элементам.
+стиль кода: файлов с классами в namespace 0, глобальные классы 0
+кодировка PHP-файлов проекта: utf8 2, cp1251 0, только ASCII 4
+в индексе файлов: 6 (6 своих)
+exit=0
+
+$ op=symbol name=modX
+modX: не найдено
+exit=0
+
+$ op=outline file=core/model/modx/modx.class.php core=true
+core/model/modx/modx.class.php  [class]  (10 строк, ascii)
+namespace MODX\Revolution
+L3-9      class modX
+L5-5        public function runSnippet($snipName, array $params = [])
+L6-6        public function getChunk($name, array $properties = [])
+L7-7        public function invokeEvent($eventName, array $params = [])
+L8-8        public function getObject($className, $criteria = null)
+exit=0
+
+$ op=search query=runSnippet
+assets/components/mysnippet/snippet.php
+  5: $out = $modx->runSnippet('hello', ['name' => 'мир']);
+-- совпадений: 1, файлов: 1
+exit=0
+
+$ op=element name=hello
+snippet acme:hello  (core/components/acme/elements/snippets/hello.php)
+  вызывают: assets/components/mysnippet/snippet.php (snippet), templates/base.tpl (snippet)
+exit=0
+
+$ op=tpl name=templates/base.tpl
+templates/base.tpl  [tpl base]  (7 строк, ascii)
+fenom include: chunks/headerChunk.tpl L3
+настройки [[++]]: site_name
+TV [[*]]: pagetitle
+плейсхолдеры [[+]]: content
+вызовы сниппетов (2):
+  L2  [[pdoMenu]]
+  L5  [[hello]]
+чанки (1):
+  L4  [[$headerChunk]]
+связаны с ним: —
+exit=0
+
+$ op=rdeps file=acme:hello
+core/components/acme/elements/snippets/hello.php [snippet acme:hello]: используют — 2 (глубина 1)
+1 assets/components/mysnippet/snippet.php [extra mysnippet] (snippet)
+1 templates/base.tpl [tpl base] (snippet)
+exit=0
+
+$ op=component id=bitrix:menu
+Ошибка: component: операция доступна в проектах bitrix; здесь режим — MODX. Общие операции (search, outline, symbol, deps, rdeps, read, patch) работают в любом проекте.
+exit=1
+
+$ op=routes
+Ошибка: routes: операция доступна в проектах laravel; здесь режим — MODX. Общие операции (search, outline, symbol, deps, rdeps, read, patch) работают в любом проекте.
+exit=1
+
+$ op=route url=/about/
+Ошибка: в MODX соответствие URL → ресурс хранится в БД (modx_site_content); файловый разбор маршрутов не применим. Ищи шаблон ресурса в БД, файловые элементы — op=element / op=tpl
+exit=1

@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
+const crypto = require('crypto');
 
 const MAX_BYTES = 2 * 1024 * 1024;
 // сборочные и служебные каталоги, где нет исходников проекта
@@ -20,6 +21,36 @@ const skipSegments = (segs) => {
 };
 
 const posix = (p) => String(p).replace(/\\/g, '/');
+
+/** Путь внутри корня: проверяет реальные пути всех существующих предков, включая ссылки. */
+function safePath(root, rel) {
+  root = path.resolve(root);
+  const abs = path.resolve(root, rel);
+  const inside = (base, file) => {
+    const r = path.relative(base, file);
+    return r !== '..' && !r.startsWith('..' + path.sep) && !path.isAbsolute(r);
+  };
+  if (!inside(root, abs)) throw new Error('путь вне рабочей директории: ' + rel);
+  let realRoot;
+  try { realRoot = fs.realpathSync(root); }
+  catch (e) { throw new Error('не удалось проверить корневой путь: ' + root); }
+  let current = root, missing = false;
+  for (const part of path.relative(root, abs).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    if (missing) continue;
+    let st;
+    try { st = fs.lstatSync(current); }
+    catch (e) {
+      if (e.code === 'ENOENT') { missing = true; continue; }
+      throw new Error('не удалось проверить путь: ' + rel);
+    }
+    let real;
+    try { real = fs.realpathSync(current); }
+    catch (e) { throw new Error((st.isSymbolicLink() ? 'не удалось разрешить ссылку: ' : 'не удалось проверить путь: ') + rel); }
+    if (!inside(realRoot, real)) throw new Error('путь вне рабочей директории: ' + rel);
+  }
+  return abs;
+}
 
 /**
  * Файлы проекта (пути относительно root): git ls-files (учитывает .gitignore), иначе обход каталогов.
@@ -48,7 +79,7 @@ function listFiles(root, exts) {
     if (exts && !exts.some((e) => f.toLowerCase().endsWith(e))) continue;
     if (skipSegments(f.split('/').slice(0, -1)) || f.split('/').slice(0, -1).some((seg) => SKIP_DIRS.has(seg))) continue;
     let st;
-    try { st = fs.statSync(path.join(root, f)); } catch (e) { continue; }
+    try { st = fs.statSync(safePath(root, f)); } catch (e) { continue; }
     if (st.isFile() && st.size <= MAX_BYTES) out.push(f);
   }
   return out.sort();
@@ -104,9 +135,13 @@ function encodeText(text, enc, bom) {
 }
 
 function writeAtomic(abs, buf) {
-  const tmp = abs + '.bxtmp';
-  fs.writeFileSync(tmp, buf);
-  fs.renameSync(tmp, abs);
+  const tmp = abs + '.' + process.pid + '.' + crypto.randomBytes(8).toString('hex') + '.tmp';
+  try {
+    fs.writeFileSync(tmp, buf, { flag: 'wx' });
+    fs.renameSync(tmp, abs);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (e) { /* rename уже убрал временный файл */ }
+  }
 }
 
-module.exports = { posix, listFiles, readText, encodeText, writeAtomic, MAX_BYTES, SKIP_DIRS };
+module.exports = { posix, safePath, listFiles, readText, encodeText, writeAtomic, MAX_BYTES, SKIP_DIRS };

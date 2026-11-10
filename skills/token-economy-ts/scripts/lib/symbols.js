@@ -1,8 +1,108 @@
 const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'function', 'return', 'new', 'else', 'do', 'try', 'finally', 'typeof', 'instanceof', 'in', 'of', 'case', 'throw', 'await']);
 
-function mask(text) {
-    return text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|'(?:\\[\s\S]|[^'\\])*'|"(?:\\[\s\S]|[^"\\])*"|`(?:\\[\s\S]|[^`\\])*`|\/(?![/*])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\n\\])+\/[dgimsuvy]*/g,
-        value => value.replace(/[^\n\r]/g, ' '));
+/**
+ * Маскирует строки, комментарии и regex; выражения ${…} остаются кодом.
+ * @param {string} text Исходный текст.
+ * @returns {string} Маска той же длины с сохранёнными переводами строк.
+ */
+function sourceCodeMask(text) {
+    const out = text.split('');
+    const stack = [{kind: 'code', depth: 0}];
+    const parens = [];
+    const controlWords = new Set(['if', 'while', 'for', 'with', 'switch', 'catch']);
+    const regexWords = new Set(['return', 'throw', 'case', 'typeof', 'void', 'delete', 'yield', 'await', 'new', 'instanceof', 'in', 'of', 'else', 'do']);
+    let i = 0, last = '', word = '';
+    const blank = (start, end) => {
+        for (let k = start; k < end; k++) if (text[k] !== '\n' && text[k] !== '\r') out[k] = ' ';
+    };
+    while (i < text.length) {
+        const c = text[i], next = text[i + 1], top = stack[stack.length - 1];
+        if (top.kind === 'template') {
+            if (c === '\\') { blank(i, Math.min(i + 2, text.length)); i += 2; continue; }
+            if (c === '`') { blank(i, i + 1); stack.pop(); i++; last = 'w'; word = ''; continue; }
+            if (c === '$' && next === '{') {
+                blank(i, i + 2); stack.push({kind: 'code', depth: 0}); i += 2; last = ''; word = ''; continue;
+            }
+            blank(i, i + 1); i++; continue;
+        }
+        if (c === '/' && (next === '/' || next === '*')) {
+            const start = i;
+            i += 2;
+            if (next === '/') while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i++;
+            else {
+                while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+                i = Math.min(i + 2, text.length);
+            }
+            blank(start, i); continue;
+        }
+        if (c === "'" || c === '"') {
+            const start = i++;
+            while (i < text.length && text[i] !== c && text[i] !== '\n' && text[i] !== '\r') {
+                if (text[i] === '\\') i++;
+                i++;
+            }
+            if (text[i] === c) i++;
+            blank(start, i); last = 'w'; word = ''; continue;
+        }
+        if (c === '`') { blank(i, i + 1); stack.push({kind: 'template'}); i++; continue; }
+        if (c === '/' && (last === '' || '([=!:&|?,;{+-*%^~<>'.includes(last) || regexWords.has(word))) {
+            let end = i + 1, inClass = false, closed = false;
+            while (end < text.length && text[end] !== '\n' && text[end] !== '\r') {
+                const d = text[end];
+                if (d === '\\') { end += 2; continue; }
+                if (d === '[') inClass = true;
+                else if (d === ']') inClass = false;
+                else if (d === '/' && !inClass) { end++; closed = true; break; }
+                end++;
+            }
+            if (closed) {
+                while (end < text.length && /[a-z]/i.test(text[end])) end++;
+                blank(i, end); i = end; last = 'w'; word = ''; continue;
+            }
+        }
+        if (c === '{' && stack.length > 1) top.depth++;
+        if (c === '}' && stack.length > 1) {
+            if (top.depth === 0) { blank(i, i + 1); stack.pop(); i++; continue; }
+            top.depth--;
+        }
+        if (c === '(') parens.push(controlWords.has(word));
+        if (c === ')') {
+            last = parens.pop() ? ';' : ')';
+            word = '';
+            i++;
+            continue;
+        }
+        if ((c === '+' || c === '-') && next === c) {
+            // Postfix ++/-- завершает выражение, prefix оставляет возможность regex-операнда.
+            last = last === 'w' || ')]}'.includes(last) ? 'w' : c;
+            word = '';
+            i += 2;
+            continue;
+        }
+        const point = String.fromCodePoint(text.codePointAt(i));
+        if (/[$_\p{ID_Start}]/u.test(point)) {
+            const start = i;
+            i += point.length;
+            while (i < text.length) {
+                const nextPoint = String.fromCodePoint(text.codePointAt(i));
+                if (!/[$\u200C\u200D\p{ID_Continue}]/u.test(nextPoint)) break;
+                i += nextPoint.length;
+            }
+            word = text.slice(start, i); last = 'w'; continue;
+        }
+        if (!/\s/.test(c)) { last = c; word = ''; }
+        i++;
+    }
+    return out.join('');
+}
+
+/**
+ * Проверяет инициализатор стрелочной функции, включая generic и тип результата.
+ * @param {string} text Маска инициализатора.
+ * @returns {boolean} Начинается ли текст со стрелочной функции.
+ */
+function isArrowExpression(text) {
+    return /^(?:async\s+)?(?:<[^;\n]+>\s*)?(?:\([^;\n]*\)\s*(?::[^=;\n]+)?=>|[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*\s*=>)/u.test(text.trim());
 }
 
 function params(text) {
@@ -19,18 +119,20 @@ function params(text) {
 function classify(text) {
     const t = text.trim();
     let m;
-    if ((m = t.match(/^(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/))) return {kind: 'class', name: m[1]};
-    if ((m = t.match(/^(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)/))) return {kind: 'interface', name: m[1]};
-    if ((m = t.match(/^(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)/))) return {kind: 'enum', name: m[1]};
-    if ((m = t.match(/^(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=/))) return {kind: 'type', name: m[1]};
-    if ((m = t.match(/^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/))) return {kind: 'function', name: m[1]};
-    if ((m = t.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^;]*\)\s*(?::[^=]+)?=>|[A-Za-z_$][\w$]*\s*=>|function\b)/))) return {kind: 'function', name: m[1] + '(' + params(t) + ')'};
-    if ((m = t.match(/^(?:module\.exports|exports)\.([A-Za-z_$][\w$]*)\s*=/))) return {kind: 'export', name: m[1]};
-    m = t.match(/^(?:(?:public|private|protected|static|readonly|override|abstract|async|get|set)\s+|\*\s*)*(#?[A-Za-z_$][\w$]*)\s*\([^;]*\)\s*(?:\{|=>|:)/);
+    if ((m = t.match(/^(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'class', name: m[1]};
+    if ((m = t.match(/^(?:export\s+)?interface\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'interface', name: m[1]};
+    if ((m = t.match(/^(?:export\s+)?(?:const\s+)?enum\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'enum', name: m[1]};
+    if ((m = t.match(/^(?:export\s+)?type\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*=/u))) return {kind: 'type', name: m[1]};
+    if ((m = t.match(/^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'function', name: m[1]};
+    m = t.match(/^(?:export\s+)?(?:const|let|var)\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*=\s*([\s\S]*)/u);
+    if (m && (isArrowExpression(m[2]) || /^(?:async\s+)?function\b/.test(m[2]))) return {kind: 'function', name: m[1] + '(' + params(m[2]) + ')'};
+    if ((m = t.match(/^(?:module\.exports|exports)\.([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*=/u))) return {kind: 'export', name: m[1]};
+    m = t.match(/^(?:(?:public|private|protected|static|readonly|override|abstract|async|get|set)\s+|\*\s*)*(#?[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*\([^;]*\)\s*(?:\{|=>|:)/u);
     if (m && !KEYWORDS.has(m[1])) return {kind: m[1].startsWith('#') ? 'private-method' : 'method', name: m[1] + '(' + params(t) + ')'};
-    m = t.match(/^(?:(?:public|private|protected|static|readonly|override|declare)\s+)*(#?[A-Za-z_$][\w$]*)[?!]?\s*[:=]/);
+    m = t.match(/^(?:(?:public|private|protected|static|readonly|override|declare)\s+)*(#?[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)[?!]?\s*[:=]/u);
     if (m && !KEYWORDS.has(m[1])) {
-        const arrow = /=\s*(?:async\s*)?(?:\([^;]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(t);
+        const assignment = t.indexOf('=');
+        const arrow = assignment >= 0 && isArrowExpression(t.slice(assignment + 1));
         const kind = arrow ? 'method' : 'property';
         return {kind: m[1].startsWith('#') ? 'private-' + kind : kind, name: arrow ? m[1] + '(' + params(t) + ')' : m[1]};
     }
@@ -44,7 +146,7 @@ function classify(text) {
  */
 function parseSymbols(text) {
     const normalized = text.replace(/\r\n?/g, '\n');
-    const lines = mask(normalized).split('\n');
+    const lines = sourceCodeMask(normalized).split('\n');
     const symbols = [];
     const classes = [];
     let depth = 0;
@@ -64,7 +166,7 @@ function parseSymbols(text) {
         if (objectExport || (exportDepth !== null && depth === exportDepth)) {
             const entries = objectExport ? code.slice(objectExport.index + objectExport[0].length) : code;
             for (const entry of entries.split(',')) {
-                const m = entry.trim().match(/^([A-Za-z_$][\w$]*)\s*(?=[:,}(]|$)/);
+                const m = entry.trim().match(/^([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*(?=[:,}(]|$)/u);
                 if (m && !KEYWORDS.has(m[1])) symbols.push({kind: 'export', name: m[1], line: i + 1});
             }
         }
@@ -78,4 +180,4 @@ function parseSymbols(text) {
     return symbols;
 }
 
-module.exports = {parseSymbols};
+module.exports = {parseSymbols, sourceCodeMask, isArrowExpression};

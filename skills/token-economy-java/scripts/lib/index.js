@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { listFiles, readText } = require('./fsx');
+const { listFiles, readText, safePath, writeAtomic } = require('./fsx');
 const { parseJava } = require('./java');
 
 const VERSION = 1; // формат кэша и индекса; при смене разбора увеличить
@@ -17,12 +17,12 @@ const KIND_ORDER = ['h', 'i', 'u'];
 function loadJson(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } }
 
 function saveJson(p, obj) {
+  const root = path.dirname(path.dirname(p));
+  safePath(root, p);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const gi = path.join(path.dirname(p), '.gitignore');
-  if (!fs.existsSync(gi)) fs.writeFileSync(gi, '*\n');
-  const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(obj));
-  fs.renameSync(tmp, p);
+  const gi = safePath(root, path.join(path.dirname(p), '.gitignore'));
+  if (!fs.existsSync(gi)) writeAtomic(gi, '*\n');
+  writeAtomic(p, JSON.stringify(obj));
 }
 
 function makeCtx(opts) { return { root: path.resolve(opts.root || '.') }; }
@@ -53,7 +53,7 @@ function roleOf(d, p) {
 
 function buildIndex(ctx) {
   const files = javaFiles(ctx);
-  const cacheFile = path.join(ctx.root, CACHE_DIR, 'cache.json');
+  const cacheFile = safePath(ctx.root, path.join(CACHE_DIR, 'cache.json'));
   let cache = loadJson(cacheFile) || {};
   if (cache.v !== VERSION) cache = {};
   const old = cache.files || {};
@@ -158,7 +158,7 @@ function buildIndex(ctx) {
  * Актуальный индекс: пересобирается сам, если изменился список файлов, их размер или время.
  */
 function ensureIndex(ctx) {
-  const idx = loadJson(path.join(ctx.root, CACHE_DIR, 'index.json'));
+  const idx = loadJson(safePath(ctx.root, path.join(CACHE_DIR, 'index.json')));
   if (idx && idx.v === VERSION) {
     const files = javaFiles(ctx);
     const have = new Map(idx.nodes.map((n) => [n.p, n]));

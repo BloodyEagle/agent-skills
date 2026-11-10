@@ -294,3 +294,120 @@ test('AS-04: усечённый deps не удостоверяет полнот�
     ['a.ts', Array.from({length: 65}, (_, i) => `import "./b${i}";`).join('\n')],
     ...Array.from({length: 65}, (_, i) => [`b${i}.ts`, 'export const b = 1;'])
 ])));
+
+for (const ext of ['ts', 'tsx']) {
+    test('audit: объявления в comments/templates не создают entities .' + ext, () => isolated(root => {
+        const result = json(root, 'graph-tool', {op: 'node', file: 'masked.' + ext, root: '.'});
+        assert.deepEqual(result.entities.map(({name, line}) => ({name, line})), [{name: 'Real', line: 7}]);
+        for (const name of ['CommentGhost', 'TemplateGhost']) {
+            assert.deepEqual(json(root, 'graph-tool', {op: 'symbol', name, root: '.'}).definedIn, []);
+        }
+    }, {['masked.' + ext]: '/*\nexport class CommentGhost {}\n*/\n`\nexport class TemplateGhost {}\n`;\nexport class Real {}\n'}));
+}
+
+test('audit: старый parse-cache не сохраняет фантомы после обновления парсера', () => isolated(root => {
+    json(root, 'graph-tool', {op: 'build', root: '.'});
+    const graphFile = path.join(root, 'graph-deps.json');
+    const cacheFile = path.join(root, '.graph-deps-cache.json');
+    const graph = JSON.parse(fs.readFileSync(graphFile, 'utf8'));
+    const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    graph.version = cache.__v = 7;
+    const ghost = {name: 'StaleGhost', kind: 'class', line: 1};
+    graph.files[0].entities = [ghost];
+    graph.symbols = {StaleGhost: [1]};
+    cache['a.ts'].data.entities = [ghost];
+    cache['a.ts'].data.exports = ['StaleGhost'];
+    fs.writeFileSync(graphFile, JSON.stringify(graph));
+    fs.writeFileSync(cacheFile, JSON.stringify(cache));
+    assert.deepEqual(json(root, 'graph-tool', {op: 'symbol', name: 'StaleGhost', root: '.'}).definedIn, []);
+    assert.equal(json(root, 'graph-tool', {op: 'symbol', name: 'Real', root: '.'}).definedIn.length, 1);
+}, {'a.ts': 'export class Real {}'}));
+
+function chainFiles(length, cycle = false) {
+    const file = i => 'chain/f' + String(i).padStart(5, '0') + '.ts';
+    return Object.fromEntries(Array.from({length}, (_, i) => [file(i), i + 1 < length || cycle
+        ? 'import "./' + path.basename(file((i + 1) % length)) + '";\n'
+        : 'export const end = 1;\n']));
+}
+
+for (const cycle of [false, true]) {
+    test('audit: Тарьян обрабатывает 6200 файлов, ' + (cycle ? 'цикл' : 'цепочка'), {timeout: 60000}, () => isolated(root => {
+        const first = 'chain/f00000.ts';
+        assert.deepEqual(paths(json(root, 'graph-tool', {op: 'node', file: first, root: '.'}).imports), ['chain/f00001.ts']);
+        assert.deepEqual(paths(deps(root, first).imports), ['chain/f00001.ts']);
+        const result = json(root, 'graph-tool', {op: 'cycles', root: '.'});
+        assert.equal(result.count, cycle ? 1 : 0);
+        if (cycle) {
+            assert.equal(result.cycles[0].size, 6200);
+            assert.equal(result.cycles[0].sample.length, 15);
+        }
+    }, chainFiles(6200, cycle)));
+}
+
+test('audit: Тарьян не сливает SCC по перекрёстным рёбрам', () => isolated(root => {
+    const result = json(root, 'graph-tool', {op: 'cycles', root: '.'});
+    assert.deepEqual(result.cycles.map(group => group.slice().sort()).sort(), [['a.ts', 'b.ts'], ['d.ts', 'e.ts', 'f.ts']]);
+}, {'a.ts': 'import "./b"; import "./c";', 'b.ts': 'import "./a"; import "./d";',
+    'c.ts': 'import "./d";', 'd.ts': 'import "./e";', 'e.ts': 'import "./f";', 'f.ts': 'import "./d";',
+    'g.ts': 'import "./c"; import "./e";', 'h.ts': 'export const h = 1;'}));
+
+test('audit: неизвестный op не создаёт и не обновляет граф', () => isolated(root => {
+    const result = cli(root, 'graph-tool', {op: 'typo', root: '.'});
+    assert.equal(result.status, 1);
+    assert.match(JSON.parse(result.stdout).error, /Неизвестный op/);
+    for (const file of ['graph-deps.json', '.graph-deps-cache.json']) assert.equal(fs.existsSync(path.join(root, file)), false, file);
+    json(root, 'graph-tool', {op: 'build', root: '.'});
+    const before = ['graph-deps.json', '.graph-deps-cache.json'].map(file => fs.statSync(path.join(root, file)).mtimeMs);
+    fs.writeFileSync(path.join(root, 'a.ts'), 'export class Changed {}');
+    assert.equal(cli(root, 'graph-tool', {op: 'typo', root: '.'}).status, 1);
+    assert.deepEqual(['graph-deps.json', '.graph-deps-cache.json'].map(file => fs.statSync(path.join(root, file)).mtimeMs), before);
+}, {'a.ts': 'export class Original {}'}));
+
+test('audit: существующий JSON import не делает статический граф неполным', () => isolated(root => {
+    const result = deps(root, 'a.ts');
+    assert.deepEqual(paths(result.imports), ['b.ts']);
+    assert.equal(result.unresolved, 0);
+    assert.equal(result.completeness.complete, true);
+    assert.deepEqual(deps(root, 'c.js').imports, []);
+    assert.equal(deps(root, 'c.js').unresolved, 0);
+    fs.unlinkSync(path.join(root, 'data.json'));
+    const missing = deps(root, 'a.ts');
+    assert.equal(missing.unresolved, 1);
+    assert.deepEqual(missing.unresolvedPaths, ['./data.json']);
+    assert.equal(missing.completeness.complete, false);
+    fs.writeFileSync(path.join(root, 'data.json'), '{}');
+    assert.equal(deps(root, 'a.ts').completeness.complete, true);
+}, {'a.ts': 'import data from "./data.json"; import "./b";', 'b.ts': 'export const b = 1;',
+    'c.js': 'const data = require("./data.json");', 'data.json': '{}'}));
+
+test('audit: JSON resources через alias, baseUrl и query остаются вне source nodes', () => isolated(root => {
+    const result = deps(root, 'a.ts');
+    assert.deepEqual(result.imports, []);
+    assert.equal(result.unresolved, 0);
+    assert.equal(result.completeness.complete, true);
+    assert.equal(json(root, 'graph-tool', {op: 'stats', root: '.'}).files, 1);
+}, {'a.ts': 'import "@data/config.json"; import "data/config.json"; import "./data/config.json?raw";',
+    'data/config.json': '{}', 'tsconfig.json': '{"compilerOptions":{"baseUrl":".","paths":{"@data/*":["data/*"]}}}'}));
+
+test('audit: деление не маскирует require, настоящий regex маскируется', () => isolated(root => {
+    const result = deps(root, 'division.js');
+    assert.deepEqual(paths(result.imports), ['divisor.js']);
+    assert.equal(result.unresolved, 0);
+}, {'division.js': 'const ratio = total / require("./divisor") / scale;\nconst pattern = /require("ghost")/g;\n',
+    'divisor.js': 'module.exports = 2;'}));
+
+test('audit: graph arrow-свойства класса имеют kind method', () => isolated(root => {
+    for (const name of ['onClick', 'identity']) {
+        const result = json(root, 'graph-tool', {op: 'symbol', name, in: 'Service', root: '.'});
+        assert.deepEqual(result.definedIn.map(item => [item.kind, item.owner]), [['method', 'Service']]);
+    }
+}, {'arrows.ts': 'export class Service {\n  onClick = (event: Event): void => {};\n  identity = <T>(value: T) => value;\n}\n'}));
+
+test('audit: graph находит Unicode объявления и члены', () => isolated(root => {
+    for (const [name, kind] of [['Сервис', 'class'], ['привет', 'function'], ['cafe\u0301', 'const'], ['𐐀run', 'function']]) {
+        const result = json(root, 'graph-tool', {op: 'symbol', name, root: '.'});
+        assert.deepEqual(result.definedIn.map(item => item.kind), [kind], name);
+    }
+    const member = json(root, 'graph-tool', {op: 'symbol', name: 'сохранить', in: 'Сервис', root: '.'});
+    assert.deepEqual(member.definedIn.map(item => [item.kind, item.owner]), [['method', 'Сервис']]);
+}, {'unicode.ts': 'export class Сервис {\n  сохранить(): void {}\n}\nexport function привет() {}\nexport const cafe\u0301 = 1;\nexport function 𐐀run() {}\n'}));

@@ -120,7 +120,7 @@ function lex(src) {
       const three = src.substr(i, 3), two = src.substr(i, 2);
       if (three === '...') { push('op', '...', i, i + 3, line); i += 3; continue; }
       if (three === '?->') { push('op', '?->', i, i + 3, line); i += 3; continue; }
-      if (two === '::' || two === '->' || two === '=>' || two === '#[') { push('op', two, i, i + 2, line); i += 2; continue; }
+      if (two === '::' || two === '->' || two === '=>') { push('op', two, i, i + 2, line); i += 2; continue; }
       push('op', src[i], i, i + 1, line);
       i++;
     }
@@ -139,10 +139,9 @@ function matchBrackets(T) {
     if (t.k !== 'op') continue;
     if (OPEN[t.v]) stack.push(i);
     else if (t.v === ')' || t.v === ']' || t.v === '}') {
-      while (stack.length) {
-        const o = stack.pop();
-        if (OPEN[T[o].v] === t.v) { match[o] = i; match[i] = o; break; }
-      }
+      const o = stack[stack.length - 1];
+      // Чужая закрывающая скобка не должна разрушать внешнюю пару на неполном PHP.
+      if (o !== undefined && OPEN[T[o].v] === t.v) { stack.pop(); match[o] = i; match[i] = o; }
     }
   }
   return match;
@@ -195,6 +194,7 @@ function parsePhp(src) {
       if (T[k].k === 'name' && isOp(T[k + 1], '{') && T[k].v.endsWith('\\')) { // групповой импорт
         const prefix = T[k].v;
         const close = match[k + 1];
+        if (close <= k + 1) return end;
         let m = k + 2;
         while (m < close) { one(prefix, m, close); while (m < close && !isOp(T[m], ',')) m++; m++; }
         k = close + 1;
@@ -217,7 +217,7 @@ function parsePhp(src) {
     if (!T[j] || T[j].k !== 'name') return null; // closure
     const nameTok = T[j];
     let open = j + 1;
-    if (!isOp(T[open], '(')) return null;
+    if (!isOp(T[open], '(') || match[open] <= open) return null;
     // начало: модификаторы слева
     let start = i;
     const mods = [];
@@ -277,7 +277,8 @@ function parsePhp(src) {
     }
     if (!isOp(T[j], '{')) { out.decls.push(cls); return j + 1; }
     const close = match[j];
-    cls.end = close >= 0 ? T[close].l : T[j].l;
+    if (close <= j) { out.decls.push(cls); return j + 1; }
+    cls.end = T[close].l;
     const bodies = {};
     let k = j + 1;
     while (k < close) {

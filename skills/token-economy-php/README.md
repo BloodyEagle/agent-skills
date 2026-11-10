@@ -6,14 +6,14 @@
 
 ## Требования
 
-- **Node.js 18 или новее.** Код использует только возможности Node 12+, проверен на Node 22. Пакеты из npm не нужны, сеть не нужна.
+- **Node.js 18 или новее.** Проверки используют `node --test`; пакеты из npm и сеть не нужны.
 - **PHP не нужен.** Разбор выполняет собственный лексер в `scripts/lib/php.js`, проект не запускается.
-- **Проект:** обычный PHP, 1С-Битрикс любой версии (старое API и D7 в одном индексе), Laravel 8–13 (включая L11+ каркас с `bootstrap/app.php`; lumen распознаётся тоже) или MODX Revolution/Evolution (файловые элементы extras; элементы в БД недоступны). Режим определяется по надёжности маркеров: сначала `composer.json`/`artisan` (пакет `laravel/framework` — Laravel независимо от каталогов), затем структура — Битрикс по каталогу `bitrix/` или `local/` с одним из типичных подкаталогов (`components`, `templates`, `modules`, `php_interface`) в корне или во вложенном docroot (`www`, `public_html`, `httpdocs`, `web`, `public`, `htdocs`, `site`, `docroot`); MODX Revolution — по `manager/` + `connectors/` + `core/model/modx` (или `core/src/Revolution`), Evolution — по `manager/includes/` + `assets/`. Голая папка `local/` или `manager/` с `includes/` в корне маркером не считается.
+- **Проект:** обычный PHP, 1С-Битрикс (старое API и D7), Laravel 8–13 или MODX Revolution/Evolution (файловые элементы extras; элементы в БД недоступны). Сначала проверяются composer-пакеты Laravel/Lumen либо содержательный `artisan` со ссылкой на существующий `bootstrap/app.php`. Затем Битрикс: `bitrix/` или `local/` с типичным подкаталогом (`components`, `templates`, `modules`, `php_interface`) в корне или docroot (`www`, `public_html`, `httpdocs`, `web`, `public`, `htdocs`, `site`, `docroot`). MODX Revolution — `manager/` + `connectors/` + `core/model/modx` (или `core/src/Revolution`), Evolution — `manager/includes/` + `assets/`. Пустой `artisan`, голые `bitrix/`, `local/` и `manager/` не включают режим.
 - **Git** не обязателен. С ним список файлов берётся из `git ls-files` (учитывается `.gitignore`), без него — обход каталогов.
 - **Ядро Битрикса** (`bitrix/modules/main`, `iblock`…) в рабочей папке нужно только для операций с `"core":true`. Если ядра в репозитории нет, остальное работает без него.
 - **Запуск** из корня проекта или с параметром `root`.
 - **PowerShell:** команды — одной строкой, параметры argv-аргументами `ключ=значение`; кириллица через argv не портится (node читает командную строку через Unicode API Windows). Значения с пробелами — в одинарных кавычках, двойные кавычки в значениях не используй. Для правок с многострочными значениями — файл параметров (`@.bx-cache/payload.json`).
-- **Права:** скрипт пишет только в папку `.bx-cache` в корне проекта (кэш, внутри лежит `.gitignore` со звёздочкой) и, при `patch` и `create`, в указанный файл.
+- **Права:** скрипт пишет только в папку `.bx-cache` в корне проекта (кэш, внутри лежит `.gitignore` со звёздочкой) и, при `patch` и `create`, в указанный файл. Проверка realpath отклоняет выход через symlink/junction, включая отсутствующие предки. Уникальный tmp открывается эксклюзивно; `create` не перезаписывает параллельно созданный файл. Это не изоляция от процесса, который одновременно подменяет родительские каталоги; для `create` файловая система должна поддерживать hard link.
 
 ## Установка
 
@@ -48,7 +48,7 @@
 | Компонент: файлы, параметры из `.parameters.php`, шаблоны и переопределения по сайтам, все вызовы | `component` |
 | Обработчики событий (`AddEventHandler`, `registerEventHandler`, `RegisterModuleDependences`) и вызовы `GetModuleEvents` | `events` |
 | Языковое сообщение по ключу или по тексту, где оно используется | `lang` |
-| Какой файл обслуживает URL: физический файл или правило `urlrewrite.php`; в Laravel — маршрут → контроллер и метод → view | `route` |
+| Какой файл обслуживает URL: физический файл или правило `urlrewrite.php`; в Laravel — `method=GET` по умолчанию, маршрут → контроллер и метод → найденный view | `route` |
 | Схема таблицы: D7-класс и поля, `CREATE TABLE` из `install/db/mysql/install.sql`, где встречается | `table` |
 | **Laravel:** каталог маршрутов с именами и middleware (группы, resource, `Route::controller(...)`), фильтры `uri`/`name`/`controller` | `routes` |
 | **Laravel:** модель Eloquent — таблица, миграции с колонками и ключами, `fillable`/`casts`, связи и обратные связи, scopes, кто использует | `model` |
@@ -56,7 +56,7 @@
 | **Laravel:** Blade-шаблоны — директивы, переменные, наследование, откуда рендерится, неиспользуемые | `blade` |
 | **Laravel:** artisan-команды и расписание с частотами | `console` |
 | Поиск по тексту с учётом кодировки | `search` |
-| Чтение, правка и создание файлов с сохранением cp1251 / UTF-8, BOM и CRLF | `read`, `patch`, `create` |
+| Чтение, правка и создание файлов с сохранением cp1251 / UTF-8 / UTF-16LE/BE, BOM и CRLF | `read`, `patch`, `create` |
 
 Связи в графе: класс, функция, `require`/`include`, `IncludeComponent` (на файл компонента и на шаблон), `IncludeFile` и `main.include`, класс или функция-обработчик события, `IncludeModule` (на `include.php` модуля), языковой файл. В Laravel дополнительно: `view('name')` и директивы Blade (`@extends`, `@include`, `@component`, `@each`) на файлы шаблонов, `__()`/`@lang` на языковые файлы. Старое API: глобальные классы, методы в базовых `CAll*`-классах, варианты `classes/mysql`, `mssql`, `oracle`, константы `BX_ROOT`, `SITE_DIR`, `SITE_TEMPLATE_PATH`, синтаксис PHP 5.
 
@@ -76,10 +76,20 @@
 ## Что учесть
 
 - **Первый вызов за разговор — `info`.** Он покажет кодировку файлов и предупредит, если есть cp1251.
-- **cp1251.** Если в проекте есть файлы в windows-1251, штатные инструменты агента портят кириллицу. Для таких файлов используй `read`, `patch` и `create`: они сохраняют кодировку, BOM и перевод строк, а символ, которого нет в cp1251, отменяет запись целиком.
-- **Ядро по умолчанию не индексируется.** Модули без точки в имени (`main`, `iblock`, `sale`…), компоненты `bitrix:*` и `bitrix/admin` считаются ядром. Соответственно модуль без точки в имени, написанный в проекте, тоже будет считаться ядром и попадёт в индекс только с `"core":true`.
+- **Кодировки.** Для cp1251 и UTF-16 используй `read`, `patch`, `create`. UTF-16LE/BE определяется по BOM и сохраняется с тем же порядком байтов; некорректный UTF-16 отклоняется. Без BOM UTF-16 не угадывается. Непредставимый в cp1251 символ отменяет запись целиком.
+- **Ядро по умолчанию не индексируется.** В Битриксе: модули без точки в имени (`main`, `iblock`, `sale`…), компоненты `bitrix:*`, `bitrix/admin`. В MODX: `core/model`, `core/src`, `core/lexicon`, `core/docs`, `manager/`, `connectors/`; extras в `core/components/` остаются своими. `core=true` включает ядро в индекс и поиск, но не отменяет исключения vendor/cache.
 - **Исключаются:** `vendor/` в местах composer (`vendor`, `local/vendor`, `bitrix/vendor`), `upload`, `bitrix/cache`, `managed_cache`, `backup`, `updates` и подобные служебные каталоги, файлы больше 2 МБ. Имя `vendor` в пространстве имён компонентов (`local/components/vendor/…`) не исключается.
 - **Варианты под разные СУБД.** Классы из `classes/mssql` и `classes/oracle` скрыты, если есть основной вариант; `"all":true` в `symbol` показывает все.
 - **`route`** переводит условия `urlrewrite.php` из PCRE в JavaScript. Простые выражения совпадают, сложные (именованные группы `(?P<…>)`, рекурсия, флаг `u`) могут отличаться.
 - **Кэш.** Папка `.bx-cache` исключает себя из git сама. Если ответы выглядят устаревшими после обновления скилла, удали эту папку.
-- **Проверка.** Скилл проверялся на синтетических проектах (D7, старое API, cp1251) на Linux с Node 22, реальный PHP при этом не запускался. На Windows, в PowerShell и на боевом сайте перед использованием стоит выполнить `info`, `component` и `events` и сверить результат с кодом.
+- **Проверка.** Автономные регрессии и четыре генерируемых golden-фикстуры не требуют PHP, composer и npm. Команды из корня репозитория приведены ниже; реальные проекты всё равно стоит сверять с ответом `info` и профильных операций.
+
+## Тесты в репозитории
+
+```sh
+node --test tests/token-economy-php/audit.test.js tests/token-economy-php/golden.test.js
+node skills/token-economy-php/scripts/bx.js op=selftest
+node tests/token-economy-php/run-golden.js check
+```
+
+`node --test` из корня также подхватывает PHP-регрессии. Golden сам вызывает трекнутые `gen-*-fixture.js` в новых временных каталогах, проверяет stdout по `expected/*.txt` и коды завершения. Локальные `bitrix-site/`, `laravel-app/`, `modx-site/`, `plain-site/` и старые `golden/` не используются и не стираются. Порядок ручной генерации и обновления эталонов — в [README тестов](../../tests/token-economy-php/README.md).

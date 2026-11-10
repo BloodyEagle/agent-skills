@@ -1,0 +1,37 @@
+$ op=info
+CMS/фреймворк не определена — универсальный режим (только общие операции PHP)
+стиль кода: файлов с классами в namespace 2, глобальные классы 0
+кодировка PHP-файлов проекта: utf8 0, cp1251 0, только ASCII 3
+самые крупные: src/Services/Billing.php (10 строк), src/Support/Helper.php (9 строк), index.php (5 строк)
+операции: info, search, symbol, outline, deps, rdeps, path, node, stats, read, patch, create, build. Профильные операции Битрикса, Laravel и MODX отключены.
+ВНИМАНИЕ: связи через конфигурацию DI/сервис-контейнера и не-PHP файлы (шаблоны, YAML) не индексируются — пустой rdeps не значит «никем не используется».
+в индексе файлов: 3 (3 своих)
+exit=0
+
+$ op=symbol name=App\Services\Billing
+App\Services\Billing  class  src/Services/Billing.php:5-9
+exit=0
+
+$ op=outline file=App\Support\Helper
+src/Support/Helper.php  [class]  (9 строк, ascii)
+namespace App\Support
+L4-8      class Helper
+L5-7        public static function slugify(string $s): string
+exit=0
+
+$ op=deps file=src/Services/Billing.php
+src/Services/Billing.php [class]: использует — 1 (глубина 1)
+1 src/Support/Helper.php [class] (class)
+exit=0
+
+$ op=search query=slugify
+src/Services/Billing.php
+  7: return Helper::slugify((string)($order['qty'] ?? 0));
+src/Support/Helper.php
+  5: public static function slugify(string $s): string {
+-- совпадений: 2, файлов: 2
+exit=0
+
+$ op=routes
+Ошибка: routes: операция доступна в проектах laravel; здесь режим — универсальный (CMS не определена). Общие операции (search, outline, symbol, deps, rdeps, read, patch) работают в любом проекте.
+exit=1

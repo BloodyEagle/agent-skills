@@ -32,7 +32,8 @@ if (relFile === '..' || relFile.startsWith('..' + path.sep) || path.isAbsolute(r
     console.log(JSON.stringify({error: "Путь вне рабочей директории запрещён: " + (args.file || '')}));
     process.exit(1);
 }
-if (!args.file || !SOURCE_EXT.includes(path.extname(file)) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+const sourceExt = process.platform === 'win32' ? path.extname(file).toLowerCase() : path.extname(file);
+if (!args.file || !SOURCE_EXT.includes(sourceExt) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
     console.log(JSON.stringify({error: "Исходный файл не найден: " + (args.file || '')}));
     process.exit(1);
 }

@@ -58,3 +58,15 @@ test('hash: исключения (node_modules, test/fixtures, dist, .installed.
     // Сам список не содержит исключённых путей.
     assert.deepStrictEqual(listFiles(a), ['SKILL.md', 'scripts/tool.js']);
 });
+
+test('hash: Python bytecode и системные файлы не меняют состав скилла', () => {
+    const dir = tmpRoot();
+    writeFile(path.join(dir, 'scripts', 'tool.py'), 'print("ok")\n');
+    const before = hashDir(dir);
+    for (const rel of ['scripts/__pycache__/tool.cpython-313.pyc', 'scripts/old.pyc',
+        '.DS_Store', 'nested/Thumbs.db', 'nested/desktop.ini']) {
+        writeFile(path.join(dir, rel), 'local cache');
+    }
+    assert.deepStrictEqual(hashDir(dir), before);
+    assert.deepStrictEqual(listFiles(dir), ['scripts/tool.py']);
+});

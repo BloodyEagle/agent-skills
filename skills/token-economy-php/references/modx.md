@@ -15,7 +15,7 @@
 
 Каталоги `manager/`, `core/` и `connectors/` в корне без кода ядра MODX маркерами не считаются — так самописный сайт или админка с такими же именами не примет режим MODX.
 
-В индекс входят `.php` и `.tpl`. Ядро (по умолчанию вне индекса, как «своё» не считается): `core/model`, `core/src`, `core/lexicon`, `core/vendor`, `core/cache`, `core/packages`, `core/docs`, `manager/`, `connectors/`, `setup/`. `core/vendor/` и `core/cache/` исключены всегда. Свои: `core/components/*`, `assets/components/*`, `templates/*`, корневые `.php`.
+В индекс входят `.php` и `.tpl`. Ядро по умолчанию вне индекса и поиска: `core/model`, `core/src`, `core/lexicon`, `core/docs`, `manager/`, `connectors/`; `core=true` включает его. `vendor/`, `core/vendor/`, `core/cache/`, `core/packages/` и `setup/` исключены всегда. Свои: `core/components/*` (включая лексиконы extras), `assets/components/*`, `templates/*`, корневые `.php`.
 
 ## Классификация и рёбра
 
@@ -45,7 +45,7 @@ tpl — шаблон/чанк-файл (`name=templates/base.tpl` или пут�
 ## Чего скрипт не видит
 
 - **Элементы в БД**: их содержимое и имена недоступны; `route` отказывает (URL → ресурс — таблица `modx_site_content` в БД).
-- **Лексиконы**: файлы `core/components/*/lexicon/<код>/….php` в ядре по умолчанию не индексируются (`"core":true` включит), разбор `$_lang` не делается — ищи тексты через `search`.
+- **Лексиконы**: свои файлы `core/components/*/lexicon/<код>/….php` индексируются по умолчанию; ядро `core/lexicon/` — только с `core=true`. Разбор `$_lang` не делается — ищи тексты через `search`.
 - **События**: регистрации плагинов на события хранятся в БД; `invokeEvent('OnX')` в коде видно через `search`, но связи на плагин нет.
 - **Системные настройки** — в БД; видны только вызовы `[[++x]]` в tpl.
 - **Fenom без `file:`**: `{include '…'}` и переменные Fenom не разрешаются в файлы; `{block}`/наследование pdoTemplates не разбирается.

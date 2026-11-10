@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 'use strict';
-// bx.js — token-economy для PHP, 1С-Битрикс и Laravel (8 … 13). Принимает JSON из stdin (или аргументы key=value),
+// bx.js — token-economy для PHP, 1С-Битрикс, Laravel (8 … 13) и MODX. Принимает JSON из stdin (или аргументы key=value),
 // отвечает компактным текстом. Операции: info, search, symbol, deps, rdeps, path, node, stats, outline,
 // component, events, lang, route, table, routes, model, container, blade, console, read, patch, create, build.
 
 const fs = require('fs');
 const path = require('path');
-const { posix, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
+const { posix, safePath, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
 const { makeCtx, ensureIndex, buildIndex, docPath, classifyFor, CACHE_DIR } = require('./lib/index');
 const { classify, pcreToRegExp, resolveInclude } = require('./lib/bitrix');
 const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams } = require('./lib/php');
 const { detectModx } = require('./lib/detect');
 const {
-  composerFramework, composerNamespace, structureVersion, modelTable, viewNameToDoc, routeUriToRegExp,
+  composerFramework, composerNamespace, structureVersion, modelTable, routeUriToRegExp,
 } = require('./lib/laravel');
 
 try { process.stdout.setDefaultEncoding('utf8'); } catch (e) { /* ignore */ }
@@ -38,15 +38,17 @@ const ctx = makeCtx({ root: args.root, core: truthy(args.core) });
 function fail(msg) { console.log('Ошибка: ' + msg); process.exit(1); }
 const out = (...lines) => console.log(lines.join('\n'));
 const short = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
-// подсказка про ядро Битрикса уместна только в режиме Битрикса
-const coreHint = () => (ctx.mode === 'bitrix' && !ctx.core ? ' (ядро Битрикса не индексируется; "core":true включит его)' : '');
+// Подсказка про ядро — только для пути ядра, а не для произвольного своего файла/символа.
+const coreHint = (q) => {
+  if (ctx.core || !['bitrix', 'modx'].includes(ctx.mode)) return '';
+  let rel = posix(q || '').replace(/^\/+/, '');
+  if (ctx.prefix && rel.startsWith(ctx.prefix)) rel = rel.slice(ctx.prefix.length);
+  return classifyFor(ctx, '/' + rel).origin === 'core' ? ' (ядро ' + (ctx.mode === 'bitrix' ? 'Битрикса' : 'MODX') + ' не индексируется; "core":true включит его)' : '';
+};
 const EDGE = { x: 'component', t: 'template', i: 'include', c: 'class', f: 'function', l: 'lang', e: 'event handler', m: 'module', s: 'snippet', h: 'chunk' };
 
 function safeAbs(rel) {
-  const abs = path.resolve(ctx.root, rel);
-  const r = path.relative(ctx.root, abs);
-  if (r.startsWith('..') || path.isAbsolute(r)) fail('путь вне рабочей директории: ' + rel);
-  return abs;
+  return safePath(ctx.root, rel);
 }
 
 // ---------- поиск узла ----------
@@ -88,7 +90,7 @@ function findNode(idx, q, allowList) {
   if (r) return r;
   r = pick(nodes.filter((n) => n.p.toLowerCase().includes(lq)));
   if (r) return r;
-  fail('не найдено в индексе: ' + q + (ctx.mode === 'bitrix' && !ctx.core ? '; ядро не индексируется ("core":true включит его)' : ''));
+  fail('не найдено в индексе: ' + q + coreHint(q));
 }
 
 function bfs(idx, start, depth, reverse) {
@@ -262,6 +264,7 @@ const ops = {
     else lines.push(`стиль кода: файлов с классами в namespace ${withNs}, глобальные классы ${legacy}`);
     lines.push(`кодировка PHP-файлов проекта: utf8 ${enc.utf8}, cp1251 ${enc.cp1251}, только ASCII ${enc.ascii}`);
     if (enc.cp1251 > 0) lines.push('ВНИМАНИЕ: есть файлы в cp1251. Читай их операцией read, правь операцией patch: штатные инструменты испортят кириллицу.');
+    if (enc.utf16le || enc.utf16be) lines.push(`UTF-16: LE ${enc.utf16le || 0}, BE ${enc.utf16be || 0}. Читай через read, правь через patch: сохраняются BOM и порядок байтов.`);
     if (ctx.mode === 'bitrix') {
       const ls = (dir) => { try { return fs.readdirSync(path.join(dr, dir), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch (e) { return []; } };
       const tpls = [...ls('local/templates').map((n) => 'local/templates/' + n), ...ls('bitrix/templates').map((n) => 'bitrix/templates/' + n)];
@@ -300,7 +303,7 @@ const ops = {
     try { rx = new RegExp(truthy(args.regex) ? args.query : String(args.query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags); } catch (e) { fail('некорректное регулярное выражение'); }
     const sub = posix(args.path || '').replace(/^\/+|\/+$/g, '');
     const limit = Number(args.limit) || 30;
-    const files = listFiles(ctx.root, ctx.docroot, exts, ctx.mode).filter((rel) => (ctx.mode !== 'bitrix' || ctx.core || classifyFor(ctx, docPath(ctx, rel)).origin !== 'core') && (!sub || rel === sub || rel.startsWith(sub + '/')));
+    const files = listFiles(ctx.root, ctx.docroot, exts, ctx.mode).filter((rel) => (!['bitrix', 'modx'].includes(ctx.mode) || ctx.core || classifyFor(ctx, docPath(ctx, rel)).origin !== 'core') && (!sub || rel === sub || rel.startsWith(sub + '/')));
     let total = 0, shown = 0, nfiles = 0, cur = null;
     const lines = [];
     for (const rel of files) {
@@ -361,7 +364,7 @@ const ops = {
       if (main.length) hits = main;
     }
     hits = hits.filter((h, i) => hits.findIndex((x) => x[0] === h[0] && x[2] === h[2] && x[3] === h[3]) === i); // без повторов
-    if (!hits.length) return out(`${q0}: не найдено` + coreHint());
+    if (!hits.length) return out(`${q0}: не найдено` + coreHint(q0));
     hits.slice(0, 20).forEach(([name, kind, p, l, e]) => console.log(`${name}  ${kind}  ${p}:${l}-${e}`));
     if (hits.length > 20) console.log(`… ещё ${hits.length - 20}`);
   },
@@ -626,13 +629,20 @@ const ops = {
     if (!url) fail('укажите url');
     if (ctx.mode === 'modx') fail('в MODX соответствие URL → ресурс хранится в БД (modx_site_content); файловый разбор маршрутов не применим. Ищи шаблон ресурса в БД, файловые элементы — op=element / op=tpl');
     if (ctx.mode === 'laravel') { // Laravel: URL → маршрут → контроллер → view
+      const method = String(args.method || 'GET').trim().toUpperCase();
+      if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'TRACE', 'CONNECT'].includes(method)) fail('неизвестный HTTP method: ' + method);
       const idx = ensureIndex(ctx);
       const d = laravelScan(idx);
       url = url.replace(/^https?:\/\/[^/]+/i, '').split('?')[0].split('#')[0];
       if (!url.startsWith('/')) url = '/' + url;
-      const lines = [url];
+      const lines = [method + ' ' + url];
       const hits = [];
-      for (const r of d.routes) { const rx = routeUriToRegExp(r.u); if (rx && rx.test(url)) hits.push(r); }
+      for (const r of d.routes) {
+        const verbs = r.v.split('|');
+        if (!verbs.includes(method) && !(method === 'HEAD' && verbs.includes('GET')) && r.v !== 'ANY' && r.v !== 'REDIRECT' && !(r.v === 'VIEW' && (method === 'GET' || method === 'HEAD'))) continue;
+        const rx = routeUriToRegExp(r.u);
+        if (rx && rx.test(url)) hits.push(r);
+      }
       if (!hits.length) {
         lines.push('маршрут не найден (просмотрено ' + d.routes.length + '); каталог — op=routes');
         out(...lines);
@@ -652,7 +662,10 @@ const ops = {
           const meth = (dd.members || []).find((m) => m.n === methodName);
           lines.push(`контроллер: ${dd.fqn} (${n.p}:${meth ? meth.l + '-' + meth.e : dd.line})`);
           if (meth) lines.push('  ' + short(meth.sig, 150));
-          for (const v of d.views) if (v.ctx === ctrlShort + '::' + methodName) lines.push(`  рендерит view: ${v.name}  →  ${viewNameToDoc(v.name).slice(1)}  (${v.p}:${v.line})`);
+          for (const v of d.views) if (v.ctx === ctrlShort + '::' + methodName && v.p === n.p) {
+            const target = idx.nodes.find((x) => x.view && x.view.name === v.name);
+            lines.push(`  рендерит view: ${v.name}${target ? '  →  ' + target.p : '  (файл не найден в индексе)'}  (${v.p}:${v.line})`);
+          }
           break;
         }
       }
@@ -665,13 +678,13 @@ const ops = {
     const lines = [url];
     const cands = [];
     if (url.endsWith('/')) cands.push(url + 'index.php');
-    else { cands.push(url + '/index.php'); cands.push(url.endsWith('.php') ? url : url + '.php'); }
-    const exist = cands.filter((c) => fs.existsSync(path.join(dr, c)));
+    else { cands.push(url); cands.push(url + '/index.php'); if (!url.endsWith('.php')) cands.push(url + '.php'); }
+    const exist = cands.filter((c) => { try { return fs.statSync(safeAbs(path.join(ctx.docroot, c.slice(1)))).isFile(); } catch (e) { return false; } });
     if (exist.length) lines.push('физический файл: ' + exist.map((c) => (ctx.prefix + c.slice(1))).join(', ') + '  (urlrewrite не применяется)');
     else lines.push('физического файла нет (проверено: ' + cands.join(', ') + ')');
     const rf = path.join(dr, 'urlrewrite.php');
     if (fs.existsSync(rf)) {
-      const rules = parseUrlRewrite(readText(rf).text);
+      const rules = parseUrlRewrite(readText(safeAbs(rf)).text);
       const hits = [];
       rules.forEach((r, i) => { const rx = pcreToRegExp(r.c); if (rx && rx.test(url)) hits.push([i, r]); });
       if (hits.length) {
@@ -1018,8 +1031,9 @@ const ops = {
     const abs = safeAbs(f);
     if (fs.existsSync(abs)) fail('файл уже существует: ' + f + ' (для правки используйте patch)');
     const text = String(args.text).replace(/\r\n/g, '\n');
-    let enc = args.enc;
-    if (enc !== 'utf8' && enc !== 'cp1251') {
+    let enc = args.enc && String(args.enc).toLowerCase().replace(/-/g, '');
+    if (enc && !['utf8', 'cp1251', 'utf16le', 'utf16be'].includes(enc)) fail('неподдерживаемая кодировка: ' + args.enc);
+    if (!enc) {
       enc = 'utf8';
       if (/[^\x00-\x7F]/.test(text)) { // кодировку берём по большинству файлов проекта
         const idx = ensureIndex(ctx);
@@ -1029,9 +1043,9 @@ const ops = {
       }
     }
     let buf;
-    try { buf = encodeText(args.eol === 'crlf' ? text.replace(/\n/g, '\r\n') : text, enc, false); } catch (e) { fail('запись отменена: ' + e.message); }
+    try { buf = encodeText(args.eol === 'crlf' ? text.replace(/\n/g, '\r\n') : text, enc, enc === 'utf16le' || enc === 'utf16be'); } catch (e) { fail('запись отменена: ' + e.message); }
     fs.mkdirSync(path.dirname(abs), { recursive: true });
-    writeAtomic(abs, buf);
+    writeAtomic(abs, buf, { root: ctx.root, create: true });
     out(`OK: создан ${posix(path.relative(ctx.root, abs))}, кодировка ${enc}`);
   },
 
@@ -1068,7 +1082,7 @@ const ops = {
     }
     let buf;
     try { buf = encodeText(result, enc, cur.bom); } catch (e) { fail('запись отменена, файл не тронут: ' + e.message); }
-    writeAtomic(abs, buf);
+    writeAtomic(abs, buf, { root: ctx.root });
     const line = cur.text.slice(0, cur.text.indexOf(oldS)).split('\n').length;
     out(`OK: ${posix(path.relative(ctx.root, abs))}, замен: ${count}, первая со строки ${line}, кодировка ${enc}, EOL ${cur.eol}`);
   }
@@ -1122,6 +1136,10 @@ ops.selftest = function () {
   chk('php: namespace и use', p.ns === 'Demo\\Mod' && (p.imports || []).length === 1, js.slice(0, 300));
   chk('php: класс и fqn', !!api && api.kind === 'class' && api.fqn === 'Demo\\Mod\\Api', js.slice(0, 300));
   chk('php: методы', !!api && ['run', 'hidden'].every((n) => (api.members || []).some((m) => m.n === n && m.k === 'method')), js.slice(0, 300));
+  const attr = parsePhp('<?php #[Entity] class Post { #[Column(options: ["x" => 1])] private string $title; #[Route("/posts")] public function show(#[SensitiveParameter] string $key) {} }');
+  chk('php: атрибуты класса, свойства, метода и параметра', attr.decls.length === 1 && attr.decls[0].members.some((m) => m.n === 'show'));
+  chk('php: непарные скобки не зацикливают разбор', parsePhp('<?php class Broken {').decls.length === 1 && parsePhp('<?php class Partial { ] public function ok() {} }').decls[0].members[0].n === 'ok');
+  chk('php: неполный групповой use не возвращает парсер назад', parsePhp('<?php use Other, Vendor\\{Thing;').imports.length <= 2);
 
   // режимы проекта (временные каталоги с маркерами)
   const os = require('os');
@@ -1275,7 +1293,7 @@ const OP_MODES = {
 if (!args.op) fail('укажите op: ' + Object.keys(ops).join(' | '));
 if (!ops[args.op]) fail('неизвестный op: ' + args.op);
 if (OP_MODES[args.op] && !OP_MODES[args.op].includes(ctx.mode)) {
-  const here = ctx.mode === 'generic' ? 'универсальный (CMS не определена)' : ctx.mode === 'bitrix' ? 'Битрикс' : 'Laravel';
+  const here = { generic: 'универсальный (CMS не определена)', bitrix: 'Битрикс', laravel: 'Laravel', modx: 'MODX' }[ctx.mode];
   fail(`${args.op}: операция доступна в проектах ${OP_MODES[args.op].join(' и ')}; здесь режим — ${here}. Общие операции (search, outline, symbol, deps, rdeps, read, patch) работают в любом проекте.`);
 }
 try { ops[args.op](); } catch (e) { fail(e.message); }

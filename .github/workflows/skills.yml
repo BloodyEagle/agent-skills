@@ -7,13 +7,29 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       # VERSION, version: в SKILL.md и манифест согласованы, хеши совпадают.
       - run: node skills.js verify
-      # Тесты самого CLI (lib/hash.js, check/install/bump/verify).
-      - run: node --test test/
+      # CLI и все автономные наборы скиллов; каталоги аргументами не передаём.
+      - run: node --test
+      - run: node skills/token-economy-php/scripts/bx.js op=selftest
+      - run: node skills/token-economy-ts/scripts/graph-tool.js op=selftest
+      - run: node skills/token-economy-kt/scripts/kt.js op=selftest
+      - run: node skills/token-economy-java/scripts/jv.js op=selftest
+      - run: python -I -B skills/token-economy-py/scripts/te.py selftest
+      # Запуски Python и генерация кэшей не должны менять хеши скиллов.
+      - run: node skills.js verify

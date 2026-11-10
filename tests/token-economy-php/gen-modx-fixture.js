@@ -1,11 +1,12 @@
 'use strict';
-// Генератор MODX-фикстуры для проверки token-economy-php в деградационном режиме.
-// Запуск: node gen-modx-fixture.js
+// Генератор MODX-фикстуры для файловых элементов, ядра и исключений vendor/cache.
+// Запуск: node gen-modx-fixture.js <пустой-каталог>
 const fs = require('fs');
 const path = require('path');
 
-const root = path.join(__dirname, 'modx-site');
-fs.rmSync(root, { recursive: true, force: true });
+const root = process.argv[2] ? path.resolve(process.argv[2]) : path.join(__dirname, 'modx-site');
+if (fs.existsSync(root) && fs.readdirSync(root).length) throw new Error('каталог фикстуры не пуст: ' + root);
+fs.mkdirSync(root, { recursive: true });
 
 const W = (rel, text) => {
   const p = path.join(root, rel);
@@ -47,7 +48,7 @@ for (let i = 0; i < TOTAL; i++) {
   n++;
 }
 
-// core/cache — обычно игнорируется, но в скилл-индекс не исключён
+// core/cache должен исключаться и без .gitignore
 W('core/cache/includes/elements/modsnippet/10.include.php', "<?php\n// закэшированный сниппет\nfunction cachedSnippetHelper() { return 1; }\n");
 
 console.log('создано файлов:', n + 12);
