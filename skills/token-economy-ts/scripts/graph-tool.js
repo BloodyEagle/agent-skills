@@ -18,6 +18,8 @@ const path = require('path');
 const crypto = require('crypto');
 const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, ANGULAR_ERROR} = require('./lib/files');
 const {parseSymbols, sourceCodeMask, isArrowExpression} = require('./lib/symbols');
+const {entityRanges} = require('./lib/ranges');
+const {maskCode} = require('./lib/mask');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
@@ -48,13 +50,28 @@ if (!Object.keys(args).length && process.stdin.isTTY !== true) {
 args.depth = Number(args.depth) || 1;
 args.specs = args.specs === true || args.specs === 'true' || args.specs === '1';
 args.why = args.why === true || args.why === 'true' || args.why === '1';
+args.format = args.format === undefined || args.format === null ? '' : String(args.format);
 
 const cwd = process.cwd();
-const rootArg = args.root || (fs.existsSync(path.join(cwd, 'src')) ? 'src' : '.');
-const ROOT = path.resolve(cwd, rootArg);
+// Scope-переменные: одиночный режим задаёт их из args, batch — из scope-группы запросов.
+let ROOT_ARG = '';
+let ROOT = '';
+let SPECS = false;
+/**
+ * Устанавливает scope (root/specs) для одного запроса или группы; бросает OpError
+ * при выходе root за пределы рабочей директории.
+ */
+function setScope(p) {
+    ROOT_ARG = p.root || (fs.existsSync(path.join(cwd, 'src')) ? 'src' : '.');
+    ROOT = path.resolve(cwd, ROOT_ARG);
+    SPECS = p.specs === true;
+    const rel = path.relative(cwd, ROOT);
+    if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
+        throw new OpError('root вне рабочей директории запрещён: ' + ROOT_ARG);
+}
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
-const GRAPH_VERSION = 8; // единая маска символов, Unicode и учёт JSON-ресурсов
+const GRAPH_VERSION = 9; // v9: диапазоны объявлений и тел в parsed entities (lib/ranges.js)
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const NG_KINDS = {
     Component: 'component',
@@ -79,12 +96,12 @@ const fail = (msg) => {
 const toPosix = (p) => path.relative(cwd, p).replace(/\\/g, '/');
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
-// Правило 11 скилла: пути вне рабочей директории отклоняются.
-// root="." допустим (rel === ''); isAbsolute ловит переход на другой диск (Windows).
-{
-    const rel = path.relative(cwd, ROOT);
-    if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
-        fail('root вне рабочей директории запрещён: ' + rootArg);
+// Ошибка запроса (batch-элемент или одиночный fail); root-границы проверяет setScope.
+class OpError extends Error {
+    constructor(msg) {
+        super(msg);
+        this.name = 'OpError';
+    }
 }
 
 const statCache = new Map();
@@ -130,7 +147,7 @@ function collectFiles(dir) {
             const type = fileType(p);
             if (/\.(mts|cts)$/i.test(p)) { scanExcluded.add(toPosix(p)); return false; }
             if ((type === 'ts' || type === 'js') && (/\.d\.ts$/i.test(p)
-                || (!args.specs && /\.(spec|test)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(p)))) return false;
+                || (!SPECS && /\.(spec|test)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(p)))) return false;
             if (type === 'style' && /\.min\.css$/i.test(p)) return false;
             if (statOf(p).size > MAX_BYTES) { scanExcluded.add(toPosix(p)); return false; }
             return true;
@@ -281,7 +298,7 @@ function graphInputs() {
     configIssues.clear();
     for (const name of CONFIG_FILES) readConfig(path.join(cwd, name));
     const alias = loadAliases();
-    const manifest = {algorithm: GRAPH_VERSION, projectRoot: cwd, scanRoot: ROOT, specs: args.specs,
+    const manifest = {algorithm: GRAPH_VERSION, projectRoot: cwd, scanRoot: ROOT, specs: SPECS,
         configs: Object.fromEntries([...configInputs].sort(([a], [b]) => a.localeCompare(b)))};
     return {alias, manifest};
 }
@@ -587,24 +604,67 @@ function matchBrace(text, open) {
 /**
  * Члены тела класса/интерфейса (методы и свойства с номерами строк): куски до ';' на нулевой
  * глубине (свойства, абстрактные методы) либо до '}', закрывающего тело метода.
+ * body/srcBody — срез тела по маске и по исходнику (одинаковые смещения), absBase — смещение
+ * тела в полной маске файла; диапазоны членов считаются по полной маске (lib/ranges.js).
  */
-function extractMembersTs(body, lineAt) {
+function extractMembersTs(body, lineAt, absMask, absBase, srcBody) {
     const out = [];
     let start = -1, opened = false, str = null, depth = 0;
     const push = (end) => {
         if (start === -1) return;
         const raw = body.slice(start, end);
+        const rawSrc = srcBody ? srcBody.slice(start, end) : raw;
         const line = lineAt(start);
+        const absStart = absBase + start;
         start = -1;
         let t = raw.replace(/\s+/g, ' ').trim(), m;
         while ((m = t.match(/^(public|private|protected|static|readonly|abstract|override|async|declare|get|set)\s+/))) t = t.slice(m[0].length);
-        m = t.match(/^([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u);
-        if (!m) return;
-        const rest = t.slice(m[0].length).replace(/^\s+/, '');
+        let name = null, nameLen = 0;
+        if ((m = t.match(/^([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) {
+            name = m[1];
+            nameLen = m[0].length;
+        } else if ((m = t.match(/^(#[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) {
+            name = m[1]; // имя с решёткой — так же, как в parseSymbols (private-method/property)
+            nameLen = m[0].length;
+        } else if (/^\[/.test(t)) {
+            // computed-член: имя — содержимое скобок из исходника ([Symbol.iterator], ["prop"]);
+            // index signature («[key: string]: T») членом не считается
+            let d = 0, closeT = -1;
+            for (let j = 0; j < t.length; j++) {
+                if (t[j] === '[') d++;
+                else if (t[j] === ']') {
+                    d--;
+                    if (!d) { closeT = j; break; }
+                }
+            }
+            const src = rawSrc.trim();
+            const open = src.indexOf('[');
+            let sd = 0, closeS = -1;
+            for (let j = open >= 0 ? open : 0; j < src.length; j++) {
+                if (src[j] === '[') sd++;
+                else if (src[j] === ']') {
+                    sd--;
+                    if (!sd) { closeS = j; break; }
+                }
+            }
+            if (closeT !== -1 && closeS !== -1) {
+                const inner = src.slice(open + 1, closeS).trim();
+                if (inner && !inner.includes(':')) {
+                    name = inner.replace(/^(['"`])|(['"`])$/g, '').replace(/\s+/g, ' ').trim();
+                    nameLen = closeT + 1;
+                }
+            }
+        }
+        if (!name) return;
+        const rest = t.slice(nameLen).replace(/^\s+/, '');
         const assignment = rest.indexOf('=');
         const isMethod = /^\??\(/.test(rest) || rest.startsWith('<')
             || (assignment >= 0 && isArrowExpression(rest.slice(assignment + 1)));
-        out.push({name: m[1], kind: isMethod ? 'method' : 'property', line});
+        const kind = name.startsWith('#') ? (isMethod ? 'private-method' : 'private-property') : (isMethod ? 'method' : 'property');
+        const rangeKind = kind.startsWith('private-') ? kind.slice('private-'.length) : kind;
+        // absMask/absStart — абсолютные; lineAt здесь относительный (от тела класса) — компенсируем
+        const ranges = absMask ? entityRanges(absMask, absStart, rangeKind, (off) => lineAt(off - absBase)) : {};
+        out.push({name, kind, line, ...ranges});
     };
     for (let i = 0; i < body.length; i++) {
         const c = body[i];
@@ -644,16 +704,29 @@ function extractMembersTs(body, lineAt) {
 }
 
 /**
- * Разбирает содержимое TS/JS: импорты, экспорты, объявления с номерами строк,
- * а для @Component — templateUrl, styleUrl(s) и использование в inline-template.
+ * Разбирает содержимое TS/JS: импорты, экспорты, объявления с номерами строк
+ * и диапазонами (lib/ranges.js), а для @Component — templateUrl, styleUrl(s)
+ * и использование в inline-template.
  */
-function parseTs(content, sourceType = 'ts') {
+function parseTs(content, sourceType = 'ts', jsx = false) {
     content = content.replace(/^\uFEFF/, '');
     const specifiers = [], entities = [], exports = [], fileRefs = [];
     let reexportAll = false, templateUrl = null, usages = null, m;
     const decorated = new Set();
-    const lineAt = (idx) => content.slice(0, idx).split('\n').length;
+    const lineStarts = [0];
+    for (let i = 0; i < content.length; i++) if (content[i] === '\n') lineStarts.push(i + 1);
+    const lineAt = (idx) => {
+        let lo = 0, hi = lineStarts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (lineStarts[mid] <= idx) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo + 1;
+    };
     const codeMask = sourceCodeMask(content);
+    // отдельная JSX-aware маска для диапазонов объявлений (lib/ranges.js)
+    const rmask = maskCode(content, jsx);
 
     // Импорты, реэкспорты, require и динамические import(); многострочные поддержаны.
     // Спецификаторы исходников хранятся объектами {m, line} для rdeps/deps why.
@@ -681,10 +754,12 @@ function parseTs(content, sourceType = 'ts') {
             if (name && name !== '*') exports.push(name);
         }
 
-    const reDecl = /^[ \t]*(export\s+)?(?:default\s+)?(?:abstract\s+)?(class|interface|enum|type|function|const|let|var)\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/gmu;
+    const reDecl = /^[ \t]*(export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(class|interface|enum|type|function|const|let|var)\b\s*\*?\s*([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/gmu;
     while (sourceType === 'ts' && (m = reDecl.exec(codeMask))) {
         const kind = m[2] === 'let' || m[2] === 'var' ? 'const' : m[2];
-        entities.push({name: m[3], kind, line: lineAt(m.index + m[0].search(/\S/))});
+        entities.push({name: m[3], kind, line: lineAt(m.index + m[0].search(/\S/)),
+            // диапазоны полного объявления и тела — только когда разбор надёжен
+            ...entityRanges(rmask, m.index, kind, lineAt)});
         if (m[1]) exports.push(m[3]);
         // члены класса/интерфейса — для graph symbol по методам и свойствам
         if (kind === 'class' || kind === 'interface') {
@@ -693,16 +768,17 @@ function parseTs(content, sourceType = 'ts') {
                 const close = matchBrace(codeMask, brace);
                 if (close !== -1)
                     entities[entities.length - 1].members =
-                        extractMembersTs(codeMask.slice(brace + 1, close), (off) => lineAt(brace + 1 + off));
+                        extractMembersTs(codeMask.slice(brace + 1, close), (off) => lineAt(brace + 1 + off),
+                            rmask, brace + 1, content.slice(brace + 1, close));
             }
         }
     }
 
     if (sourceType === 'js') {
-        const symbols = parseSymbols(content).map((s) => ({...s, name: s.name.replace(/\(.*$/, '')}));
+        const symbols = parseSymbols(content, jsx).map((s) => ({...s, name: s.name.replace(/\(.*$/, '')}));
         const declarations = new Set(symbols.filter((s) => !s.owner && s.kind !== 'export').map((s) => s.name));
         const seen = new Set();
-        for (const {owner, ...symbol} of symbols) {
+        for (const {owner, offset, ...symbol} of symbols) {
             if (owner) continue;
             if (symbol.kind === 'export') {
                 exports.push(symbol.name);
@@ -713,7 +789,7 @@ function parseTs(content, sourceType = 'ts') {
             seen.add(key);
             entities.push(symbol);
         }
-        for (const {owner, ...member} of symbols) {
+        for (const {owner, offset, ...member} of symbols) {
             if (!owner) continue;
             const entity = entities.find((e) => e.kind === 'class' && e.name === owner);
             if (entity) (entity.members = entity.members || []).push(member);
@@ -727,7 +803,14 @@ function parseTs(content, sourceType = 'ts') {
         const body = m[2];
         // members собраны в reDecl-сущности «class» — переносим: дедупликация ниже оставит только эту
         const prev = entities.find((e) => e.name === m[3] && e.kind === 'class');
-        const entity = {name: m[3], kind: NG_KINDS[m[1]], line: lineAt(m.index), ...(prev && prev.members ? {members: prev.members} : {})};
+        // диапазоны не теряются при замене class-entity на Angular-entity: считаем от ключевого слова class
+        let clsStart = -1;
+        const reCls = /\bclass\b/g;
+        let mc;
+        while ((mc = reCls.exec(m[0]))) clsStart = m.index + mc.index;
+        const entity = {name: m[3], kind: NG_KINDS[m[1]], line: lineAt(m.index),
+            ...(clsStart !== -1 ? entityRanges(rmask, clsStart, 'class', lineAt) : {}),
+            ...(prev && prev.members ? {members: prev.members} : {})};
         const sel = body.match(/\bselector\s*:\s*['"`]([^'"`]+)['"`]/);
         if (sel) entity.selector = sel[1];
         if (m[1] === 'Pipe') {
@@ -767,7 +850,7 @@ function parseFile(content, rel) {
     const type = fileType(rel);
     if (type === 'html') return parseHtml(content);
     if (type === 'style') return parseStyle(content, rel);
-    return parseTs(content, type);
+    return parseTs(content, type, /\.(tsx|jsx)$/i.test(rel));
 }
 
 // ---------- резолвинг ссылок ----------
@@ -947,8 +1030,20 @@ function validParsedData(data, type) {
         || !data.exports.every(name => typeof name === 'string')
         || !Array.isArray(data.specifiers) || !Number.isInteger(data.loc) || data.loc < 1
         || typeof data.reexportAll !== 'boolean') return false;
-    if (!data.entities.every(e => e && typeof e.name === 'string' && typeof e.kind === 'string'
-        && Number.isInteger(e.line) && e.line > 0)) return false;
+    // диапазоны — положительные целые в пределах loc, конец ≥ начала; рекурсивно для members
+    const validRange = (e) => {
+        const chk = (a, b) => (a == null || (Number.isInteger(a) && a > 0 && a <= data.loc))
+            && (b == null || (Number.isInteger(b) && b > 0 && b <= data.loc && (a == null || b >= a)));
+        if (!chk(e.startLine, e.endLine) || !chk(e.bodyStartLine, e.bodyEndLine)) return false;
+        if (e.bodyStartLine != null && e.startLine != null && e.bodyStartLine < e.startLine) return false;
+        if (e.bodyEndLine != null && e.endLine != null && e.bodyEndLine > e.endLine) return false;
+        return true;
+    };
+    const validEntity = (e) => e && typeof e.name === 'string' && typeof e.kind === 'string'
+        && Number.isInteger(e.line) && e.line > 0 && validRange(e)
+        && (!Array.isArray(e.members) || e.members.every(mm => mm && typeof mm.name === 'string'
+            && typeof mm.kind === 'string' && Number.isInteger(mm.line) && mm.line > 0 && validRange(mm)));
+    if (!data.entities.every(validEntity)) return false;
     if (!data.specifiers.every(s => type === 'ts' || type === 'js'
         ? s && typeof s.m === 'string' && Number.isInteger(s.line) && s.line > 0
         : typeof s === 'string')) return false;
@@ -961,7 +1056,7 @@ function validParsedData(data, type) {
 function buildGraph(files, inputs = graphInputs()) {
     const t0 = Date.now();
     files = (files || collectAll()).sort();
-    if (!files.length) fail('Не найдено TS/JS/HTML/стилей в ' + rootArg);
+    if (!files.length) throw new OpError('Не найдено TS/JS/HTML/стилей в ' + ROOT_ARG);
 
     const fileSet = new Map(files.map(file => [pathKey(file), file]));
     const resources = Object.create(null);
@@ -1102,7 +1197,7 @@ function buildGraph(files, inputs = graphInputs()) {
     const cycles = tarjan(nodes);
     const graph = {
         version: GRAPH_VERSION,
-        root: rootArg,
+        root: ROOT_ARG,
         inputs: inputs.manifest,
         resources,
         sourceStats: Object.fromEntries(files.map(f => [toPosix(f), {mtime: statOf(f).mtimeMs, size: statOf(f).size}])),
@@ -1212,6 +1307,17 @@ function selectorWarnings(graph, selector) {
             + (item.files.length > 5 ? ' (ещё ' + (item.files.length - 5) + ')' : ''));
 }
 
+/**
+ * Диапазонные поля сущности/члена (только реально определённые).
+ */
+function rangeOf(e) {
+    const r = {};
+    if (!e) return r;
+    for (const k of ['startLine', 'endLine', 'bodyStartLine', 'bodyEndLine'])
+        if (e[k] != null) r[k] = e[k];
+    return r;
+}
+
 function structuralStatus(graph, truncated = 0, extra = []) {
     const unresolved = graph.files.flatMap(f => f.unresolved.map(specifier => ({file: f.path, specifier})));
     const reasons = [...new Set([
@@ -1222,7 +1328,7 @@ function structuralStatus(graph, truncated = 0, extra = []) {
         ...(graph.cacheIssue ? [graph.cacheIssue] : []), ...extra
     ])];
     const samples = [...unresolved, ...[...scanExcluded].map(file => ({file, reason: 'excluded-source'}))];
-    return {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.', specs: args.specs},
+    return {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.', specs: SPECS},
         completeness: {complete: reasons.length === 0 && truncated === 0,
             ...(reasons.length ? {reasons: reasons.slice(0, 5), ...(reasons.length > 5 ? {reasonsTruncated: reasons.length - 5} : {})} : {}),
             ...(samples.length ? {samples: samples.slice(0, 5), ...(samples.length > 5 ? {samplesTruncated: samples.length - 5} : {})} : {}),
@@ -1232,6 +1338,78 @@ function structuralStatus(graph, truncated = 0, extra = []) {
 function unresolvedSummary(node) {
     return node.unresolved.length ? {unresolvedPaths: node.unresolved.slice(0, 5),
         ...(node.unresolved.length > 5 ? {unresolvedPathsTruncated: node.unresolved.length - 5} : {})} : {};
+}
+
+// ---------- op=read: точное чтение диапазонов ----------
+
+const MAX_READ_LINES = 2000; // суммарный лимит строк за запрос: отказ, а не молчаливая усечка
+
+/**
+ * Читает диапазоны строк одного файла одним ответом: перекрытия и вплотную соседние
+ * диапазоны объединяются, промежуток с зазором — нет (лишний source text не добавляется).
+ * Полный текст строк без обрезки; контракт line-блоков: BOM снят, EOL нормализованы в \n.
+ * Пути проверяются лексически и по realpath; диапазоны сверяются с фактическим файлом,
+ * а не с координатами кэша графа.
+ */
+function readRanges(params) {
+    const fileArg = String(params.file || '');
+    if (!fileArg) return {error: 'Укажите payload.file'};
+    const abs = path.resolve(cwd, fileArg);
+    const rel = path.relative(cwd, abs);
+    if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
+        return {error: 'Путь вне рабочей директории запрещён: ' + fileArg};
+    let real;
+    try {
+        real = fs.realpathSync(abs);
+    } catch (e) {
+        return {error: 'Файл не найден: ' + fileArg};
+    }
+    const relReal = path.relative(cwd, real);
+    if (relReal === '..' || relReal.startsWith('..' + path.sep) || path.isAbsolute(relReal))
+        return {error: 'Путь вне рабочей директории запрещён: ' + fileArg};
+    let rangesArg = params.ranges;
+    if (typeof rangesArg === 'string') rangesArg = rangesArg.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!Array.isArray(rangesArg) || !rangesArg.length)
+        return {error: 'Укажите ranges: 10-20,30-40 либо массив [[10,20],[30,40]] (1-based, включительно)'};
+    const parsed = [];
+    for (const item of rangesArg) {
+        let a, b;
+        if (Array.isArray(item)) [a, b] = item;
+        else {
+            const m = String(item).trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+            if (!m) return {error: 'Некорректный диапазон: ' + JSON.stringify(item)};
+            a = Number(m[1]);
+            b = m[2] === undefined ? a : Number(m[2]);
+        }
+        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 1 || b < a)
+            return {error: 'Некорректный диапазон: ' + JSON.stringify(item) + ' (1-based, конец ≥ начала)'};
+        parsed.push([a, b]);
+    }
+    parsed.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+    const merged = [];
+    for (const [a, b] of parsed) {
+        const last = merged[merged.length - 1];
+        if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b);
+        else merged.push([a, b]);
+    }
+    let text;
+    try {
+        text = fs.readFileSync(real, 'utf8');
+    } catch (e) {
+        return {error: 'Файл не найден: ' + fileArg};
+    }
+    const lines = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
+    const loc = lines.length - (lines[lines.length - 1] === '' ? 1 : 0);
+    for (const [a, b] of merged)
+        if (b > loc) return {error: 'Диапазон ' + a + '-' + b + ' за пределами файла (' + loc + ' строк); сверитесь с источником, не с кэшем графа'};
+    const total = merged.reduce((s, [a, b]) => s + (b - a + 1), 0);
+    if (total > MAX_READ_LINES)
+        return {error: 'Запрошено ' + total + ' строк (максимум ' + MAX_READ_LINES + ') — разбейте чтение на несколько запросов'};
+    return {
+        file: toPosix(real),
+        loc,
+        blocks: merged.map(([a, b]) => ({startLine: a, endLine: b, lines: lines.slice(a - 1, b)}))
+    };
 }
 
 function reverseIndex(graph) {
@@ -1272,11 +1450,488 @@ function walk(graph, startId, depth, reverse, why) {
     return out;
 }
 
-// ---------- диспетчер ----------
+
+// ---------- обработчики операций ----------
+// Каждый обработчик возвращает payload ответа или бросает OpError (ошибка запроса).
+// Это позволяет batch-режиму выполнять запросы без process.exit внутри элемента.
+
+const BATCH_OPS = ['info', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'read'];
+
+function opStats(g) {
+    const rev = reverseIndex(g);
+    return {
+        ...g.stats,
+        topImported: g.files
+            .map((f) => ({file: f.path, kind: f.kind, importers: (rev.get(f.id) || []).length}))
+            .sort((a, b) => b.importers - a.importers).slice(0, 10)
+    };
+}
+
+function opInfo(g) {
+    // Паспорт проекта одним вызовом вместо чтения package.json/tsconfig/angular.json вручную.
+    const readJson = (name) => {
+        try {
+            return JSON.parse(fs.readFileSync(path.join(cwd, name), 'utf8'));
+        } catch (e) {
+            return null;
+        }
+    };
+    const warnings = selectorWarnings(g);
+    const pkg = readJson('package.json');
+    if (!pkg) warnings.push('package.json не найден в ' + cwd);
+    if (pkg && !fs.existsSync(path.join(cwd, 'node_modules'))) warnings.push('node_modules не найден — выполните npm install');
+    const deps = {...(pkg && pkg.dependencies || {}), ...(pkg && pkg.devDependencies || {})};
+    const KEY_DEPS = ['@angular/core', '@angular/cli', '@angular/material', '@angular/cdk', 'typescript', 'rxjs', 'zone.js',
+        '@ngrx/store', '@ngrx/effects', '@ngrx/component-store', 'jest', 'karma', 'cypress', 'playwright', 'eslint', 'prettier',
+        '@nestjs/core', '@nestjs/common', 'express', 'fastify', 'koa', '@hapi/hapi'];
+    const key = {};
+    for (const k of KEY_DEPS) if (deps[k]) key[k] = deps[k];
+    const shown = new Set(Object.keys(key));
+    const others = Object.keys(deps).filter((k) => !shown.has(k)).sort();
+    const pm = [['package-lock.json', 'npm'], ['yarn.lock', 'yarn'], ['pnpm-lock.yaml', 'pnpm']]
+        .find(([f]) => fs.existsSync(path.join(cwd, f)));
+    let tc = null;
+    try {
+        tc = parseJsonc(fs.readFileSync(path.join(cwd, 'tsconfig.json'), 'utf8')).compilerOptions || {};
+    } catch (e) { /* нет или не разобран — будет предупреждение */
+    }
+    if (!tc) warnings.push('tsconfig.json не найден или не разобран');
+    const paths = tc && tc.paths ? Object.keys(tc.paths).slice(0, 10) : [];
+    const aj = ['angular.json', '.angular.json'].some((f) => fs.existsSync(path.join(cwd, f)));
+    // Тип проекта: angular | nest | node | ts — от него зависит, какой набор правил скилла применяет агент.
+    const hasDep = (k) => !!deps[k];
+    const serverDep = ['express', 'fastify', 'koa', '@hapi/hapi'].find(hasDep) || null;
+    const projectType = (aj || hasDep('@angular/core')) ? 'angular'
+        : Object.keys(deps).some((k) => k.startsWith('@nestjs/')) ? 'nest'
+            : serverDep ? 'node' : 'ts';
+    if (projectType === 'angular' && !aj)
+        warnings.push('angular.json не найден: @angular/core есть в зависимостях, но CLI-конфига нет (workspace-пакет?)');
+    let gi = '';
+    try {
+        gi = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8');
+    } catch (e) { /* нет .gitignore */
+    }
+    for (const f of ['graph-deps.json', '.graph-deps-cache.json'])
+        if (!gi.includes(f)) warnings.push(f + ' не в .gitignore — добавь');
+    const largest = [...g.files].sort((a, b) => (b.loc || 0) - (a.loc || 0)).slice(0, 10)
+        .map((f) => ({file: f.path, kind: f.kind, loc: f.loc}));
+    return {
+        ...(pkg ? {project: {name: pkg.name || null, version: pkg.version || null}} : {}),
+        ...(pm ? {packageManager: pm[1]} : {}),
+        projectType,
+        ...(projectType === 'node' ? {server: serverDep} : {}),
+        keyDeps: key,
+        otherDeps: {count: others.length, ...(others.length ? {names: others.slice(0, 15)} : {})},
+        tsconfig: {strict: tc ? !!tc.strict : null, ...(tc && tc.target ? {target: tc.target} : {}), ...(paths.length ? {paths} : {})},
+        ...(projectType === 'angular' ? {angularJson: aj} : {}),
+        stats: g.stats,
+        largest,
+        ...(warnings.length ? {warnings} : {})
+    };
+}
+
+function opCycles(g) {
+    // большие циклические группы (сотни файлов) показываем выборкой — иначе вывод раздувается
+    const cap = (c) => (c.length > 15 ? {size: c.length, sample: c.slice(0, 15)} : c);
+    return {count: g.cycles.length, cycles: g.cycles.slice(0, 20).map(cap)};
+}
+
+function opSymbol(g, p) {
+    if (!p.name) throw new OpError('Укажите payload.name');
+    const byId = (id) => g.files[id - 1];
+    const ids = has(g.symbols, p.name) ? g.symbols[p.name] : null;
+    if (!ids) {
+        // Член класса/интерфейса: метод, свойство, getter/setter; in=ИмяКласса сужает поиск
+        const owner = p.in ? String(p.in) : null;
+        const hits = [];
+        for (const f of g.files) {
+            for (const e of f.entities || []) {
+                if (!e.members || (owner && e.name !== owner)) continue;
+                for (const mm of e.members)
+                    if (mm.name === p.name)
+                        hits.push({file: f.path, kind: mm.kind, owner: e.name, line: mm.line, ...rangeOf(mm)});
+            }
+        }
+        return {
+            name: p.name,
+            ...(owner ? {in: owner} : {}),
+            ...(hits.length
+                ? {
+                    definedIn: hits.slice(0, 30),
+                    ...(hits.length > 30 ? {total: hits.length, hint: 'совпадений больше 30 — уточните in=ИмяКласса'} : {})
+                }
+                : {definedIn: []})
+        };
+    }
+    return {
+        name: p.name,
+        definedIn: [...new Set(ids)].map((id) => {
+            const f = byId(id);
+            const e = f.entities.find((x) => x.name === p.name || x.pipeName === p.name);
+            return {
+                file: f.path, kind: e ? e.kind : f.kind,
+                ...(e && e.line ? {line: e.line} : {}),
+                ...rangeOf(e),
+                ...(e && e.selector ? {selector: e.selector} : {}),
+                ...(e && e.pipeName ? {pipe: e.pipeName} : {})
+            };
+        })
+    };
+}
+
+function opSelector(g, p) {
+    if (!isAngular(cwd)) throw new OpError(ANGULAR_ERROR);
+    if (!p.selector) throw new OpError('Укажите payload.selector');
+    const byId = (id) => g.files[id - 1];
+    const s = String(p.selector).trim();
+    const keys = Object.keys(g.selectors);
+    const norm = (x) => x.replace(/[\[\]]/g, '');
+    const parts = (k) => parseSelector(k).length ? k.split(',').map((x) => x.trim()) : [k];
+    const key = keys.find((k) => k === s)
+        || keys.find((k) => parts(k).some((x) => x === s || norm(x) === norm(s) || x.includes('[' + norm(s) + ']')));
+    if (!key) return {selector: s, file: null};
+    const n = byId(g.selectors[key]);
+    const rev = reverseIndex(g);
+    const templates = (rev.get(n.id) || []).map(byId).filter((f) => f.kind === 'template').map((f) => f.path);
+    const warnings = selectorWarnings(g, key);
+    return {
+        selector: key, file: n.path, kind: n.kind,
+        ...(warnings.length ? {warnings} : {}),
+        usedInTemplatesTotal: templates.length,
+        usedInTemplates: templates.slice(0, 30)
+    };
+}
+
+function opPath(g, p) {
+    if (!p.from || !p.to) throw new OpError('Укажите payload.from и payload.to');
+    const a = findNode(g, p.from), b = findNode(g, p.to);
+    if (a.error) throw new OpError(a.error);
+    if (b.error) throw new OpError(b.error);
+    if (a.ambiguous || b.ambiguous)
+        return {ambiguous: true, matches: a.ambiguous || b.ambiguous, ...structuralStatus(g, 0, ['ambiguous-query'])};
+    const prev = new Map([[a.node.id, null]]);
+    const queue = [a.node.id];
+    while (queue.length) {
+        const cur = queue.shift();
+        if (cur === b.node.id) break;
+        for (const nxt of g.files[cur - 1].imports)
+            if (!prev.has(nxt)) {
+                prev.set(nxt, cur);
+                queue.push(nxt);
+            }
+    }
+    if (!prev.has(b.node.id))
+        return {from: a.node.path, to: b.node.path, chain: null, ...structuralStatus(g)};
+    const chain = [];
+    for (let cur = b.node.id; cur != null; cur = prev.get(cur)) chain.unshift(g.files[cur - 1].path);
+    return {from: a.node.path, to: b.node.path, chain, ...structuralStatus(g)};
+}
+
+function opNode(g, p) {
+    const byId = (id) => g.files[id - 1];
+    const n = p.__node;
+    const rev = reverseIndex(g);
+    // члены не выводим: их задача — поиск в op=symbol, в node они только раздули бы ответ
+    const bare = n.entities.map(({members, ...rest}) => rest);
+    // Пагинация: offset/limit для entities/importedBy; imports целиком (кап не вводится).
+    // Наличие срезов отражается счётчиками, полный доступ реален через offset.
+    const offset = Math.max(0, Math.round(Number(p.offset) || 0));
+    let limit = 0; // 0 — дефолтные пределы (50/30), как до пагинации
+    if (p.limit !== undefined && p.limit !== null && p.limit !== '') {
+        limit = Math.max(1, Math.round(Number(p.limit) || 1));
+    }
+    const entPage = bare.slice(offset, offset + (limit || 50));
+    const importers = rev.get(n.id) || [];
+    const impPage = importers.slice(offset, offset + (limit || 30));
+    const omitted = (bare.length - entPage.length) + (importers.length - impPage.length);
+    return {
+        file: n.path, id: n.id, kind: n.kind, loc: n.loc,
+        entitiesTotal: bare.length,
+        entities: entPage,
+        ...(bare.length > entPage.length ? {entitiesTruncated: bare.length - entPage.length} : {}),
+        ...(n.reexportAll ? {reexportAll: true} : {}),
+        importsTotal: n.imports.length,
+        imports: n.imports.map((id) => {
+            const ln = p.why ? (n.importLines || {})[id] : null;
+            return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
+        }),
+        importedByTotal: importers.length,
+        importedBy: impPage.map((id) => {
+            const ln = p.why ? ((byId(id).importLines || {})[n.id]) : null;
+            return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
+        }),
+        ...(importers.length > impPage.length ? {importedByTruncated: importers.length - impPage.length} : {}),
+        unresolved: n.unresolved.length,
+        ...unresolvedSummary(n),
+        ...(n.external.length ? {external: n.external} : {}),
+        ...structuralStatus(g, omitted)
+    };
+}
+
+function opDepsRdeps(g, p, kind) {
+    const n = p.__node;
+    const depth = Math.min(Math.max(Number(p.depth) || 1, 1), 5);
+    const all = walk(g, n.id, depth, kind === 'rdeps', p.why);
+    const list = all.slice(0, 60);
+    const status = structuralStatus(g, Math.max(0, all.length - 60));
+    // format=table (opt-in): однородные списки рёбер — строки-массивы с общей схемой columns.
+    // Все значения и порядок сохраняются; отсутствующий via передаётся null (он не был
+    // самостоятельным значением), декодер восстанавливает объекты {file,kind,level,via?}.
+    const table = p.format === 'table';
+    const rows = table
+        ? list.map((x) => [x.file, x.kind, x.level, x.via == null ? null : x.via])
+        : list;
+    return kind === 'deps'
+        ? {
+            file: n.path,
+            kind: n.kind,
+            importsTotal: all.length,
+            ...status,
+            unresolved: n.unresolved.length,
+            ...unresolvedSummary(n),
+            ...(table ? {columns: ['file', 'kind', 'level', 'via']} : {}),
+            imports: rows, ...(n.external.length ? {external: n.external} : {})
+        }
+        : {
+            file: n.path,
+            kind: n.kind,
+            importedByTotal: all.length,
+            ...status,
+            ...(table ? {columns: ['file', 'kind', 'level', 'via']} : {}),
+            importedBy: rows
+        };
+}
+
+/**
+ * Диспетчер одного запроса. Общий для одиночного режима и batch.
+ * file-запросы (node/deps/rdeps) резолвятся до вызова обработчика: ошибки пути и
+ * неоднозначность — ответы запроса, а не ошибки выполнения.
+ */
+function dispatchOp(g, p) {
+    if (['node', 'deps', 'rdeps'].includes(p.op)) {
+        if (!p.file) throw new OpError('Укажите payload.file');
+        const r = findNode(g, p.file);
+        if (r.error) throw new OpError(r.error);
+        if (r.ambiguous)
+            return {ambiguous: true, matches: r.ambiguous, ...structuralStatus(g, 0, ['ambiguous-query'])};
+        p.__node = r.node;
+    }
+    switch (p.op) {
+        case 'stats': return opStats(g);
+        case 'info': return opInfo(g);
+        case 'cycles': return opCycles(g);
+        case 'symbol': return opSymbol(g, p);
+        case 'selector': return opSelector(g, p);
+        case 'path': return opPath(g, p);
+        case 'node': return opNode(g, p);
+        case 'deps': return opDepsRdeps(g, p, 'deps');
+        case 'rdeps': return opDepsRdeps(g, p, 'rdeps');
+        default: throw new OpError('Неизвестный op: ' + p.op);
+    }
+}
+
+/**
+ * Обёртка: OpError → ответ с ошибкой (как fail в одиночном режиме: для deps/rdeps/path —
+ * со scope/completeness); прочие исключения — программная ошибка, пробрасываются.
+ */
+function runQuery(g, p) {
+    try {
+        return {ok: true, payload: dispatchOp(g, p)};
+    } catch (e) {
+        if (e instanceof OpError) {
+            const extras = ['deps', 'rdeps', 'path'].includes(p.op)
+                ? {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.'}, completeness: {complete: false, reasons: ['request-error']}}
+                : {};
+            return {ok: false, payload: {error: e.message, ...extras}};
+        }
+        throw e;
+    }
+}
+
+// ---------- batch: явные пакетные запросы ----------
+
+/**
+ * Запуск массива requests: {batch, total, failed, results}. Каждый элемент получает свой
+ * ответ либо {index, error}. Запросы группируются по scope (root+specs): граф и reverse
+ * index строятся один раз на группу; разные scope не объединяются молча. op=read не требует
+ * графа. Write-операции (build/generate/edit) в batch не входят — только BATCH_OPS.
+ */
+function runBatch() {
+    let requests = args.requests;
+    if (typeof requests === 'string') {
+        // argv-режим передаёт requests строкой: JSON-массив запросов
+        try {
+            requests = JSON.parse(requests);
+        } catch (e) {
+            fail('Некорректный JSON в requests: ' + e.message);
+        }
+    }
+    if (args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
+        const rf = String(args.requests_file);
+        const rfAbs = path.resolve(cwd, rf);
+        const rfRel = path.relative(cwd, rfAbs);
+        if (rfRel === '..' || rfRel.startsWith('..' + path.sep) || path.isAbsolute(rfRel))
+            fail('requests_file вне рабочей директории запрещён: ' + rf);
+        try {
+            requests = JSON.parse(fs.readFileSync(fs.realpathSync(rfAbs), 'utf8'));
+        } catch (e) {
+            fail('Не удалось прочитать requests_file: ' + e.message);
+        }
+    }
+    if (!Array.isArray(requests) || !requests.length)
+        fail('requests должен быть непустым JSON-массивом запросов {"op": ...}');
+    for (let i = 0; i < requests.length; i++) {
+        const r = requests[i];
+        if (!r || typeof r !== 'object' || Array.isArray(r)) fail('requests[' + i + ']: элемент должен быть объектом');
+        if (!BATCH_OPS.includes(r.op))
+            fail('requests[' + i + ']: неизвестный или запрещённый op: ' + r.op + ' (batch не выполняет write-операции)');
+    }
+    // Группы scope в порядке первого вхождения.
+    const groups = new Map();
+    requests.forEach((r, i) => {
+        if (r.op === 'read') {
+            if (!groups.has('read')) groups.set('read', {read: true, idxs: []});
+            groups.get('read').idxs.push(i);
+            return;
+        }
+        const specs = r.specs === undefined ? args.specs : (r.specs === true || r.specs === 'true' || r.specs === '1');
+        const root = path.resolve(cwd, r.root || args.root || (fs.existsSync(path.join(cwd, 'src')) ? 'src' : '.'));
+        const key = JSON.stringify([root, specs]);
+        if (!groups.has(key)) groups.set(key, {read: false, specs, root, idxs: []});
+        groups.get(key).idxs.push(i);
+    });
+    const results = new Array(requests.length);
+    let failed = 0;
+    for (const grp of groups.values()) {
+        if (grp.read) {
+            for (const i of grp.idxs) {
+                const r = readRanges(requests[i]);
+                if (r.error) {
+                    results[i] = {index: i, error: r.error};
+                    failed++;
+                } else {
+                    results[i] = {index: i, ...r};
+                }
+            }
+            continue;
+        }
+        const relRoot = path.relative(cwd, grp.root);
+        try {
+            setScope({root: relRoot === '' ? '.' : relRoot, specs: grp.specs});
+        } catch (e) {
+            for (const i of grp.idxs) {
+                results[i] = {index: i, error: e.message};
+                failed++;
+            }
+            continue;
+        }
+        // Свежесть графа проверяется на обычных условиях; scan-состояние scope-группы изолируется.
+        scanExcluded.clear();
+        scanIssues.clear();
+        let graphCtx;
+        try {
+            graphCtx = ensureGraph();
+        } catch (e) {
+            for (const i of grp.idxs) {
+                results[i] = {index: i, error: e.message};
+                failed++;
+            }
+            continue;
+        }
+        for (const i of grp.idxs) {
+            const res = runQuery(graphCtx.graph, requests[i]);
+            if (res.ok) results[i] = {index: i, ...res.payload};
+            else {
+                results[i] = {index: i, error: res.payload.error};
+                failed++;
+            }
+        }
+    }
+    const envelope = {batch: true, total: requests.length, failed, results};
+    if (args.compact === true || args.compact === '1' || args.compact === 'true') applyCompactBatch(envelope);
+    emit(envelope);
+    // 0 — выполнен хотя бы один запрос; 1 — все запросы завершились ошибками.
+    // partial errors: exit 0 при failed>0, «все успешно» не означает отсутствия failed.
+    process.exit(failed === requests.length ? 1 : 0);
+}
+
+/**
+ * compact=1 (opt-in): словарь путей на весь ответ + hoist точного равного scope/completeness.
+ * Индексы заменяют строки только в документированных позициях; похожие пути в разных папках
+ * не склеиваются — интернируется точная строка. Свежесть/semantics не меняются.
+ */
+function applyCompactBatch(envelope) {
+    const paths = [];
+    const pathIdx = new Map();
+    const intern = (s) => {
+        if (typeof s !== 'string') return s;
+        if (!pathIdx.has(s)) {
+            pathIdx.set(s, paths.length);
+            paths.push(s);
+        }
+        return pathIdx.get(s);
+    };
+    // Строковые пути верхнего уровня и известные списки: объекты с .file, массивы строк,
+    // table-строки (columns) — первая колонка.
+    const ROW_LISTS = ['imports', 'importedBy', 'definedIn', 'topImported', 'usedInTemplates', 'chain'];
+    for (const res of envelope.results) {
+        if (res.error) continue;
+        for (const k of ['file', 'from', 'to'])
+            if (typeof res[k] === 'string') res[k] = intern(res[k]);
+        for (const k of ROW_LISTS) {
+            const list = res[k];
+            if (!Array.isArray(list)) continue;
+            if (k === 'chain' || k === 'usedInTemplates') {
+                res[k] = list.map((s) => typeof s === 'string' ? intern(s) : s);
+            } else if (Array.isArray(res.columns) && (k === 'imports' || k === 'importedBy')) {
+                res[k] = list.map((row) => Array.isArray(row) && typeof row[0] === 'string' ? [intern(row[0]), ...row.slice(1)] : row);
+            } else {
+                res[k] = list.map((item) => item && typeof item === 'object' && typeof item.file === 'string'
+                    ? {...item, file: intern(item.file)}
+                    : item);
+            }
+        }
+    }
+    // Hoist: scope/completeness выносятся наверх только при точном (deep) равенстве у всех
+    // успешных ответов; иначе остаются в каждом элементе.
+    const deepEq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    for (const key of ['scope', 'completeness']) {
+        const present = envelope.results.filter((r) => !r.error && r[key] !== undefined);
+        if (present.length && present.length === envelope.results.filter((r) => !r.error).length
+            && present.every((r) => deepEq(r[key], present[0][key]))) {
+            envelope[key] = present[0][key];
+            for (const r of present) delete r[key];
+        }
+    }
+    if (paths.length) envelope.paths = paths;
+}
+
+// ---------- одиночный режим ----------
+
+if (args.requests !== undefined && args.requests !== null || args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
+    runBatch();
+}
+
+try {
+    setScope(args);
+} catch (e) {
+    fail(e.message);
+}
+
 const op = args.op;
-if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats');
-if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'selftest'].includes(op))
+if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats | read');
+if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'read', 'selftest'].includes(op))
     fail('Неизвестный op: ' + op);
+if (args.format && args.format !== 'table') fail('format поддерживает только table');
+
+// read не требует графа — отвечает до ensureGraph
+if (op === 'read') {
+    const r = readRanges(args);
+    if (r.error) fail(r.error);
+    emit(r);
+    process.exit(0);
+}
+
 if (op === 'selector' && !isAngular(cwd)) {
     console.log(ANGULAR_ERROR);
     process.exit(1);
@@ -1395,244 +2050,22 @@ if (op === 'selftest') {
 }
 
 if (op === 'build') {
-    const {graph, reparsed, ms} = buildGraph(null);
-    emit({built: true, ...graph.stats, reparsed, ms});
-    process.exit(0);
-}
-
-const {graph} = ensureGraph();
-const byId = (id) => graph.files[id - 1];
-
-if (op === 'stats') {
-    const rev = reverseIndex(graph);
-    emit({
-        ...graph.stats,
-        topImported: graph.files
-            .map((f) => ({file: f.path, kind: f.kind, importers: (rev.get(f.id) || []).length}))
-            .sort((a, b) => b.importers - a.importers).slice(0, 10)
-    });
-    process.exit(0);
-}
-
-if (op === 'info') {
-    // Паспорт проекта одним вызовом вместо чтения package.json/tsconfig/angular.json вручную.
-    const readJson = (name) => {
-        try {
-            return JSON.parse(fs.readFileSync(path.join(cwd, name), 'utf8'));
-        } catch (e) {
-            return null;
-        }
-    };
-    const warnings = selectorWarnings(graph);
-    const pkg = readJson('package.json');
-    if (!pkg) warnings.push('package.json не найден в ' + cwd);
-    if (pkg && !fs.existsSync(path.join(cwd, 'node_modules'))) warnings.push('node_modules не найден — выполните npm install');
-    const deps = {...(pkg && pkg.dependencies || {}), ...(pkg && pkg.devDependencies || {})};
-    const KEY_DEPS = ['@angular/core', '@angular/cli', '@angular/material', '@angular/cdk', 'typescript', 'rxjs', 'zone.js',
-        '@ngrx/store', '@ngrx/effects', '@ngrx/component-store', 'jest', 'karma', 'cypress', 'playwright', 'eslint', 'prettier',
-        '@nestjs/core', '@nestjs/common', 'express', 'fastify', 'koa', '@hapi/hapi'];
-    const key = {};
-    for (const k of KEY_DEPS) if (deps[k]) key[k] = deps[k];
-    const shown = new Set(Object.keys(key));
-    const others = Object.keys(deps).filter((k) => !shown.has(k)).sort();
-    const pm = [['package-lock.json', 'npm'], ['yarn.lock', 'yarn'], ['pnpm-lock.yaml', 'pnpm']]
-        .find(([f]) => fs.existsSync(path.join(cwd, f)));
-    let tc = null;
     try {
-        tc = parseJsonc(fs.readFileSync(path.join(cwd, 'tsconfig.json'), 'utf8')).compilerOptions || {};
-    } catch (e) { /* нет или не разобран — будет предупреждение */
+        const {graph, reparsed, ms} = buildGraph(null);
+        emit({built: true, ...graph.stats, reparsed, ms});
+    } catch (e) {
+        fail(e.message);
     }
-    if (!tc) warnings.push('tsconfig.json не найден или не разобран');
-    const paths = tc && tc.paths ? Object.keys(tc.paths).slice(0, 10) : [];
-    const aj = ['angular.json', '.angular.json'].some((f) => fs.existsSync(path.join(cwd, f)));
-    // Тип проекта: angular | nest | node | ts — от него зависит, какой набор правил скилла применяет агент.
-    const hasDep = (k) => !!deps[k];
-    const serverDep = ['express', 'fastify', 'koa', '@hapi/hapi'].find(hasDep) || null;
-    const projectType = (aj || hasDep('@angular/core')) ? 'angular'
-        : Object.keys(deps).some((k) => k.startsWith('@nestjs/')) ? 'nest'
-            : serverDep ? 'node' : 'ts';
-    if (projectType === 'angular' && !aj)
-        warnings.push('angular.json не найден: @angular/core есть в зависимостях, но CLI-конфига нет (workspace-пакет?)');
-    let gi = '';
-    try {
-        gi = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8');
-    } catch (e) { /* нет .gitignore */
-    }
-    for (const f of ['graph-deps.json', '.graph-deps-cache.json'])
-        if (!gi.includes(f)) warnings.push(f + ' не в .gitignore — добавь');
-    const largest = [...graph.files].sort((a, b) => (b.loc || 0) - (a.loc || 0)).slice(0, 10)
-        .map((f) => ({file: f.path, kind: f.kind, loc: f.loc}));
-    emit({
-        ...(pkg ? {project: {name: pkg.name || null, version: pkg.version || null}} : {}),
-        ...(pm ? {packageManager: pm[1]} : {}),
-        projectType,
-        ...(projectType === 'node' ? {server: serverDep} : {}),
-        keyDeps: key,
-        otherDeps: {count: others.length, ...(others.length ? {names: others.slice(0, 15)} : {})},
-        tsconfig: {strict: tc ? !!tc.strict : null, ...(tc && tc.target ? {target: tc.target} : {}), ...(paths.length ? {paths} : {})},
-        ...(projectType === 'angular' ? {angularJson: aj} : {}),
-        stats: graph.stats,
-        largest,
-        ...(warnings.length ? {warnings} : {})
-    });
     process.exit(0);
 }
 
-if (op === 'cycles') {
-    // большие циклические группы (сотни файлов) показываем выборкой — иначе вывод раздувается
-    const cap = (c) => (c.length > 15 ? {size: c.length, sample: c.slice(0, 15)} : c);
-    emit({count: graph.cycles.length, cycles: graph.cycles.slice(0, 20).map(cap)});
-    process.exit(0);
+let graphCtx;
+try {
+    graphCtx = ensureGraph();
+} catch (e) {
+    fail(e.message);
 }
 
-if (op === 'symbol') {
-    if (!args.name) fail('Укажите payload.name');
-    const ids = has(graph.symbols, args.name) ? graph.symbols[args.name] : null;
-    if (!ids) {
-        // Член класса/интерфейса: метод, свойство, getter/setter; in=ИмяКласса сужает поиск
-        const owner = args.in ? String(args.in) : null;
-        const hits = [];
-        for (const f of graph.files) {
-            for (const e of f.entities || []) {
-                if (!e.members || (owner && e.name !== owner)) continue;
-                for (const mm of e.members)
-                    if (mm.name === args.name)
-                        hits.push({file: f.path, kind: mm.kind, owner: e.name, line: mm.line});
-            }
-        }
-        emit({
-            name: args.name,
-            ...(owner ? {in: owner} : {}),
-            ...(hits.length
-                ? {
-                    definedIn: hits.slice(0, 30),
-                    ...(hits.length > 30 ? {total: hits.length, hint: 'совпадений больше 30 — уточните in=ИмяКласса'} : {})
-                }
-                : {definedIn: []})
-        });
-        process.exit(0);
-    }
-    emit({
-        name: args.name,
-        definedIn: [...new Set(ids)].map((id) => {
-            const f = byId(id);
-            const e = f.entities.find((x) => x.name === args.name || x.pipeName === args.name);
-            return {
-                file: f.path, kind: e ? e.kind : f.kind,
-                ...(e && e.line ? {line: e.line} : {}),
-                ...(e && e.selector ? {selector: e.selector} : {}),
-                ...(e && e.pipeName ? {pipe: e.pipeName} : {})
-            };
-        })
-    });
-    process.exit(0);
-}
-
-if (op === 'selector') {
-    if (!args.selector) fail('Укажите payload.selector');
-    const s = String(args.selector).trim();
-    const keys = Object.keys(graph.selectors);
-    const norm = (x) => x.replace(/[\[\]]/g, '');
-    const parts = (k) => parseSelector(k).length ? k.split(',').map((x) => x.trim()) : [k];
-    const key = keys.find((k) => k === s)
-        || keys.find((k) => parts(k).some((p) => p === s || norm(p) === norm(s) || p.includes('[' + norm(s) + ']')));
-    if (!key) {
-        emit({selector: s, file: null});
-        process.exit(0);
-    }
-    const n = byId(graph.selectors[key]);
-    const rev = reverseIndex(graph);
-    const templates = (rev.get(n.id) || []).map(byId).filter((f) => f.kind === 'template').map((f) => f.path);
-    const warnings = selectorWarnings(graph, key);
-    emit({
-        selector: key, file: n.path, kind: n.kind,
-        ...(warnings.length ? {warnings} : {}),
-        usedInTemplatesTotal: templates.length,
-        usedInTemplates: templates.slice(0, 30)
-    });
-    process.exit(0);
-}
-
-if (op === 'path') {
-    if (!args.from || !args.to) fail('Укажите payload.from и payload.to');
-    const a = findNode(graph, args.from), b = findNode(graph, args.to);
-    if (a.error) fail(a.error);
-    if (b.error) fail(b.error);
-    if (a.ambiguous || b.ambiguous) {
-        emit({ambiguous: true, matches: a.ambiguous || b.ambiguous, ...structuralStatus(graph, 0, ['ambiguous-query'])});
-        process.exit(0);
-    }
-    const prev = new Map([[a.node.id, null]]);
-    const queue = [a.node.id];
-    while (queue.length) {
-        const cur = queue.shift();
-        if (cur === b.node.id) break;
-        for (const nxt of graph.files[cur - 1].imports)
-            if (!prev.has(nxt)) {
-                prev.set(nxt, cur);
-                queue.push(nxt);
-            }
-    }
-    if (!prev.has(b.node.id)) {
-        emit({from: a.node.path, to: b.node.path, chain: null, ...structuralStatus(graph)});
-        process.exit(0);
-    }
-    const chain = [];
-    for (let cur = b.node.id; cur != null; cur = prev.get(cur)) chain.unshift(graph.files[cur - 1].path);
-    emit({from: a.node.path, to: b.node.path, chain, ...structuralStatus(graph)});
-    process.exit(0);
-}
-
-if (op === 'node' || op === 'deps' || op === 'rdeps') {
-    if (!args.file) fail('Укажите payload.file');
-    const r = findNode(graph, args.file);
-    if (r.error) fail(r.error);
-    if (r.ambiguous) {
-        emit({ambiguous: true, matches: r.ambiguous, ...structuralStatus(graph, 0, ['ambiguous-query'])});
-        process.exit(0);
-    }
-    const n = r.node;
-
-    if (op === 'node') {
-        const rev = reverseIndex(graph);
-        // члены не выводим: их задача — поиск в op=symbol, в node они только раздули бы ответ
-        const bare = n.entities.map(({members, ...rest}) => rest);
-        emit({
-            file: n.path, id: n.id, kind: n.kind, loc: n.loc,
-            entities: bare.slice(0, 50),
-            ...(bare.length > 50 ? {entitiesTruncated: bare.length - 50} : {}),
-            ...(n.reexportAll ? {reexportAll: true} : {}),
-            imports: n.imports.map((id) => {
-                const ln = args.why ? (n.importLines || {})[id] : null;
-                return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
-            }),
-            importedBy: (rev.get(n.id) || []).slice(0, 30).map((id) => {
-                const ln = args.why ? ((byId(id).importLines || {})[n.id]) : null;
-                return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
-            }),
-            unresolved: n.unresolved.length,
-            ...unresolvedSummary(n),
-            ...(n.external.length ? {external: n.external} : {})
-        });
-        process.exit(0);
-    }
-
-    const depth = Math.min(Math.max(args.depth, 1), 5);
-    const all = walk(graph, n.id, depth, op === 'rdeps', args.why);
-    const list = all.slice(0, 60);
-    const status = structuralStatus(graph, Math.max(0, all.length - 60));
-    emit(op === 'deps'
-        ? {
-            file: n.path,
-            kind: n.kind,
-            importsTotal: all.length,
-            ...status,
-            unresolved: n.unresolved.length,
-            ...unresolvedSummary(n),
-            imports: list, ...(n.external.length ? {external: n.external} : {})
-        }
-        : {file: n.path, kind: n.kind, importedByTotal: all.length, importedBy: list, ...status});
-    process.exit(0);
-}
-
-fail('Неизвестный op: ' + op);
+const result = runQuery(graphCtx.graph, args);
+emit(result.payload);
+process.exit(result.ok ? 0 : 1);

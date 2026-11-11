@@ -33,7 +33,7 @@ if (!Object.keys(args).length && process.stdin.isTTY !== true) {
 
 const cwd = process.cwd();
 const projectRoot = fs.realpathSync(cwd);
-const MAX_SIG = 200;        // максимум символов в одной сигнатуре
+const MAX_SIG = 200;        // максимум символов в одной сигнатуре (full=1 отключает)
 const MAX_DEPTH = 10;       // глубина прохода по реэкспортам
 const MAX_STARS = 6;        // сколько export * проверяем в поиске члена
 const MAX_AVAILABLE = 40;   // имен в списке доступных экспортов
@@ -43,7 +43,56 @@ const fail = (msg) => {
     emit({error: msg});
     process.exit(1);
 };
-const oneline = (s) => s.replace(/\s+/g, ' ').trim();
+const truthy = (v) => v === true || v === '1' || v === 'true';
+const fullSig = truthy(args.full);
+
+/**
+ * Пробелы схлопываются только вне строковых литералов: внутренние пробелы literal type
+ * ('a  b') и шаблонов сохраняются дословно, внешние — нормализуются в один пробел.
+ */
+function oneline(s) {
+    let out = '', str = null, pending = false, seen = false;
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (str) {
+            out += c;
+            if (c === '\\') { out += s[i + 1] || ''; i++; }
+            else if (c === str) str = null;
+            continue;
+        }
+        if (c === '"' || c === "'" || c === '`') {
+            if (pending && seen) out += ' ';
+            pending = false;
+            str = c;
+            out += c;
+            continue;
+        }
+        if (/\s/.test(c)) {
+            if (seen) pending = true;
+            continue;
+        }
+        if (pending && seen) { out += ' '; pending = false; }
+        seen = true;
+        out += c;
+    }
+    return out;
+}
+
+/**
+ * Сигнатуры со счётчиком обрезанных позиций: обрезка по MAX_SIG помечается индексами,
+ * full=1 возвращает текст целиком.
+ */
+function sigSlice(items, from, count, key = 'sig') {
+    const shown = items.slice(from, from + count);
+    const clipped = [];
+    shown.forEach((x, i) => { if (key === 'sig' ? x.clipped : x.declClipped) clipped.push(i); });
+    return {
+        signatures: shown.map((x) => x[key]),
+        ...(clipped.length ? {clippedSignatures: clipped} : {}),
+        ...(items.length > from + shown.length ? {truncated: true} : {})
+    };
+}
+const cut = (text) => fullSig ? {text, clipped: false} : {text: text.slice(0, MAX_SIG), clipped: text.length > MAX_SIG};
 const toPosix = (p) => {
     const rel = path.relative(cwd, p);
     return rel.startsWith('..') ? p.replace(/\\/g, '/') : rel.replace(/\\/g, '/');
@@ -196,11 +245,15 @@ function extractMembers(body, baseLine) {
     const push = (end) => {
         const chunk = body.slice(start, end);
         const text = oneline(chunk);
-        if (text) items.push({
-            name: memberName(chunk),
-            line: baseLine + body.slice(0, start).split('\n').length - 1,
-            sig: text.slice(0, MAX_SIG)
-        });
+        if (text) {
+            const c = cut(text);
+            items.push({
+                name: memberName(chunk),
+                line: baseLine + body.slice(0, start).split('\n').length - 1,
+                sig: c.text,
+                clipped: c.clipped
+            });
+        }
         start = -1;
     };
     for (let i = 0; i < body.length; i++) {
@@ -267,13 +320,19 @@ function enumMembers(body) {
         if ('{(['.includes(c)) depth++;
         if ('})]'.includes(c)) depth--;
         if (c === ',' && depth === 0) {
-            if (chunk.trim()) items.push({name: memberName(chunk), sig: oneline(chunk).slice(0, MAX_SIG)});
+            if (chunk.trim()) {
+                const c = cut(oneline(chunk));
+                items.push({name: memberName(chunk), sig: c.text, clipped: c.clipped});
+            }
             chunk = '';
             continue;
         }
         chunk += c;
     }
-    if (chunk.trim()) items.push({name: memberName(chunk), sig: oneline(chunk).slice(0, MAX_SIG)});
+    if (chunk.trim()) {
+        const c = cut(oneline(chunk));
+        items.push({name: memberName(chunk), sig: c.text, clipped: c.clipped});
+    }
     return items;
 }
 
@@ -307,16 +366,20 @@ function scanDecls(text) {
             if (close === -1) continue;
             const body = text.slice(brace + 1, close);
             const members = kind === 'enum' ? enumMembers(body) : extractMembers(body, lineAt(brace + 1));
+            const header = cut(oneline(text.slice(m.index, brace)));
             decls.push({
                 kind, name, line: lineAt(m.index),
-                decl: oneline(text.slice(m.index, brace)).slice(0, MAX_SIG),
-                members: members.slice(0, 400), membersTotal: members.length
+                decl: header.text,
+                declClipped: header.clipped,
+                // Полный список членов: cap не ставится, усечение выдачи делает limit/offset.
+                members, membersTotal: members.length
             });
             skipUntil = close + 1;
             re.lastIndex = close + 1;
         } else {
             const end = stmtEnd(text, nameEnd - name.length - kind.length - 1);
-            decls.push({kind, name, line: lineAt(m.index), decl: oneline(text.slice(m.index, end + 1)).slice(0, MAX_SIG)});
+            const d = cut(oneline(text.slice(m.index, end + 1)));
+            decls.push({kind, name, line: lineAt(m.index), decl: d.text, declClipped: d.clipped});
             skipUntil = end + 1;
         }
     }
@@ -488,7 +551,7 @@ function followSpec(spec, fromFile, root) {
  * С member: сначала декларация с этим именем, затем реэкспорты; если в файле есть
  * классы/интерфейсы — отдаём их, main поищет member среди членов.
  */
-function analyze(target, member, depth, visited) {
+function analyze(target, member, depth, visited, cache) {
     const checked = confinedFile(target.file, target.root);
     if (!checked) return null;
     const fileAbs = checked.file;
@@ -551,11 +614,16 @@ function analyze(target, member, depth, visited) {
 
 // ---------- main ----------
 
-(function main() {
-    if (!args.name) fail('Укажите name: пакет с подпутем и членом через # (rxjs, rxjs/operators, @angular/core#Injector, rxjs/operators#map)');
-    let [spec, member] = String(args.name).split('#');
-    member = args.member || member || null;
-    const limit = Math.max(1, Number(args.limit) || 40);
+/**
+ * Один sig-запрос: payload либо {error}. visited у каждого запроса свой — state первого
+ * запроса не скрывает второй; cache (чтение/разбор файлов) общий в пределах запуска.
+ */
+function runSig(params, cache) {
+    if (!params.name) return {error: 'Укажите name: пакет с подпутем и членом через # (rxjs, rxjs/operators, @angular/core#Injector, rxjs/operators#map)'};
+    let [spec, member] = String(params.name).split('#');
+    member = params.member || member || null;
+    const limit = Math.max(1, Number(params.limit) || 40);
+    const offset = Math.max(0, Number(params.offset) || 0);
 
     // Прямые пути проверяются и лексически, и по realpath до чтения деклараций.
     const direct = path.isAbsolute(spec) || /^[a-z]:/i.test(spec) || /^\.{1,2}(?:[\\/]|$)/.test(spec)
@@ -564,27 +632,26 @@ function analyze(target, member, depth, visited) {
     if (direct) {
         const abs = path.resolve(cwd, spec);
         if (!insideDir(cwd, abs) || (process.platform !== 'win32' && /^[a-z]:/i.test(spec)))
-            fail('Путь вне рабочей директории запрещён: ' + spec);
+            return {error: 'Путь вне рабочей директории запрещён: ' + spec};
         try {
             const real = fs.realpathSync(abs);
-            if (!insideDir(projectRoot, real)) fail('Путь вне рабочей директории запрещён: ' + spec);
+            if (!insideDir(projectRoot, real)) return {error: 'Путь вне рабочей директории запрещён: ' + spec};
             target = confinedFile(real, projectRoot);
         } catch (e) { /* ниже — единая ошибка отсутствующего файла */ }
-        if (!target) fail('Файл деклараций не найден: ' + spec);
+        if (!target) return {error: 'Файл деклараций не найден: ' + spec};
     } else {
         try { target = resolveModuleFile(spec); }
-        catch (e) { fail(e.message); }
+        catch (e) { return {error: e.message}; }
     }
 
-    const r = analyze(target, member, 0, new Set());
-    if (!r) fail('Файл деклараций недоступен: ' + spec);
+    const r = analyze(target, member, 0, new Set(), cache);
+    if (!r) return {error: 'Файл деклараций недоступен: ' + spec};
     const rel = toPosix(r.file);
-    const base = {name: String(args.name), member: member || null, file: rel};
+    const base = {name: String(params.name), member: member || null, file: rel};
 
     if (member) {
         if (!r.decls.length) {
-            emit({...base, found: false, ...(r.available && r.available.length ? {available: r.available} : {})});
-            process.exit(0);
+            return {...base, found: false, ...(r.available && r.available.length ? {available: r.available} : {})};
         }
         const containers = r.decls.filter((x) => x.members);
         const withMember = containers.find((x) => x.members.some((y) => y.name === member));
@@ -592,68 +659,135 @@ function analyze(target, member, depth, visited) {
 
         // member — сам класс/интерфейс/enum: карточка целиком
         if (d.members && d.name === member) {
-            emit({
+            return {
                 ...base,
                 found: true,
                 kind: d.kind,
                 owner: d.name,
                 line: d.line,
                 decl: d.decl,
-                signatures: d.members.slice(0, limit).map((x) => x.sig),
-                signaturesTotal: d.members.length,
-                ...(d.members.length > limit ? {truncated: true} : {})
-            });
-            process.exit(0);
+                ...(d.declClipped ? {declClipped: true} : {}),
+                ...sigSlice(d.members, offset, limit),
+                signaturesTotal: d.membersTotal
+            };
         }
         // member — член класса/интерфейса
         if (d.members) {
             const matched = d.members.filter((x) => x.name === member);
             if (matched.length) {
-                emit({
+                return {
                     ...base,
                     found: true,
                     kind: d.kind,
                     owner: d.name,
                     line: matched[0].line,
                     decl: d.decl,
-                    signatures: matched.slice(0, limit).map((x) => x.sig),
+                    ...(d.declClipped ? {declClipped: true} : {}),
+                    ...sigSlice(matched, offset, limit),
                     signaturesTotal: matched.length
-                });
-            } else {
-                const inClass = [...new Set(d.members.map((x) => x.name).filter(Boolean))];
-                emit({
-                    ...base,
-                    found: false,
-                    owner: d.name,
-                    decl: d.decl,
-                    available: (inClass.length ? inClass : r.available || []).slice(0, MAX_AVAILABLE)
-                });
+                };
             }
-            process.exit(0);
+            const inClass = [...new Set(d.members.map((x) => x.name).filter(Boolean))];
+            return {
+                ...base,
+                found: false,
+                owner: d.name,
+                decl: d.decl,
+                available: (inClass.length ? inClass : r.available || []).slice(0, MAX_AVAILABLE)
+            };
         }
         // member — функция/const/type: все перегрузки
-        emit({
+        return {
             ...base,
             found: true,
             kind: d.kind,
             line: d.line,
-            signatures: r.decls.map((x) => x.decl).slice(0, limit),
+            ...sigSlice(r.decls, offset, limit, 'decl'),
             signaturesTotal: r.decls.length
-        });
-        process.exit(0);
+        };
     }
 
     // Без члена: классы/интерфейсы — с членами, функции/типы — своими сигнатурами
-    const items = r.decls.slice(0, limit).map((d) => (d.members
-        ? {kind: d.kind, name: d.name, line: d.line, decl: d.decl, members: d.members.slice(0, limit).map((x) => x.sig), membersTotal: d.membersTotal}
-        : {kind: d.kind, name: d.name, line: d.line, decl: d.decl}));
-    const truncated = r.decls.length > limit || r.decls.some((d) => (d.membersTotal || 0) > limit);
-    emit({
+    const page = r.decls.slice(offset, offset + limit);
+    const items = page.map((d) => {
+        const shownMembers = (d.members || []).slice(0, limit);
+        const clippedMembers = [];
+        shownMembers.forEach((x, i) => { if (x.clipped) clippedMembers.push(i); });
+        return {
+            kind: d.kind, name: d.name, line: d.line, decl: d.decl,
+            ...(d.declClipped ? {clipped: true} : {}),
+            ...(d.members
+                ? {members: shownMembers.map((x) => x.sig), membersTotal: d.membersTotal,
+                    ...(clippedMembers.length ? {clippedMembers} : {}),
+                    ...(d.membersTotal > shownMembers.length ? {membersTruncated: d.membersTotal - shownMembers.length} : {})}
+                : {})
+        };
+    });
+    const truncated = r.decls.length > offset + items.length || page.some((d) => (d.membersTotal || 0) > limit);
+    return {
         ...base,
         found: r.decls.length > 0,
         declarations: items,
-        ...(r.decls.length > limit ? {declarationsTotal: r.decls.length} : {}),
+        ...(r.decls.length > offset + items.length ? {declarationsTotal: r.decls.length} : {}),
         ...(truncated ? {hint: 'вывод усечён (limit=' + limit + '); точечный запрос: name=' + spec + '#ИмяЧлена'} : {}),
         ...(!r.decls.length && r.available && r.available.length ? {available: r.available} : {})
+    };
+}
+
+// Общий read/parse кэш одного запуска: один файл разбирается один раз на все запросы.
+const declCache = new Map();
+
+/**
+ * Batch sig: requests=[{"name": ...}] либо requests_file (UTF-8 JSON внутри проекта).
+ * Каждый элемент получает свой ответ либо {index, error}; found:false и available —
+ * ответы, а не ошибки. Exit 0 при хотя бы одном выполненном запросе, 1 — при полном провале.
+ */
+function runSigBatch() {
+    let requests = args.requests;
+    if (typeof requests === 'string') {
+        try {
+            requests = JSON.parse(requests);
+        } catch (e) {
+            fail('Некорректный JSON в requests: ' + e.message);
+        }
+    }
+    if (args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
+        const rf = String(args.requests_file);
+        const rfAbs = path.resolve(cwd, rf);
+        const rfRel = path.relative(cwd, rfAbs);
+        if (rfRel === '..' || rfRel.startsWith('..' + path.sep) || path.isAbsolute(rfRel))
+            fail('requests_file вне рабочей директории запрещён: ' + rf);
+        try {
+            requests = JSON.parse(fs.readFileSync(fs.realpathSync(rfAbs), 'utf8'));
+        } catch (e) {
+            fail('Не удалось прочитать requests_file: ' + e.message);
+        }
+    }
+    if (!Array.isArray(requests) || !requests.length)
+        fail('requests должен быть непустым JSON-массивом запросов {"name": "pkg#Member"}');
+    for (let i = 0; i < requests.length; i++) {
+        const r = requests[i];
+        if (!r || typeof r !== 'object' || Array.isArray(r)) fail('requests[' + i + ']: элемент должен быть объектом');
+    }
+    const results = new Array(requests.length);
+    let failed = 0;
+    requests.forEach((r, i) => {
+        const payload = runSig(r, declCache);
+        if (payload.error) {
+            results[i] = {index: i, error: payload.error};
+            failed++;
+        } else {
+            results[i] = {index: i, ...payload};
+        }
     });
-})();
+    emit({batch: true, total: requests.length, failed, results});
+    process.exit(failed === requests.length ? 1 : 0);
+}
+
+if (args.requests !== undefined && args.requests !== null || args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
+    runSigBatch();
+} else {
+    const payload = runSig(args, declCache);
+    if (payload.error) fail(payload.error);
+    emit(payload);
+}
