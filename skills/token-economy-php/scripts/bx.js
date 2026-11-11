@@ -466,25 +466,43 @@ const ops = {
     const n = findNode(idx, args.file || args.target);
     const lines = [`${n.p}  [${n.kind}]  (${n.loc} строк, ${n.enc})`];
     if (n.ns) lines.push('namespace ' + n.ns);
+    const lim = args.limit === undefined ? 60 : Math.max(0, Math.round(Number(args.limit) || 0)); // 0 — без капа
+    // Кап — только по печатаемым строкам объявлений основного файла: заголовки decls, строка таблицы,
+    // их члены, funcs, consts. Extras-блоки и inherit-блоки (у наследования свой кап 40 на предка) не входят.
+    let full = 0;
+    const blocks = []; // { counted: [...], inherit: [...] } — на каждый decl / функцию / константу
     for (const d of n.decls || []) {
       const hdr = `${(d.mods || []).join(' ')} ${d.kind} ${d.name}`.trim() + (d.ext.length ? ' extends ' + d.ext.join(', ') : '') + (d.impl.length ? ' implements ' + d.impl.join(', ') : '');
-      lines.push(`L${d.line}-${d.end}`.padEnd(10) + hdr);
-      if (d.table) lines.push('          таблица ' + d.table + (d.fields ? '; поля: ' + d.fields.join(', ') : ''));
+      const counted = [`L${d.line}-${d.end}`.padEnd(10) + hdr];
+      if (d.table) counted.push('          таблица ' + d.table + (d.fields ? '; поля: ' + d.fields.join(', ') : ''));
       for (const m of d.members || []) {
-        lines.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + (m.k === 'method' ? short(m.sig, 150) : m.k === 'const' ? 'const ' + m.n : 'case ' + m.n));
+        counted.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + (m.k === 'method' ? short(m.sig, 150) : m.k === 'const' ? 'const ' + m.n : 'case ' + m.n));
       }
+      const inherit = [];
       if (truthy(args.inherit)) { // методы предков: в старом API основные методы лежат в CAll*-классах
         const dm = declMap(idx);
         for (const [bn, bd] of ancestors(dm, d)) {
-          lines.push(`  -- унаследовано от ${bd.name} (${bn.p}:${bd.line})`);
+          inherit.push(`  -- унаследовано от ${bd.name} (${bn.p}:${bd.line})`);
           const ms = (bd.members || []).filter((m) => m.k === 'method' && m.v !== 'private');
-          ms.slice(0, 40).forEach((m) => lines.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + short(m.sig, 150)));
-          if (ms.length > 40) lines.push(`  … ещё ${ms.length - 40}`);
+          ms.slice(0, 40).forEach((m) => inherit.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + short(m.sig, 150)));
+          if (ms.length > 40) inherit.push(`  … ещё ${ms.length - 40}`);
         }
       }
+      full += counted.length;
+      blocks.push({ counted, inherit });
     }
-    for (const f of n.funcs || []) lines.push(`L${f.l}-${f.e}`.padEnd(10) + short(f.sig, 150));
-    for (const [c, l] of n.consts || []) lines.push(`L${l}`.padEnd(10) + 'const ' + c);
+    for (const f of n.funcs || []) { full++; blocks.push({ counted: [`L${f.l}-${f.e}`.padEnd(10) + short(f.sig, 150)], inherit: [] }); }
+    for (const [c, l] of n.consts || []) { full++; blocks.push({ counted: [`L${l}`.padEnd(10) + 'const ' + c], inherit: [] }); }
+    const cut = lim > 0 && full > lim;
+    let left = cut ? lim : Infinity;
+    for (const b of blocks) {
+      if (left <= 0) break;
+      const take = b.counted.slice(0, left);
+      lines.push(...take);
+      left -= take.length;
+      if (b.inherit.length) lines.push(...b.inherit); // inherit-блок печатается целиком и в кап не входит
+    }
+    if (cut) lines.push(`показано ${lim} из ${full} объявлений (limit=0 — вывести все)`);
     if (!(n.decls || []).length && !(n.funcs || []).length) lines.push('(объявлений классов и функций нет — шаблон или страница)');
     if (n.comps) lines.push('компоненты: ' + n.comps.map(([id, t, l]) => `${id}${t ? ' [' + t + ']' : ''} L${l}`).join('; '));
     if (n.mods) lines.push('модули: ' + n.mods.map(([id, l]) => `${id} L${l}`).join(', '));
