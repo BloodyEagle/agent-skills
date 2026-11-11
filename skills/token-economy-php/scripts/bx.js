@@ -288,7 +288,7 @@ const ops = {
     if (ctx.mode === 'generic') {
       const top = cust.filter((n) => n.loc).sort((a, b) => b.loc - a.loc).slice(0, 5);
       if (top.length) lines.push('самые крупные: ' + top.map((n) => `${n.p} (${n.loc} строк)`).join(', '));
-      lines.push('операции: info, search, symbol, outline, deps, rdeps, path, node, stats, read, patch, create, build. Профильные операции Битрикса, Laravel и MODX отключены.');
+      lines.push('операции: info, search, symbol, outline, deps, rdeps, path, node, stats, read, patch, patch_symbol, create, build. Профильные операции Битрикса, Laravel и MODX отключены.');
       lines.push('ВНИМАНИЕ: связи через конфигурацию DI/сервис-контейнера и не-PHP файлы (шаблоны, YAML) не индексируются — пустой rdeps не значит «никем не используется».');
     }
     lines.push(`в индексе файлов: ${idx.nodes.length} (${cust.length} своих)` + (ctx.mode === 'bitrix' && !ctx.core ? '; ядро не индексируется ("core":true включит его)' : ''));

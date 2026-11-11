@@ -21,6 +21,8 @@ const cases = {
     { op: 'console' }, { op: 'route', url: '/posts', method: 'GET' },
     { op: 'lang', query: 'Записи' }, { op: 'symbol', name: 'App\\Models\\Post' },
     { op: 'deps', file: 'app/Http/Controllers/PostController.php' },
+    { op: 'read', file: 'routes/web.php', ranges: '1-3,5-7' },
+    { op: 'patch_symbol', file: 'app/Models/Post.php', symbol: 'App\\Models\\Post::comments', body: "return $this->hasMany(Comment::class);", dry: true },
   ],
   modx: [
     { op: 'info' }, { op: 'symbol', name: 'modX' },
@@ -34,6 +36,9 @@ const cases = {
     { op: 'info' }, { op: 'symbol', name: 'App\\Services\\Billing' },
     { op: 'outline', file: 'App\\Support\\Helper' }, { op: 'deps', file: 'src/Services/Billing.php' },
     { op: 'search', query: 'slugify' }, { op: 'routes', exit: 1 },
+    { op: 'node', file: 'src/Services/Billing.php', offset: '0', limit: '1' },
+    { op: 'node', file: 'index.php' },
+    { op: 'outline', file: 'App\\Support\\Helper', limit: '1' },
   ],
 };
 

@@ -16,7 +16,7 @@ description: Экономия токенов в любых PHP-проектах.
     "properties": {
       "op": {
         "type": "string",
-        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | routes | model | container | blade | console | element | tpl | read | patch | create | build | selftest"
+        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | routes | model | container | blade | console | element | tpl | read | patch | patch_symbol | create | build | selftest"
       },
       "payload": {
         "type": "object",
@@ -33,7 +33,7 @@ description: Экономия токенов в любых PHP-проектах.
 ## Правила (строго)
 
 1. Один раз за разговор, прежде чем читать или править файлы, вызови `info`: он назовёт режим проекта (Битрикс / Laravel / MODX / «CMS не определена — универсальный»), кодировки и состав файлов.
-2. Режим определяет доступные профильные операции: Битрикс — правила и операции Битрикса в `references/bitrix.md` (прочитай перед их использованием); Laravel — в `references/laravel.md`; MODX — в `references/modx.md` (сниппеты/чанки/шаблоны в БД файловому индексу недоступны — об этом предупреждает `info`); «CMS не определена» — универсальный режим: профильные операции не вызывай, работай общими (`search`, `outline`, `symbol`, `deps`, `rdeps`, `path`, `node`, `stats`, `read`, `patch`, `create`).
+2. Режим определяет доступные профильные операции: Битрикс — правила и операции Битрикса в `references/bitrix.md` (прочитай перед их использованием); Laravel — в `references/laravel.md`; MODX — в `references/modx.md` (сниппеты/чанки/шаблоны в БД файловому индексу недоступны — об этом предупреждает `info`); «CMS не определена» — универсальный режим: профильные операции не вызывай, работай общими (`search`, `outline`, `symbol`, `deps`, `rdeps`, `path`, `node`, `stats`, `read`, `patch`, `patch_symbol`, `create`).
 3. Если `info` показал файлы в cp1251 или UTF-16LE/BE, читай их только операцией `read`, правь только `patch`, создавай только `create`: штатная запись UTF-8 меняет кодировку. UTF-16 определяется по BOM; без BOM кодировка не угадывается.
 4. Файл меньше 300 строк читай напрямую (в cp1251 — через `read`). Файл от 300 строк — сначала `outline`, затем точечное чтение диапазона (`read` с `offset` и `limit` либо Read(offset, limit)).
 5. Где определён класс, метод, функция, константа или ORM-таблица — `symbol` (метод ищется и по цепочке наследования, в базовых классах). Где встречается текст — `search`.
