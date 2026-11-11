@@ -4,6 +4,7 @@ const path = require('path');
 const SOURCE_EXT = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 const IGNORED_DIRS = ['node_modules', 'dist', 'build', '.next', 'out', 'coverage', '.git', 'vendor', '.zcode', '.kilo', '.kilocode', '.angular'];
 const ANGULAR_ERROR = 'Angular не найден в проекте: команда неприменима';
+const REACT_ERROR = 'React не найден в проекте: команда неприменима (требуется react >= 16 в package.json)';
 
 /**
  * Обходит исходники без повторного чтения дерева в пределах вызова.
@@ -56,4 +57,37 @@ function isAngular(root) {
     }
 }
 
-module.exports = {SOURCE_EXT, IGNORED_DIRS, walk, isAngular, ANGULAR_ERROR};
+/**
+ * major-версия из range-спецификатора package.json; null — распознать нельзя.
+ * @param {string} spec Значение из package.json (например `^16.0.0`, `npm:react@18.3.1`).
+ * @returns {number|null} Число или null, если версию распознать нельзя.
+ */
+function parseReactMajor(spec) {
+    if (typeof spec !== 'string') return null;
+    let s = spec.trim();
+    if (s.startsWith('npm:')) s = s.slice(4).replace(/^[^@]*@/, '');
+    s = s.replace(/^[\^~>=<\s*v]+/, '');
+    const m = s.match(/^(\d+)/);
+    return m ? Number(m[1]) : null;
+}
+
+/**
+ * Проверяет наличие React 16+ без загрузки зависимостей проекта; нераспознанная
+ * версия (`latest`, `next`, `*`, `workspace:*`) трактуется как react по присутствию пакета.
+ * @param {string} root Корень проекта.
+ * @returns {boolean} Найден ли React подходящей версии.
+ */
+function isReact(root) {
+    try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+        const spec = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
+            .map(key => pkg[key] && pkg[key].react).find(Boolean);
+        if (!spec) return false;
+        const major = parseReactMajor(spec);
+        return major === null || major >= 16;
+    } catch (_) {
+        return false;
+    }
+}
+
+module.exports = {SOURCE_EXT, IGNORED_DIRS, walk, isAngular, isReact, parseReactMajor, ANGULAR_ERROR, REACT_ERROR};

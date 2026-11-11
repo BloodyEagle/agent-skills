@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 const {project, json} = require('./helpers');
-const {SOURCE_EXT, IGNORED_DIRS, walk} = require('../../skills/token-economy-ts/scripts/lib/files');
+const {SOURCE_EXT, IGNORED_DIRS, walk, isReact, parseReactMajor, REACT_ERROR} = require('../../skills/token-economy-ts/scripts/lib/files');
 
 const found = result => result.matches.map(m => m.file.replace(/\\/g, '/'));
 
@@ -71,3 +71,41 @@ test('audit: search не обрывает surrogate pair на границе sni
     assert.ok([...text].length <= 100);
     assert.ok(text.startsWith('needle '));
 }, {'unicode.js': 'needle ' + 'x'.repeat(92) + '😀end'}, {empty: true}));
+
+test('parseReactMajor извлекает major из спецификаторов package.json', () => {
+    assert.equal(parseReactMajor('16.8.0'), 16);
+    assert.equal(parseReactMajor('^16.0.0'), 16);
+    assert.equal(parseReactMajor('~17.2.1'), 17);
+    assert.equal(parseReactMajor('>=16'), 16);
+    assert.equal(parseReactMajor('18.x'), 18);
+    assert.equal(parseReactMajor('19.0.0-rc.1'), 19);
+    assert.equal(parseReactMajor('npm:react@18.3.1'), 18);
+    assert.equal(parseReactMajor('15.6.2'), 15);
+});
+
+test('parseReactMajor: нераспознаваемые версии дают null', () => {
+    for (const spec of ['latest', 'next', '*', 'workspace:*']) assert.equal(parseReactMajor(spec), null, spec);
+    assert.equal(parseReactMajor(null), null);
+    assert.equal(parseReactMajor(42), null);
+});
+
+test('isReact: react 16+ в любой секции package.json', () => {
+    const pkg = dependencies => JSON.stringify({dependencies});
+    project(root => assert.equal(isReact(root), true, 'dependencies'), {['package.json']: pkg({react: '^17.0.0'})}, {empty: true});
+    project(root => assert.equal(isReact(root), true, 'devDependencies'),
+        {['package.json']: JSON.stringify({devDependencies: {react: '18.3.1'}})}, {empty: true});
+    project(root => assert.equal(isReact(root), true, 'peerDependencies'),
+        {['package.json']: JSON.stringify({peerDependencies: {react: '16.8.0'}})}, {empty: true});
+    project(root => assert.equal(isReact(root), true, 'optionalDependencies'),
+        {['package.json']: JSON.stringify({optionalDependencies: {react: '19.0.0'}})}, {empty: true});
+});
+
+test('isReact: react < 16 и отсутствие react дают false', () => {
+    const pkg = content => ({['package.json']: content});
+    project(root => assert.equal(isReact(root), false, 'react 15'),
+        pkg(JSON.stringify({dependencies: {react: '15.6.2'}})), {empty: true});
+    project(root => assert.equal(isReact(root), false, 'react-dom без react'),
+        pkg(JSON.stringify({dependencies: {'react-dom': '^18.0.0'}})), {empty: true});
+    project(root => assert.equal(isReact(root), false, 'нет package.json'), {}, {empty: true});
+    project(root => assert.equal(isReact(root), false, 'битый package.json'), pkg('{oops'), {empty: true});
+});
