@@ -14,6 +14,7 @@ if (first && first.startsWith('{')) {
     }
 }
 for (const a of process.argv.slice(2)) {
+    if (a.startsWith('{')) continue; // argv-JSON уже разобран выше — не интерпретировать как ключ=значение
     const i = a.indexOf('=');
     if (i !== -1 && a.slice(0, i)) args[a.slice(0, i)] = a.slice(i + 1);
 }
