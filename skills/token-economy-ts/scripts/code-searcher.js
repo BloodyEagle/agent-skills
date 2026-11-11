@@ -48,10 +48,16 @@ const exts = String(args.ext || SOURCE_EXT.join(',')).split(',').map(s => s.trim
 // с save, а saved и $save — нет). Это поиск raw text, а не разрешение ссылок: escaped
 // идентификаторы (\u0073ave) и вхождения в строках/комментариях находятся наравне с кодом.
 // word=1 и regex=1 вместе — ошибка, комбинировать их не предполагается.
+// format=grouped|runs — обратимые компактные формы (opt-in): путь один раз на файл.
 // limit — максимум показанных совпадений (по умолчанию 30); files=1 — только файлы со счётчиками.
 const truthy = (v) => v === true || v === '1' || v === 'true';
 const ignoreCase = truthy(args.i) || truthy(args.ignoreCase);
 const filesOnly = truthy(args.files);
+const format = args.format === undefined || args.format === null ? '' : String(args.format);
+if (format && format !== 'grouped' && format !== 'runs') {
+    console.log(JSON.stringify({error: "format поддерживает только grouped или runs"}));
+    process.exit(1);
+}
 const limit = Math.max(1, Number(args.limit) || 30);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const ID_CONT = '[$\\u200C\\u200D\\p{ID_Continue}]';
@@ -108,6 +114,10 @@ function searchInDir(dir, results = []) {
 
 const matches = searchInDir(rootAbs);
 if (filesOnly) {
+    if (format) {
+        console.log(JSON.stringify({error: "format=grouped|runs неприменим к files=1: список файлов уже передаёт путь один раз"}));
+        process.exit(1);
+    }
     const byFile = new Map();
     for (const m of matches) byFile.set(m.file, (byFile.get(m.file) || 0) + 1);
     console.log(JSON.stringify({
@@ -118,6 +128,48 @@ if (filesOnly) {
             .sort((a, b) => b.count - a.count)
             .slice(0, limit)
     }));
-} else {
+} else if (!format) {
     console.log(JSON.stringify({count: matches.length, matches: matches.slice(0, limit)}));
+} else {
+    // Обратимые компактные формы: путь один раз на группу, все сниппеты сохраняются,
+    // порядок совпадений не меняется. Декодер восстанавливает matches побайтно.
+    const shown = matches.slice(0, limit);
+    const groups = [];
+    let group = null, run = null;
+    for (const m of shown) {
+        if (!group || group.file !== m.file) {
+            group = format === 'runs' ? {file: m.file, runs: []} : {file: m.file, hits: []};
+            run = null;
+            groups.push(group);
+        }
+        if (format === 'runs') {
+            if (run && m.line === run.startLine + run.texts.length) run.texts.push(m.text);
+            else {
+                run = {startLine: m.line, texts: [m.text]};
+                group.runs.push(run);
+            }
+        } else {
+            group.hits.push({line: m.line, text: m.text});
+        }
+    }
+    // Общий префикс путей (задача 14): передаётся один раз, полный путь = конкатенация.
+    let prefix = null;
+    const files = groups.map((g) => g.file);
+    if (files.length > 1) {
+        let common = files[0];
+        for (const f of files) {
+            let i = 0;
+            while (i < common.length && i < f.length && common[i] === f[i]) i++;
+            common = common.slice(0, i);
+            if (!common) break;
+        }
+        const cut = Math.max(common.lastIndexOf('/'), common.lastIndexOf('\\'));
+        if (cut > 0 && cut + 1 >= 4) prefix = common.slice(0, cut + 1);
+    }
+    console.log(JSON.stringify({
+        count: matches.length,
+        shownMatches: shown.length,
+        ...(prefix ? {pathPrefix: prefix} : {}),
+        groups: prefix ? groups.map((g) => ({...g, file: g.file.slice(prefix.length)})) : groups
+    }));
 }
