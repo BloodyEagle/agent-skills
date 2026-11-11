@@ -1024,23 +1024,31 @@ const ops = {
   console() {
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
+    const lim = args.limit === undefined ? 50 : Math.max(0, Math.round(Number(args.limit) || 0));
+    const total = d.cmds.length + d.sched.length;
+    if (!total) return out('команды и расписание не найдены (app/Console/Commands, routes/console.php, Kernel::schedule)');
+    const shown = lim > 0 ? Math.min(lim, total) : total;
+    const cmdRows = [];
+    for (const c of d.cmds) cmdRows.push(`  ${c.sig}  ${c.cls ? c.cls + '  (' + c.p + ':' + c.l + ')' : '(' + c.p + ':' + c.l + ')'}${c.desc ? '  — ' + short(c.desc, 60) : ''}`);
+    const schedRows = [];
+    for (const s of d.sched) {
+      let cmd = s.cmd;
+      if (/::class$/.test(cmd)) {
+        const cc = d.cmds.find((x) => x.cls === cmd.replace(/::class$/, ''));
+        if (cc) cmd = cc.sig;
+      }
+      schedRows.push(`  ${cmd}  ${s.freq}  (${s.p}:${s.l})`);
+    }
     const lines = [];
-    if (!d.cmds.length && !d.sched.length) return out('команды и расписание не найдены (app/Console/Commands, routes/console.php, Kernel::schedule)');
     if (d.cmds.length) {
       lines.push(`команды (${d.cmds.length}):`);
-      for (const c of d.cmds) lines.push(`  ${c.sig}  ${c.cls ? c.cls + '  (' + c.p + ':' + c.l + ')' : '(' + c.p + ':' + c.l + ')'}${c.desc ? '  — ' + short(c.desc, 60) : ''}`);
+      lines.push(...cmdRows.slice(0, shown));
     }
     if (d.sched.length) {
       lines.push(`расписание (${d.sched.length}):`);
-      for (const s of d.sched) {
-        let cmd = s.cmd;
-        if (/::class$/.test(cmd)) {
-          const cc = d.cmds.find((x) => x.cls === cmd.replace(/::class$/, ''));
-          if (cc) cmd = cc.sig;
-        }
-        lines.push(`  ${cmd}  ${s.freq}  (${s.p}:${s.l})`);
-      }
+      lines.push(...schedRows.slice(0, Math.max(0, shown - cmdRows.length)));
     }
+    if (shown < total) lines.push(`… ещё ${total - shown} (limit=0 — полностью)`);
     out(...lines);
   },
 
