@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, ANGULAR_ERROR} = require('./lib/files');
+const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, ANGULAR_ERROR, parseReactMajor} = require('./lib/files');
 const {parseSymbols, sourceCodeMask, isArrowExpression} = require('./lib/symbols');
 const {entityRanges} = require('./lib/ranges');
 const {maskCode} = require('./lib/mask');
@@ -1483,6 +1483,7 @@ function opInfo(g) {
     const deps = {...(pkg && pkg.dependencies || {}), ...(pkg && pkg.devDependencies || {})};
     const KEY_DEPS = ['@angular/core', '@angular/cli', '@angular/material', '@angular/cdk', 'typescript', 'rxjs', 'zone.js',
         '@ngrx/store', '@ngrx/effects', '@ngrx/component-store', 'jest', 'karma', 'cypress', 'playwright', 'eslint', 'prettier',
+        'react', 'react-dom', 'next',
         '@nestjs/core', '@nestjs/common', 'express', 'fastify', 'koa', '@hapi/hapi'];
     const key = {};
     for (const k of KEY_DEPS) if (deps[k]) key[k] = deps[k];
@@ -1498,14 +1499,26 @@ function opInfo(g) {
     if (!tc) warnings.push('tsconfig.json не найден или не разобран');
     const paths = tc && tc.paths ? Object.keys(tc.paths).slice(0, 10) : [];
     const aj = ['angular.json', '.angular.json'].some((f) => fs.existsSync(path.join(cwd, f)));
-    // Тип проекта: angular | nest | node | ts — от него зависит, какой набор правил скилла применяет агент.
+    // Тип проекта: angular | react | nest | node | ts — от него зависит, какой набор правил скилла применяет агент.
     const hasDep = (k) => !!deps[k];
     const serverDep = ['express', 'fastify', 'koa', '@hapi/hapi'].find(hasDep) || null;
+    // react-пакет ищем во всех 4 секциях package.json (как isReact в lib/files.js); react-dom/next сами тип не задают.
+    const reactSpec = pkg
+        ? ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
+            .map((k) => pkg[k] && pkg[k].react).find(Boolean) || null
+        : null;
+    const reactMajor = reactSpec ? parseReactMajor(reactSpec) : null;
+    const reactDetected = !!reactSpec && (reactMajor === null || reactMajor >= 16);
     const projectType = (aj || hasDep('@angular/core')) ? 'angular'
-        : Object.keys(deps).some((k) => k.startsWith('@nestjs/')) ? 'nest'
-            : serverDep ? 'node' : 'ts';
+        : reactDetected ? 'react'
+            : Object.keys(deps).some((k) => k.startsWith('@nestjs/')) ? 'nest'
+                : serverDep ? 'node' : 'ts';
     if (projectType === 'angular' && !aj)
         warnings.push('angular.json не найден: @angular/core есть в зависимостях, но CLI-конфига нет (workspace-пакет?)');
+    if (reactSpec && reactMajor !== null && reactMajor < 16)
+        warnings.push('react ' + reactSpec + ': поддерживается react >= 16, projectType=react не устанавливается');
+    if (reactSpec && reactMajor === null)
+        warnings.push('версия react (' + reactSpec + ') не распознана — projectType=react установлен по присутствию пакета');
     let gi = '';
     try {
         gi = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8');
@@ -2042,6 +2055,14 @@ if (op === 'selftest') {
     fs.writeFileSync(path.join(dir2, 'angular.json'), '{"version":1,"projects":{}}');
     const i4 = info2();
     chk('info: angular.json → projectType=angular', i4.projectType === 'angular' && i4.angularJson === true, JSON.stringify(i4).slice(0, 160));
+    // задача 2: react projectType и keyDeps
+    fs.rmSync(path.join(dir2, 'angular.json'), {force: true}); // angular.json из прошлой проверки переопределял бы react
+    fs.writeFileSync(path.join(dir2, 'package.json'), '{"name":"selftest-app","dependencies":{"react":"^18.0.0"}}');
+    const i5 = info2();
+    chk('info: react ^18 → projectType=react и keyDeps.react', i5.projectType === 'react' && i5.keyDeps && i5.keyDeps.react === '^18.0.0', JSON.stringify(i5).slice(0, 160));
+    fs.writeFileSync(path.join(dir2, 'package.json'), '{"name":"selftest-app","dependencies":{"react":"15.6"}}');
+    const i6 = info2();
+    chk('info: react 15.6 → projectType=ts и warning', i6.projectType === 'ts' && (i6.warnings || []).some((w) => w.includes('react >= 16')), JSON.stringify(i6).slice(0, 160));
     fs.rmSync(dir2, {recursive: true, force: true});
 
     fs.rmSync(dir, {recursive: true, force: true});
