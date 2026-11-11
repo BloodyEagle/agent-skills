@@ -58,6 +58,25 @@ if (format && format !== 'grouped' && format !== 'runs') {
     console.log(JSON.stringify({error: "format поддерживает только grouped или runs"}));
     process.exit(1);
 }
+// context=N — соседний код вокруг совпадений (opt-in, по умолчанию 0).
+// Не добавляется автоматически: N строк не гарантируют полный контекст.
+let context = 0;
+if (args.context !== undefined && args.context !== null && args.context !== '') {
+    const n = Number(args.context);
+    if (!Number.isInteger(n) || n < 0) {
+        console.log(JSON.stringify({error: "context — целое число ≥ 0"}));
+        process.exit(1);
+    }
+    context = n;
+}
+if (context > 0 && filesOnly) {
+    console.log(JSON.stringify({error: "context= неприменим к files=1: выдача файлов не превращается в код"}));
+    process.exit(1);
+}
+if (context > 0 && format) {
+    console.log(JSON.stringify({error: "context= не сочетается с format=grouped|runs: блоки контекста уже передают строки целиком"}));
+    process.exit(1);
+}
 const limit = Math.max(1, Number(args.limit) || 30);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const ID_CONT = '[$\\u200C\\u200D\\p{ID_Continue}]';
@@ -96,11 +115,14 @@ if (relRoot === '..' || relRoot.startsWith('..' + path.sep) || path.isAbsolute(r
     process.exit(1);
 }
 
+const linesCache = new Map(); // строки файлов с совпадениями — для context-блоков без повторного чтения
 function searchInDir(dir, results = []) {
     for (const filePath of walk(dir, {ext: exts})) {
         const lines = fs.readFileSync(filePath, 'utf8').replace(/\r\n?/g, '\n').split('\n');
+        let any = false;
         lines.forEach((line, index) => {
             if (match(line)) {
+                any = true;
                 results.push({
                     file: path.relative(process.cwd(), filePath),
                     line: index + 1,
@@ -108,6 +130,7 @@ function searchInDir(dir, results = []) {
                 });
             }
         });
+        if (any) linesCache.set(filePath, lines);
     }
     return results;
 }
@@ -128,6 +151,37 @@ if (filesOnly) {
             .sort((a, b) => b.count - a.count)
             .slice(0, limit)
     }));
+} else if (context > 0) {
+    // context=N (opt-in): код соседних строк блоками на файл. Перекрывающиеся и вплотную
+    // соседние окна объединяются; повторяющиеся строки передаются один раз. Текст строк
+    // полный (без trim/лимита 100): строка может быть длинной — это осознанный компромисс.
+    // limit ограничивает число совпавших строк, а не блоков; context-строки в count не входят.
+    const shown = matches.slice(0, limit);
+    const byFile = new Map();
+    for (const m of shown) {
+        if (!byFile.has(m.file)) byFile.set(m.file, []);
+        byFile.get(m.file).push(m);
+    }
+    const files = [];
+    for (const [file, list] of byFile) {
+        const lines = linesCache.get(path.resolve(process.cwd(), file)) || [];
+        const blocks = [];
+        for (const m of list) {
+            const a = Math.max(1, m.line - context), b = Math.min(lines.length, m.line + context);
+            const last = blocks[blocks.length - 1];
+            if (last && a <= last.end + 1) {
+                last.end = Math.max(last.end, b);
+            } else {
+                blocks.push({start: a, end: b, hits: []});
+            }
+        }
+        for (const m of list) {
+            const blk = blocks.find((b) => m.line >= b.start && m.line <= b.end);
+            blk.hits.push(m.line);
+        }
+        files.push({file, blocks: blocks.map((b) => ({startLine: b.start, lines: lines.slice(b.start - 1, b.end), hits: b.hits}))});
+    }
+    console.log(JSON.stringify({count: matches.length, shownMatches: shown.length, files}));
 } else if (!format) {
     console.log(JSON.stringify({count: matches.length, matches: matches.slice(0, limit)}));
 } else {
