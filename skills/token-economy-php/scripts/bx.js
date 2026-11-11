@@ -732,6 +732,42 @@ const ops = {
     if (!fs.existsSync(abs)) fail('файл не найден: ' + f);
     const { text, enc } = readText(abs);
     const ls = text.split(/\r?\n/);
+    // задача 3: ranges — несколько диапазонов за один вызов: строка "10-20,30-40" (argv)
+    // или JSON-массив [[10,20],[30,40]] (@-payload). Совместно с offset/limit запрещён.
+    if (args.ranges !== undefined) {
+      if (args.offset !== undefined || args.limit !== undefined) fail('ranges несовместим с offset/limit — передайте что-то одно');
+      let merged;
+      try {
+        merged = mergeRanges((Array.isArray(args.ranges) ? args.ranges : String(args.ranges).split(',')).map((r) => {
+          if (typeof r === 'number') return r;
+          if (Array.isArray(r)) { // [10,20] или [15] — одна строка
+            if (r.length < 1 || r.length > 2) throw new RangeError('элемент должен быть числом или парой [start, end]');
+            return r.length === 1 ? Number(r[0]) : [Number(r[0]), Number(r[1])];
+          }
+          const t = String(r).trim();
+          if (!t) throw new RangeError('пустой элемент');
+          const dash = t.indexOf('-');
+          if (dash < 0) return Number(t); // «15» — диапазон одной строки
+          return [Number(t.slice(0, dash)), Number(t.slice(dash + 1))];
+        }));
+      } catch (e) { fail('ranges: ' + e.message); }
+      const blocks = [];
+      for (const [s, e] of merged) {
+        if (s > ls.length) fail(`ranges: диапазон ${s}-${e} за концом файла (в файле ${ls.length} строк)`);
+        blocks.push([s, Math.min(e, ls.length)]); // диапазон, выходящий за конец частично, клампится к размеру файла
+      }
+      const total = blocks.reduce((acc, [s, e]) => acc + (e - s + 1), 0);
+      if (total > 2000) fail(`ranges: суммарно ${total} строк — больше 2000, отказ без усечки; сузьте диапазоны или читайте частями`);
+      const body = [];
+      let prev = 0;
+      for (const [s, e] of blocks) {
+        if (prev) body.push(`--- пропуск L${prev + 1}-${s - 1} ---`);
+        for (let i = s; i <= e; i++) body.push(`${i}: ${ls[i - 1]}`);
+        prev = e;
+      }
+      out(`${posix(path.relative(ctx.root, abs))}  (${ls.length} строк, ${enc})`, ...body);
+      return;
+    }
     const off = Math.max(Number(args.offset) || 1, 1);
     const lim = Number(args.limit) || 200;
     const part = ls.slice(off - 1, off - 1 + lim);
@@ -1116,6 +1152,34 @@ const ops = {
   }
 };
 
+// ---------- задача 3: слияние диапазонов строк для op read ----------
+// Чистая функция (без args/fs): принимает список диапазонов — число «15» (одна строка)
+// или пара [start, end], 1-based включительно; возвращает отсортированный список
+// [start, end] без перекрытий: перекрывающиеся и вплотную соседние диапазоны слиты,
+// дубликаты строк исключены. Кламп к размеру файла здесь не делается — размер
+// файла известен только op read.
+function mergeRanges(list) {
+  const pairs = (Array.isArray(list) ? list : []).map((r) => {
+    let s, e;
+    if (Array.isArray(r)) {
+      if (r.length < 1 || r.length > 2) throw new RangeError('«' + JSON.stringify(r) + '»: элемент ranges — число или пара [start, end]');
+      s = Number(r[0]);
+      e = Number(r.length > 1 ? r[1] : r[0]);
+    } else { s = Number(r); e = s; }
+    if (!Number.isInteger(s) || !Number.isInteger(e) || s < 1 || e < 1) throw new RangeError('«' + (Array.isArray(r) ? r.join('-') : String(r)) + '»: нужны целые числа от 1');
+    if (s > e) throw new RangeError(s + '-' + e + ': начало больше конца');
+    return [s, e];
+  });
+  pairs.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const res = [];
+  for (const [s, e] of pairs) {
+    const last = res[res.length - 1];
+    if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e); // перекрытие или вплотную — слить
+    else res.push([s, e]);
+  }
+  return res;
+}
+
 function relations(reverse) {
   if (!args.file) fail('укажите file');
   const idx = ensureIndex(ctx);
@@ -1303,6 +1367,17 @@ ops.selftest = function () {
   chk('modx: разбор tpl', (mt.snippets || []).some(([n]) => n === 'pdoMenu') && (mt.snippets || []).some(([n]) => n === 'helloSnippet') && mt.chunks[0][0] === 'headerChunk' && mt.settings[0][0] === 'site_name' && mt.tvs[0][0] === 'pagetitle' && mt.placeholders[0][0] === 'content' && mt.fenomInc[0][0] === 'chunks/nav.tpl', JSON.stringify(mt).slice(0, 400));
   const mp = md.parseModxPhp('<?php\n$out = $modx->runSnippet("hello", ["n" => 1]);\n$c = $modx->getChunk(\'hdr\');');
   chk('modx: вызовы из PHP', mp.snipCalls[0][0] === 'hello' && mp.chunkCalls[0][0] === 'hdr', JSON.stringify(mp));
+
+  // задача 3: mergeRanges — чистое слияние диапазонов строк для op read
+  const mr = (list) => JSON.stringify(mergeRanges(list));
+  chk('read/mergeRanges: перекрытие слито', mr([[10, 20], [15, 25]]) === '[[10,25]]', mr([[10, 20], [15, 25]]));
+  chk('read/mergeRanges: вплотную слито', mr([[10, 20], [21, 30]]) === '[[10,30]]', mr([[10, 20], [21, 30]]));
+  chk('read/mergeRanges: зазор сохранён (два блока)', mr([[10, 20], [30, 40]]) === '[[10,20],[30,40]]', mr([[10, 20], [30, 40]]));
+  chk('read/mergeRanges: обратный порядок входа', mr([[30, 40], [10, 20]]) === '[[10,20],[30,40]]', mr([[30, 40], [10, 20]]));
+  chk('read/mergeRanges: дубликат исключён', mr([[10, 20], [10, 20]]) === '[[10,20]]', mr([[10, 20], [10, 20]]));
+  chk('read/mergeRanges: одиночная форма — одна строка', mr([15]) === '[[15,15]]' && mr([[15, 15]]) === '[[15,15]]', mr([15]));
+  chk('read/mergeRanges: вложенность', mr([[10, 40], [15, 20]]) === '[[10,40]]', mr([[10, 40], [15, 20]]));
+  chk('read/mergeRanges: множество диапазонов', mr([[1, 3], [5, 6], [2, 4], [10, 12], [7, 7]]) === '[[1,7],[10,12]]', mr([[1, 3], [5, 6], [2, 4], [10, 12], [7, 7]]));
 
   if (bad.length) {
     console.log('\nпровалено: ' + bad.join(', '));
