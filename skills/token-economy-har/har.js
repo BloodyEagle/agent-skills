@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { openHar } = require('./lib/parse');
 const stats = require('./lib/stats');
 const { formatResult, MAX_BYTES, MAX_LINES } = require('./lib/format');
+const { compactResult } = require('./lib/compact');
 const { createRedactionContext, redactEntry, redactMetadata } = require('./lib/redact');
 
 const COMMANDS = ['info', 'slow', 'errors', 'domains', 'content', 'dup', 'search', 'entry', 'waterfall', 'diff', 'redact'];
@@ -26,7 +27,8 @@ const HELP = [
     'diff a.har b.har             Появившиеся, исчезнувшие, медленные и тяжёлые URL',
     'redact -o clean.har          Очистка секретов с сохранением исходных размеров',
     '',
-    'Общие флаги: -f/--file, --json, --pretty, --limit N, --stream, -h/--help.',
+    'Общие флаги: -f/--file, --json, --compact, --pretty, --limit N, --stream, -h/--help.',
+    '--compact требует --json без --pretty и включается только при уменьшении полного ответа.',
     'Автоматический потоковый разбор файлов > 200 MiB; stdin всегда потоковый.',
     'Вывод <= 200 строк и 8 KiB; JSON остаётся валидным при обрезке.',
     'Коды: 0 данные есть; 1 совпадений нет; 2 ошибка аргументов, чтения или HAR.'
@@ -57,7 +59,7 @@ function bodyLimit(value) {
 function parseArgs(argv) {
     const options = { positions: [], flags: new Set() };
     const aliases = { '-f': 'file', '-o': 'output', '-h': 'help' };
-    const booleans = new Set(['json', 'pretty', 'stream', 'by-mime', 'help']);
+    const booleans = new Set(['json', 'pretty', 'compact', 'stream', 'by-mime', 'help']);
     const values = new Set(['file', 'output', 'limit', 'top', 'min', 'sort', 'strategy', 'body']);
     let positional = false;
     for (let i = 0; i < argv.length; i++) {
@@ -89,6 +91,7 @@ function parseArgs(argv) {
         } else if (!options.command) options.command = argument;
         else options.positions.push(argument);
     }
+    if (options.compact && (!options.json || options.pretty)) fail('--compact: требуется --json без --pretty.');
     if (options.help || !options.command || options.command === 'help') {
         options.command = 'help';
         return options;
@@ -431,7 +434,11 @@ async function main() {
     try {
         options = parseArgs(process.argv.slice(2));
         const { result, exitCode } = await run(options);
-        process.stdout.write(`${formatResult(result, options)}\n`);
+        const baseline = formatResult(result, { ...options, compact: false });
+        const compactable = options.compact && !['help', 'redact'].includes(result.command)
+            && exitCode === 0 && (result.items?.length || result.command === 'info' || result.entry);
+        const output = compactable ? compactResult(JSON.parse(baseline), baseline) : baseline;
+        process.stdout.write(`${output}\n`);
         process.exitCode = exitCode;
     } catch (error) {
         let message = 'Не удалось обработать HAR: неизвестная ошибка.';
