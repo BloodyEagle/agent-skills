@@ -1503,8 +1503,14 @@ def cmd_selftest(a):
         rc, o, e = run(G + ["sig", "os.path.join"])
         chk("sig: os.path.join через псевдоним", rc == 0 and "(функция)" in o, o + e)
 
+        # math бывает builtin (Windows, локальные сборки) и разделяемым .so
+        # (toolcache-сборки setup-python на Linux): в первом случае ждём
+        # сигнатуру, во втором — честный отказ, но не молчание и не трейсбек.
         rc, o, e = run(G + ["sig", "math.sin"])
-        chk("sig: встроенный модуль", rc == 0 and "sin(" in o, o + e)
+        if "math" in sys.builtin_module_names:
+            chk("sig: встроенный модуль", rc == 0 and "sin(" in o, o + e)
+        else:
+            chk("sig: скомпилированный модуль честно помечен", rc == 1 and "скомпилирован" in (o + e), o + e)
 
         rc, o, e = run(G + ["sig", "fakemod"])
         chk("sig: .so честно помечен", rc == 1 and "скомпилирован" in o, o + e)

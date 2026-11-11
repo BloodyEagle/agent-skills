@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generated": "2026-11-10",
+  "generated": "2026-11-11",
   "skills": [
     {
       "name": "token-economy-har",
@@ -44,10 +44,10 @@
     },
     {
       "name": "token-economy-py",
-      "version": "1.2.2",
-      "updated": "2026-11-10",
+      "version": "1.2.3",
+      "updated": "2026-11-11",
       "files": 5,
-      "sha256": "f63e4dca0d2690db72b71a369a4a71951be896a8657ba7836fefcc6d6fef82a5",
+      "sha256": "dd26b69cdd4d860b74b97ee82098283166afb0dc37948853a69039c176d5eeea",
       "requires": [
         "python>=3"
       ]
