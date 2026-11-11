@@ -56,7 +56,7 @@
 | **Laravel:** Blade-шаблоны — директивы, переменные, наследование, откуда рендерится, неиспользуемые | `blade` |
 | **Laravel:** artisan-команды и расписание с частотами | `console` |
 | Поиск по тексту с учётом кодировки | `search` |
-| Чтение, правка и создание файлов с сохранением cp1251 / UTF-8 / UTF-16LE/BE, BOM и CRLF | `read`, `patch`, `create` |
+| Чтение, правка и создание файлов с сохранением cp1251 / UTF-8 / UTF-16LE/BE, BOM и CRLF; чтение нескольких диапазонов строк за вызов (`ranges`) | `read`, `patch`, `create` |
 
 Связи в графе: класс, функция, `require`/`include`, `IncludeComponent` (на файл компонента и на шаблон), `IncludeFile` и `main.include`, класс или функция-обработчик события, `IncludeModule` (на `include.php` модуля), языковой файл. В Laravel дополнительно: `view('name')` и директивы Blade (`@extends`, `@include`, `@component`, `@each`) на файлы шаблонов, `__()`/`@lang` на языковые файлы. Старое API: глобальные классы, методы в базовых `CAll*`-классах, варианты `classes/mysql`, `mssql`, `oracle`, константы `BX_ROOT`, `SITE_DIR`, `SITE_TEMPLATE_PATH`, синтаксис PHP 5.
 
