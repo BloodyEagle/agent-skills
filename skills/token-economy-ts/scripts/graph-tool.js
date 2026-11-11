@@ -1326,6 +1326,78 @@ function unresolvedSummary(node) {
         ...(node.unresolved.length > 5 ? {unresolvedPathsTruncated: node.unresolved.length - 5} : {})} : {};
 }
 
+// ---------- op=read: точное чтение диапазонов ----------
+
+const MAX_READ_LINES = 2000; // суммарный лимит строк за запрос: отказ, а не молчаливая усечка
+
+/**
+ * Читает диапазоны строк одного файла одним ответом: перекрытия и вплотную соседние
+ * диапазоны объединяются, промежуток с зазором — нет (лишний source text не добавляется).
+ * Полный текст строк без обрезки; контракт line-блоков: BOM снят, EOL нормализованы в \n.
+ * Пути проверяются лексически и по realpath; диапазоны сверяются с фактическим файлом,
+ * а не с координатами кэша графа.
+ */
+function readRanges(params) {
+    const fileArg = String(params.file || '');
+    if (!fileArg) return {error: 'Укажите payload.file'};
+    const abs = path.resolve(cwd, fileArg);
+    const rel = path.relative(cwd, abs);
+    if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
+        return {error: 'Путь вне рабочей директории запрещён: ' + fileArg};
+    let real;
+    try {
+        real = fs.realpathSync(abs);
+    } catch (e) {
+        return {error: 'Файл не найден: ' + fileArg};
+    }
+    const relReal = path.relative(cwd, real);
+    if (relReal === '..' || relReal.startsWith('..' + path.sep) || path.isAbsolute(relReal))
+        return {error: 'Путь вне рабочей директории запрещён: ' + fileArg};
+    let rangesArg = params.ranges;
+    if (typeof rangesArg === 'string') rangesArg = rangesArg.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!Array.isArray(rangesArg) || !rangesArg.length)
+        return {error: 'Укажите ranges: 10-20,30-40 либо массив [[10,20],[30,40]] (1-based, включительно)'};
+    const parsed = [];
+    for (const item of rangesArg) {
+        let a, b;
+        if (Array.isArray(item)) [a, b] = item;
+        else {
+            const m = String(item).trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+            if (!m) return {error: 'Некорректный диапазон: ' + JSON.stringify(item)};
+            a = Number(m[1]);
+            b = m[2] === undefined ? a : Number(m[2]);
+        }
+        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 1 || b < a)
+            return {error: 'Некорректный диапазон: ' + JSON.stringify(item) + ' (1-based, конец ≥ начала)'};
+        parsed.push([a, b]);
+    }
+    parsed.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+    const merged = [];
+    for (const [a, b] of parsed) {
+        const last = merged[merged.length - 1];
+        if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b);
+        else merged.push([a, b]);
+    }
+    let text;
+    try {
+        text = fs.readFileSync(real, 'utf8');
+    } catch (e) {
+        return {error: 'Файл не найден: ' + fileArg};
+    }
+    const lines = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
+    const loc = lines.length - (lines[lines.length - 1] === '' ? 1 : 0);
+    for (const [a, b] of merged)
+        if (b > loc) return {error: 'Диапазон ' + a + '-' + b + ' за пределами файла (' + loc + ' строк); сверитесь с источником, не с кэшем графа'};
+    const total = merged.reduce((s, [a, b]) => s + (b - a + 1), 0);
+    if (total > MAX_READ_LINES)
+        return {error: 'Запрошено ' + total + ' строк (максимум ' + MAX_READ_LINES + ') — разбейте чтение на несколько запросов'};
+    return {
+        file: toPosix(real),
+        loc,
+        blocks: merged.map(([a, b]) => ({startLine: a, endLine: b, lines: lines.slice(a - 1, b)}))
+    };
+}
+
 function reverseIndex(graph) {
     const rev = new Map();
     for (const f of graph.files)
@@ -1366,10 +1438,18 @@ function walk(graph, startId, depth, reverse, why) {
 
 // ---------- диспетчер ----------
 const op = args.op;
-if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats');
-if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'selftest'].includes(op))
+if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats | read');
+if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'read', 'selftest'].includes(op))
     fail('Неизвестный op: ' + op);
 if (args.format && args.format !== 'table') fail('format поддерживает только table');
+
+// read не требует графа — отвечает до ensureGraph
+if (op === 'read') {
+    const r = readRanges(args);
+    if (r.error) fail(r.error);
+    emit(r);
+    process.exit(0);
+}
 if (op === 'selector' && !isAngular(cwd)) {
     console.log(ANGULAR_ERROR);
     process.exit(1);
