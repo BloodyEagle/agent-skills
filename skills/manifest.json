@@ -4,10 +4,10 @@
   "skills": [
     {
       "name": "token-economy-har",
-      "version": "1.0.2",
-      "updated": "2026-11-10",
-      "files": 8,
-      "sha256": "cdfc0879d3455bddcb04f89a15c8cff0d3a2e42f2ca041fbc014601a207fd4dd",
+      "version": "1.1.0",
+      "updated": "2026-11-11",
+      "files": 15,
+      "sha256": "dc1d6e610eb25fc86387b3cca4d4bbe6b3ea8795db9b21276fbce1352ba27014",
       "requires": [
         "node>=18"
       ]
