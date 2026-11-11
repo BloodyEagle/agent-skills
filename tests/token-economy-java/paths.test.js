@@ -94,5 +94,10 @@ test('paths: external file symlink is excluded from index and search', (t) => {
   try { fs.symlinkSync(outside, path.join(p.root, 'External.java'), 'file'); }
   catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') { t.skip('file symlinks require permission on this system'); return; } throw e; }
   assert.doesNotMatch(ok(p.run('op=symbol', 'name=ExternalOnly')), /External\.java/);
-  assert.doesNotMatch(ok(p.run('op=search', 'query=fixture-private-value')), /fixture-private-value|External\.java/);
+  // Сообщение «совпадений нет» эхом печатает сам запрос, поэтому проверяем
+  // отсутствие файла и нулевой охват, а не строку запроса в выводе.
+  const search = ok(p.run('op=search', 'query=fixture-private-value'));
+  assert.doesNotMatch(search, /External\.java/);
+  assert.match(search, /совпадений нет/);
+  assert.match(search, /просмотрено файлов: 0/);
 });
