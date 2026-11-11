@@ -31,161 +31,145 @@ if (!Object.keys(args).length) {
         ext: process.env.SEARCH_EXT
     };
 }
-
-const query = args.query;
-const root = args.root || (fs.existsSync(path.join(process.cwd(), 'src')) ? 'src' : '.');
-
-if (!query) {
-    console.log(JSON.stringify({error: "Не указан поисковый запрос (query)"}));
-    process.exit(1);
-}
-
-// Несколько расширений за вызов: ext=.ts,.html
-const exts = String(args.ext || SOURCE_EXT.join(',')).split(',').map(s => s.trim()).filter(Boolean)
-    .map(s => s.startsWith('.') ? s : '.' + s);
-// i=1 — без учёта регистра; regex=1 — query как регулярное выражение;
-// word=1 — совпадение по границам TS/JS-идентификатора: класс продолжения
-// [$\u200C\u200D\p{ID_Continue}] (дефис в идентификатор не входит, поэтому my-save совпадает
-// с save, а saved и $save — нет). Это поиск raw text, а не разрешение ссылок: escaped
-// идентификаторы (\u0073ave) и вхождения в строках/комментариях находятся наравне с кодом.
-// word=1 и regex=1 вместе — ошибка, комбинировать их не предполагается.
-// format=grouped|runs — обратимые компактные формы (opt-in): путь один раз на файл.
-// limit — максимум показанных совпадений (по умолчанию 30); files=1 — только файлы со счётчиками.
 const truthy = (v) => v === true || v === '1' || v === 'true';
-const ignoreCase = truthy(args.i) || truthy(args.ignoreCase);
-const filesOnly = truthy(args.files);
-const format = args.format === undefined || args.format === null ? '' : String(args.format);
-if (format && format !== 'grouped' && format !== 'runs') {
-    console.log(JSON.stringify({error: "format поддерживает только grouped или runs"}));
-    process.exit(1);
-}
-// context=N — соседний код вокруг совпадений (opt-in, по умолчанию 0).
-// Не добавляется автоматически: N строк не гарантируют полный контекст.
-let context = 0;
-if (args.context !== undefined && args.context !== null && args.context !== '') {
-    const n = Number(args.context);
-    if (!Number.isInteger(n) || n < 0) {
-        console.log(JSON.stringify({error: "context — целое число ≥ 0"}));
-        process.exit(1);
-    }
-    context = n;
-}
-if (context > 0 && filesOnly) {
-    console.log(JSON.stringify({error: "context= неприменим к files=1: выдача файлов не превращается в код"}));
-    process.exit(1);
-}
-if (context > 0 && format) {
-    console.log(JSON.stringify({error: "context= не сочетается с format=grouped|runs: блоки контекста уже передают строки целиком"}));
-    process.exit(1);
-}
-const limit = Math.max(1, Number(args.limit) || 30);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const ID_CONT = '[$\\u200C\\u200D\\p{ID_Continue}]';
-let rx = null;
-if (truthy(args.regex) && truthy(args.word)) {
-    console.log(JSON.stringify({error: "word=1 несовместим с regex=1: word ищет literal query по границам идентификатора"}));
-    process.exit(1);
-}
-if (truthy(args.regex)) {
-    try {
-        rx = new RegExp(query, ignoreCase ? 'i' : '');
-    } catch (e) {
-        console.log(JSON.stringify({error: "Некорректное регулярное выражение: " + e.message}));
-        process.exit(1);
-    }
-}
-if (truthy(args.word)) {
-    try {
-        rx = new RegExp('(?<!' + ID_CONT + ')' + escapeRe(query) + '(?!' + ID_CONT + ')', ignoreCase ? 'iu' : 'u');
-    } catch (e) {
-        console.log(JSON.stringify({error: "Некорректный запрос для word=1: " + e.message}));
-        process.exit(1);
-    }
-}
-const needle = ignoreCase ? query.toLowerCase() : null;
-const match = (line) => rx
-    ? rx.test(line)
-    : needle ? line.toLowerCase().includes(needle) : line.includes(query);
+const cwd = process.cwd();
 
-// Правило 11 скилла: пути вне рабочей директории отклоняются.
-// root="." допустим (relRoot === ''); точечная проверка ".." не задевает папки вида "..foo".
-const rootAbs = path.resolve(process.cwd(), root);
-const relRoot = path.relative(process.cwd(), rootAbs);
-if (relRoot === '..' || relRoot.startsWith('..' + path.sep) || path.isAbsolute(relRoot)) {
-    console.log(JSON.stringify({error: "root вне рабочей директории запрещён: " + root}));
-    process.exit(1);
-}
+/**
+ * Один search-запрос: payload либо {error}. shared (walk/lines кэши) общий для batch:
+ * одно дерево обходится один раз для всех запросов — это CPU-выгода, не токеновая.
+ */
+function runSearch(params, shared) {
+    const query = params.query;
+    if (!query) return {error: 'Не указан поисковый запрос (query)'};
+    const root = params.root || (fs.existsSync(path.join(cwd, 'src')) ? 'src' : '.');
 
-const linesCache = new Map(); // строки файлов с совпадениями — для context-блоков без повторного чтения
-function searchInDir(dir, results = []) {
-    for (const filePath of walk(dir, {ext: exts})) {
-        const lines = fs.readFileSync(filePath, 'utf8').replace(/\r\n?/g, '\n').split('\n');
-        let any = false;
+    // Несколько расширений за вызов: ext=.ts,.html
+    const exts = String(params.ext || SOURCE_EXT.join(',')).split(',').map(s => s.trim()).filter(Boolean)
+        .map(s => s.startsWith('.') ? s : '.' + s);
+    // i=1 — без учёта регистра; regex=1 — query как регулярное выражение;
+    // word=1 — совпадение по границам TS/JS-идентификатора (см. заголовок файла);
+    // format=grouped|runs — обратимые компактные формы (opt-in); context=N — соседний код.
+    const ignoreCase = truthy(params.i) || truthy(params.ignoreCase);
+    const filesOnly = truthy(params.files);
+    const format = params.format === undefined || params.format === null ? '' : String(params.format);
+    if (format && format !== 'grouped' && format !== 'runs')
+        return {error: 'format поддерживает только grouped или runs'};
+    let context = 0;
+    if (params.context !== undefined && params.context !== null && params.context !== '') {
+        const n = Number(params.context);
+        if (!Number.isInteger(n) || n < 0) return {error: 'context — целое число ≥ 0'};
+        context = n;
+    }
+    if (context > 0 && filesOnly)
+        return {error: 'context= неприменим к files=1: выдача файлов не превращается в код'};
+    if (context > 0 && format)
+        return {error: 'context= не сочетается с format=grouped|runs: блоки контекста уже передают строки целиком'};
+    if (filesOnly && format)
+        return {error: 'format=grouped|runs неприменим к files=1: список файлов уже передаёт путь один раз'};
+    const limit = Math.max(1, Number(params.limit) || 30);
+    let rx = null;
+    if (truthy(params.regex) && truthy(params.word))
+        return {error: 'word=1 несовместим с regex=1: word ищет literal query по границам идентификатора'};
+    if (truthy(params.regex)) {
+        try {
+            rx = new RegExp(query, ignoreCase ? 'i' : '');
+        } catch (e) {
+            return {error: 'Некорректное регулярное выражение: ' + e.message};
+        }
+    }
+    if (truthy(params.word)) {
+        try {
+            rx = new RegExp('(?<!' + ID_CONT + ')' + escapeRe(query) + '(?!' + ID_CONT + ')', ignoreCase ? 'iu' : 'u');
+        } catch (e) {
+            return {error: 'Некорректный запрос для word=1: ' + e.message};
+        }
+    }
+    const needle = ignoreCase ? query.toLowerCase() : null;
+    const match = (line) => rx
+        ? rx.test(line)
+        : needle ? line.toLowerCase().includes(needle) : line.includes(query);
+
+    // Правило 11 скилла: пути вне рабочей директории отклоняются.
+    // root="." допустим (relRoot === ''); точечная проверка ".." не задевает папки вида "..foo".
+    const rootAbs = path.resolve(cwd, root);
+    const relRoot = path.relative(cwd, rootAbs);
+    if (relRoot === '..' || relRoot.startsWith('..' + path.sep) || path.isAbsolute(relRoot))
+        return {error: 'root вне рабочей директории запрещён: ' + root};
+
+    // Обход дерева кэшируется по (root, exts): повторные запросы batch не пересобирают дерево.
+    const walkKey = JSON.stringify([rootAbs, exts]);
+    let fileList = shared.walkCache.get(walkKey);
+    if (!fileList) {
+        fileList = walk(rootAbs, {ext: exts});
+        shared.walkCache.set(walkKey, fileList);
+    }
+    const matches = [];
+    for (const filePath of fileList) {
+        let lines = shared.linesCache.get(filePath);
+        if (!lines) {
+            lines = fs.readFileSync(filePath, 'utf8').replace(/\r\n?/g, '\n').split('\n');
+            shared.linesCache.set(filePath, lines);
+        }
         lines.forEach((line, index) => {
             if (match(line)) {
-                any = true;
-                results.push({
-                    file: path.relative(process.cwd(), filePath),
+                matches.push({
+                    file: path.relative(cwd, filePath),
                     line: index + 1,
                     text: line.trim().replace(/\r/g, '').slice(0, 100).replace(/[\uD800-\uDBFF]$/, '')
                 });
             }
         });
-        if (any) linesCache.set(filePath, lines);
     }
-    return results;
-}
 
-const matches = searchInDir(rootAbs);
-if (filesOnly) {
-    if (format) {
-        console.log(JSON.stringify({error: "format=grouped|runs неприменим к files=1: список файлов уже передаёт путь один раз"}));
-        process.exit(1);
+    if (filesOnly) {
+        const byFile = new Map();
+        for (const m of matches) byFile.set(m.file, (byFile.get(m.file) || 0) + 1);
+        return {
+            count: matches.length,
+            filesTotal: byFile.size,
+            files: [...byFile.entries()]
+                .map(([file, count]) => ({file, count}))
+                .sort((a, b) => b.count - a.count)
+                .slice(0, limit)
+        };
     }
-    const byFile = new Map();
-    for (const m of matches) byFile.set(m.file, (byFile.get(m.file) || 0) + 1);
-    console.log(JSON.stringify({
-        count: matches.length,
-        filesTotal: byFile.size,
-        files: [...byFile.entries()]
-            .map(([file, count]) => ({file, count}))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, limit)
-    }));
-} else if (context > 0) {
-    // context=N (opt-in): код соседних строк блоками на файл. Перекрывающиеся и вплотную
-    // соседние окна объединяются; повторяющиеся строки передаются один раз. Текст строк
-    // полный (без trim/лимита 100): строка может быть длинной — это осознанный компромисс.
-    // limit ограничивает число совпавших строк, а не блоков; context-строки в count не входят.
-    const shown = matches.slice(0, limit);
-    const byFile = new Map();
-    for (const m of shown) {
-        if (!byFile.has(m.file)) byFile.set(m.file, []);
-        byFile.get(m.file).push(m);
-    }
-    const files = [];
-    for (const [file, list] of byFile) {
-        const lines = linesCache.get(path.resolve(process.cwd(), file)) || [];
-        const blocks = [];
-        for (const m of list) {
-            const a = Math.max(1, m.line - context), b = Math.min(lines.length, m.line + context);
-            const last = blocks[blocks.length - 1];
-            if (last && a <= last.end + 1) {
-                last.end = Math.max(last.end, b);
-            } else {
-                blocks.push({start: a, end: b, hits: []});
+    if (context > 0) {
+        // context=N (opt-in): код соседних строк блоками на файл. Перекрывающиеся и вплотную
+        // соседние окна объединяются; повторяющиеся строки передаются один раз. Текст строк
+        // полный (без trim/лимита 100): строка может быть длинной — это осознанный компромисс.
+        // limit ограничивает число совпавших строк, а не блоков; context-строки в count не входят.
+        const shown = matches.slice(0, limit);
+        const byFile = new Map();
+        for (const m of shown) {
+            if (!byFile.has(m.file)) byFile.set(m.file, []);
+            byFile.get(m.file).push(m);
+        }
+        const files = [];
+        for (const [file, list] of byFile) {
+            const lines = shared.linesCache.get(path.resolve(cwd, file)) || [];
+            const blocks = [];
+            for (const m of list) {
+                const a = Math.max(1, m.line - context), b = Math.min(lines.length, m.line + context);
+                const last = blocks[blocks.length - 1];
+                if (last && a <= last.end + 1) {
+                    last.end = Math.max(last.end, b);
+                } else {
+                    blocks.push({start: a, end: b, hits: []});
+                }
             }
+            for (const m of list) {
+                const blk = blocks.find((b) => m.line >= b.start && m.line <= b.end);
+                blk.hits.push(m.line);
+            }
+            files.push({file, blocks: blocks.map((b) => ({startLine: b.start, lines: lines.slice(b.start - 1, b.end), hits: b.hits}))});
         }
-        for (const m of list) {
-            const blk = blocks.find((b) => m.line >= b.start && m.line <= b.end);
-            blk.hits.push(m.line);
-        }
-        files.push({file, blocks: blocks.map((b) => ({startLine: b.start, lines: lines.slice(b.start - 1, b.end), hits: b.hits}))});
+        return {count: matches.length, shownMatches: shown.length, files};
     }
-    console.log(JSON.stringify({count: matches.length, shownMatches: shown.length, files}));
-} else if (!format) {
-    console.log(JSON.stringify({count: matches.length, matches: matches.slice(0, limit)}));
-} else {
+    if (!format) {
+        return {count: matches.length, matches: matches.slice(0, limit)};
+    }
     // Обратимые компактные формы: путь один раз на группу, все сниппеты сохраняются,
     // порядок совпадений не меняется. Декодер восстанавливает matches побайтно.
     const shown = matches.slice(0, limit);
@@ -221,10 +205,75 @@ if (filesOnly) {
         const cut = Math.max(common.lastIndexOf('/'), common.lastIndexOf('\\'));
         if (cut > 0 && cut + 1 >= 4) prefix = common.slice(0, cut + 1);
     }
-    console.log(JSON.stringify({
+    return {
         count: matches.length,
         shownMatches: shown.length,
         ...(prefix ? {pathPrefix: prefix} : {}),
         groups: prefix ? groups.map((g) => ({...g, file: g.file.slice(prefix.length)})) : groups
-    }));
+    };
+}
+
+// Кэши одного запуска: дерево обхода и строки файлов (для context) переиспользуются
+// всеми запросами batch; у каждого запроса свои match-состояние, лимиты и хиты.
+const shared = {walkCache: new Map(), linesCache: new Map()};
+const emit = (obj) => console.log(JSON.stringify(obj));
+const fail = (msg) => {
+    emit({error: msg});
+    process.exit(1);
+};
+
+/**
+ * Batch search: requests=[{"query": ...}] либо requests_file (UTF-8 JSON внутри проекта).
+ * У каждого запроса собственные query/i/regex/word/count/limit/ошибки; no-match одного
+ * запроса не влияет на другой. Exit 0 при хотя бы одном выполненном запросе, 1 — при полном
+ * провале. Разные запросы НЕ заменяются объединением A|B: оно теряет идентичность запросов.
+ */
+function runSearchBatch() {
+    let requests = args.requests;
+    if (typeof requests === 'string') {
+        try {
+            requests = JSON.parse(requests);
+        } catch (e) {
+            fail('Некорректный JSON в requests: ' + e.message);
+        }
+    }
+    if (args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
+        const rf = String(args.requests_file);
+        const rfAbs = path.resolve(cwd, rf);
+        const rfRel = path.relative(cwd, rfAbs);
+        if (rfRel === '..' || rfRel.startsWith('..' + path.sep) || path.isAbsolute(rfRel))
+            fail('requests_file вне рабочей директории запрещён: ' + rf);
+        try {
+            requests = JSON.parse(fs.readFileSync(fs.realpathSync(rfAbs), 'utf8'));
+        } catch (e) {
+            fail('Не удалось прочитать requests_file: ' + e.message);
+        }
+    }
+    if (!Array.isArray(requests) || !requests.length)
+        fail('requests должен быть непустым JSON-массивом запросов {"query": ...}');
+    for (let i = 0; i < requests.length; i++) {
+        const r = requests[i];
+        if (!r || typeof r !== 'object' || Array.isArray(r)) fail('requests[' + i + ']: элемент должен быть объектом');
+    }
+    const results = new Array(requests.length);
+    let failed = 0;
+    requests.forEach((r, i) => {
+        const payload = runSearch(r, shared);
+        if (payload.error) {
+            results[i] = {index: i, error: payload.error};
+            failed++;
+        } else {
+            results[i] = {index: i, ...payload};
+        }
+    });
+    emit({batch: true, total: requests.length, failed, results});
+    process.exit(failed === requests.length ? 1 : 0);
+}
+
+if (args.requests !== undefined && args.requests !== null || args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
+    runSearchBatch();
+} else {
+    const payload = runSearch(args, shared);
+    if (payload.error) fail(payload.error);
+    emit(payload);
 }
