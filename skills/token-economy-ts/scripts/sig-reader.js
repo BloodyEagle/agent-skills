@@ -551,7 +551,7 @@ function followSpec(spec, fromFile, root) {
  * С member: сначала декларация с этим именем, затем реэкспорты; если в файле есть
  * классы/интерфейсы — отдаём их, main поищет member среди членов.
  */
-function analyze(target, member, depth, visited) {
+function analyze(target, member, depth, visited, cache) {
     const checked = confinedFile(target.file, target.root);
     if (!checked) return null;
     const fileAbs = checked.file;
@@ -614,12 +614,16 @@ function analyze(target, member, depth, visited) {
 
 // ---------- main ----------
 
-(function main() {
-    if (!args.name) fail('Укажите name: пакет с подпутем и членом через # (rxjs, rxjs/operators, @angular/core#Injector, rxjs/operators#map)');
-    let [spec, member] = String(args.name).split('#');
-    member = args.member || member || null;
-    const limit = Math.max(1, Number(args.limit) || 40);
-    const offset = Math.max(0, Number(args.offset) || 0);
+/**
+ * Один sig-запрос: payload либо {error}. visited у каждого запроса свой — state первого
+ * запроса не скрывает второй; cache (чтение/разбор файлов) общий в пределах запуска.
+ */
+function runSig(params, cache) {
+    if (!params.name) return {error: 'Укажите name: пакет с подпутем и членом через # (rxjs, rxjs/operators, @angular/core#Injector, rxjs/operators#map)'};
+    let [spec, member] = String(params.name).split('#');
+    member = params.member || member || null;
+    const limit = Math.max(1, Number(params.limit) || 40);
+    const offset = Math.max(0, Number(params.offset) || 0);
 
     // Прямые пути проверяются и лексически, и по realpath до чтения деклараций.
     const direct = path.isAbsolute(spec) || /^[a-z]:/i.test(spec) || /^\.{1,2}(?:[\\/]|$)/.test(spec)
@@ -628,27 +632,26 @@ function analyze(target, member, depth, visited) {
     if (direct) {
         const abs = path.resolve(cwd, spec);
         if (!insideDir(cwd, abs) || (process.platform !== 'win32' && /^[a-z]:/i.test(spec)))
-            fail('Путь вне рабочей директории запрещён: ' + spec);
+            return {error: 'Путь вне рабочей директории запрещён: ' + spec};
         try {
             const real = fs.realpathSync(abs);
-            if (!insideDir(projectRoot, real)) fail('Путь вне рабочей директории запрещён: ' + spec);
+            if (!insideDir(projectRoot, real)) return {error: 'Путь вне рабочей директории запрещён: ' + spec};
             target = confinedFile(real, projectRoot);
         } catch (e) { /* ниже — единая ошибка отсутствующего файла */ }
-        if (!target) fail('Файл деклараций не найден: ' + spec);
+        if (!target) return {error: 'Файл деклараций не найден: ' + spec};
     } else {
         try { target = resolveModuleFile(spec); }
-        catch (e) { fail(e.message); }
+        catch (e) { return {error: e.message}; }
     }
 
-    const r = analyze(target, member, 0, new Set());
-    if (!r) fail('Файл деклараций недоступен: ' + spec);
+    const r = analyze(target, member, 0, new Set(), cache);
+    if (!r) return {error: 'Файл деклараций недоступен: ' + spec};
     const rel = toPosix(r.file);
-    const base = {name: String(args.name), member: member || null, file: rel};
+    const base = {name: String(params.name), member: member || null, file: rel};
 
     if (member) {
         if (!r.decls.length) {
-            emit({...base, found: false, ...(r.available && r.available.length ? {available: r.available} : {})});
-            process.exit(0);
+            return {...base, found: false, ...(r.available && r.available.length ? {available: r.available} : {})};
         }
         const containers = r.decls.filter((x) => x.members);
         const withMember = containers.find((x) => x.members.some((y) => y.name === member));
@@ -656,7 +659,7 @@ function analyze(target, member, depth, visited) {
 
         // member — сам класс/интерфейс/enum: карточка целиком
         if (d.members && d.name === member) {
-            emit({
+            return {
                 ...base,
                 found: true,
                 kind: d.kind,
@@ -666,14 +669,13 @@ function analyze(target, member, depth, visited) {
                 ...(d.declClipped ? {declClipped: true} : {}),
                 ...sigSlice(d.members, offset, limit),
                 signaturesTotal: d.membersTotal
-            });
-            process.exit(0);
+            };
         }
         // member — член класса/интерфейса
         if (d.members) {
             const matched = d.members.filter((x) => x.name === member);
             if (matched.length) {
-                emit({
+                return {
                     ...base,
                     found: true,
                     kind: d.kind,
@@ -683,29 +685,26 @@ function analyze(target, member, depth, visited) {
                     ...(d.declClipped ? {declClipped: true} : {}),
                     ...sigSlice(matched, offset, limit),
                     signaturesTotal: matched.length
-                });
-            } else {
-                const inClass = [...new Set(d.members.map((x) => x.name).filter(Boolean))];
-                emit({
-                    ...base,
-                    found: false,
-                    owner: d.name,
-                    decl: d.decl,
-                    available: (inClass.length ? inClass : r.available || []).slice(0, MAX_AVAILABLE)
-                });
+                };
             }
-            process.exit(0);
+            const inClass = [...new Set(d.members.map((x) => x.name).filter(Boolean))];
+            return {
+                ...base,
+                found: false,
+                owner: d.name,
+                decl: d.decl,
+                available: (inClass.length ? inClass : r.available || []).slice(0, MAX_AVAILABLE)
+            };
         }
         // member — функция/const/type: все перегрузки
-        emit({
+        return {
             ...base,
             found: true,
             kind: d.kind,
             line: d.line,
             ...sigSlice(r.decls, offset, limit, 'decl'),
             signaturesTotal: r.decls.length
-        });
-        process.exit(0);
+        };
     }
 
     // Без члена: классы/интерфейсы — с членами, функции/типы — своими сигнатурами
@@ -725,12 +724,70 @@ function analyze(target, member, depth, visited) {
         };
     });
     const truncated = r.decls.length > offset + items.length || page.some((d) => (d.membersTotal || 0) > limit);
-    emit({
+    return {
         ...base,
         found: r.decls.length > 0,
         declarations: items,
         ...(r.decls.length > offset + items.length ? {declarationsTotal: r.decls.length} : {}),
         ...(truncated ? {hint: 'вывод усечён (limit=' + limit + '); точечный запрос: name=' + spec + '#ИмяЧлена'} : {}),
         ...(!r.decls.length && r.available && r.available.length ? {available: r.available} : {})
+    };
+}
+
+// Общий read/parse кэш одного запуска: один файл разбирается один раз на все запросы.
+const declCache = new Map();
+
+/**
+ * Batch sig: requests=[{"name": ...}] либо requests_file (UTF-8 JSON внутри проекта).
+ * Каждый элемент получает свой ответ либо {index, error}; found:false и available —
+ * ответы, а не ошибки. Exit 0 при хотя бы одном выполненном запросе, 1 — при полном провале.
+ */
+function runSigBatch() {
+    let requests = args.requests;
+    if (typeof requests === 'string') {
+        try {
+            requests = JSON.parse(requests);
+        } catch (e) {
+            fail('Некорректный JSON в requests: ' + e.message);
+        }
+    }
+    if (args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
+        const rf = String(args.requests_file);
+        const rfAbs = path.resolve(cwd, rf);
+        const rfRel = path.relative(cwd, rfAbs);
+        if (rfRel === '..' || rfRel.startsWith('..' + path.sep) || path.isAbsolute(rfRel))
+            fail('requests_file вне рабочей директории запрещён: ' + rf);
+        try {
+            requests = JSON.parse(fs.readFileSync(fs.realpathSync(rfAbs), 'utf8'));
+        } catch (e) {
+            fail('Не удалось прочитать requests_file: ' + e.message);
+        }
+    }
+    if (!Array.isArray(requests) || !requests.length)
+        fail('requests должен быть непустым JSON-массивом запросов {"name": "pkg#Member"}');
+    for (let i = 0; i < requests.length; i++) {
+        const r = requests[i];
+        if (!r || typeof r !== 'object' || Array.isArray(r)) fail('requests[' + i + ']: элемент должен быть объектом');
+    }
+    const results = new Array(requests.length);
+    let failed = 0;
+    requests.forEach((r, i) => {
+        const payload = runSig(r, declCache);
+        if (payload.error) {
+            results[i] = {index: i, error: payload.error};
+            failed++;
+        } else {
+            results[i] = {index: i, ...payload};
+        }
     });
-})();
+    emit({batch: true, total: requests.length, failed, results});
+    process.exit(failed === requests.length ? 1 : 0);
+}
+
+if (args.requests !== undefined && args.requests !== null || args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
+    runSigBatch();
+} else {
+    const payload = runSig(args, declCache);
+    if (payload.error) fail(payload.error);
+    emit(payload);
+}
