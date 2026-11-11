@@ -43,17 +43,36 @@ if (!query) {
 const exts = String(args.ext || SOURCE_EXT.join(',')).split(',').map(s => s.trim()).filter(Boolean)
     .map(s => s.startsWith('.') ? s : '.' + s);
 // i=1 — без учёта регистра; regex=1 — query как регулярное выражение;
+// word=1 — совпадение по границам TS/JS-идентификатора: класс продолжения
+// [$\u200C\u200D\p{ID_Continue}] (дефис в идентификатор не входит, поэтому my-save совпадает
+// с save, а saved и $save — нет). Это поиск raw text, а не разрешение ссылок: escaped
+// идентификаторы (\u0073ave) и вхождения в строках/комментариях находятся наравне с кодом.
+// word=1 и regex=1 вместе — ошибка, комбинировать их не предполагается.
 // limit — максимум показанных совпадений (по умолчанию 30); files=1 — только файлы со счётчиками.
 const truthy = (v) => v === true || v === '1' || v === 'true';
 const ignoreCase = truthy(args.i) || truthy(args.ignoreCase);
 const filesOnly = truthy(args.files);
 const limit = Math.max(1, Number(args.limit) || 30);
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const ID_CONT = '[$\\u200C\\u200D\\p{ID_Continue}]';
 let rx = null;
+if (truthy(args.regex) && truthy(args.word)) {
+    console.log(JSON.stringify({error: "word=1 несовместим с regex=1: word ищет literal query по границам идентификатора"}));
+    process.exit(1);
+}
 if (truthy(args.regex)) {
     try {
         rx = new RegExp(query, ignoreCase ? 'i' : '');
     } catch (e) {
         console.log(JSON.stringify({error: "Некорректное регулярное выражение: " + e.message}));
+        process.exit(1);
+    }
+}
+if (truthy(args.word)) {
+    try {
+        rx = new RegExp('(?<!' + ID_CONT + ')' + escapeRe(query) + '(?!' + ID_CONT + ')', ignoreCase ? 'iu' : 'u');
+    } catch (e) {
+        console.log(JSON.stringify({error: "Некорректный запрос для word=1: " + e.message}));
         process.exit(1);
     }
 }
