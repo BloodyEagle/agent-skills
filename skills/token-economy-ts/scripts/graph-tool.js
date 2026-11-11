@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, ANGULAR_ERROR, parseReactMajor} = require('./lib/files');
+const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, isReact, parseReactMajor, ANGULAR_ERROR, REACT_ERROR} = require('./lib/files');
 const {parseSymbols, sourceCodeMask, isArrowExpression} = require('./lib/symbols');
 const {entityRanges} = require('./lib/ranges');
 const {maskCode} = require('./lib/mask');
@@ -71,7 +71,7 @@ function setScope(p) {
 }
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
-const GRAPH_VERSION = 9; // v9: диапазоны объявлений и тел в parsed entities (lib/ranges.js)
+const GRAPH_VERSION = 10; // v10: jsxUsages в parsed data — индекс JSX-использований (op=component)
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const NG_KINDS = {
     Component: 'component',
@@ -704,6 +704,20 @@ function extractMembersTs(body, lineAt, absMask, absBase, srcBody) {
 }
 
 /**
+ * JSX-использования компонентов по маске кода (op=component): открывающие теги <Name
+ * с заглавной буквы и границей (пробел/перевод строки/>//). Закрывающие </Name>,
+ * member-теги <Foo.Bar, строчные DOM-теги и <T, -дженерики не попадают; совпадения
+ * в строках/комментариях/regex отсечены маской (sourceCodeMask), поэтому скан идёт по маске.
+ */
+function collectJsxTags(mask, lineAt) {
+    const out = [];
+    const re = /<([A-Z][$\w]*)(?=[ \n\t\r/>])/g;
+    let m;
+    while ((m = re.exec(mask))) out.push({name: m[1], line: lineAt(m.index)});
+    return out;
+}
+
+/**
  * Разбирает содержимое TS/JS: импорты, экспорты, объявления с номерами строк
  * и диапазонами (lib/ranges.js), а для @Component — templateUrl, styleUrl(s)
  * и использование в inline-template.
@@ -727,6 +741,9 @@ function parseTs(content, sourceType = 'ts', jsx = false) {
     const codeMask = sourceCodeMask(content);
     // отдельная JSX-aware маска для диапазонов объявлений (lib/ranges.js)
     const rmask = maskCode(content, jsx);
+
+    // JSX-использования компонентов (op=component): одна строка скана по маске кода
+    const jsxUsages = collectJsxTags(codeMask, lineAt);
 
     // Импорты, реэкспорты, require и динамические import(); многострочные поддержаны.
     // Спецификаторы исходников хранятся объектами {m, line} для rdeps/deps why.
@@ -839,6 +856,7 @@ function parseTs(content, sourceType = 'ts', jsx = false) {
         entities: uniqEntities,
         exports: [...new Set(exports)],
         reexportAll,
+        jsxUsages,
         loc: content.split('\n').length,
         ...(templateUrl ? {templateUrl} : {}),
         ...(fileRefs.length ? {fileRefs} : {}),
@@ -1047,6 +1065,9 @@ function validParsedData(data, type) {
     if (!data.specifiers.every(s => type === 'ts' || type === 'js'
         ? s && typeof s.m === 'string' && Number.isInteger(s.line) && s.line > 0
         : typeof s === 'string')) return false;
+    // jsxUsages обязателен в parsed data ts/js — без него кэш устарел (v9) и не отдаёт индекс
+    if ((type === 'ts' || type === 'js') && !(Array.isArray(data.jsxUsages)
+        && data.jsxUsages.every(u => u && typeof u.name === 'string' && Number.isInteger(u.line) && u.line > 0))) return false;
     if (has(data, 'fileRefs') && (!Array.isArray(data.fileRefs) || !data.fileRefs.every(ref => typeof ref === 'string'))) return false;
     if (has(data, 'templateUrl') && typeof data.templateUrl !== 'string') return false;
     return type !== 'html' || (Array.isArray(data.fileRefs) && data.usages
@@ -1158,6 +1179,15 @@ function buildGraph(files, inputs = graphInputs()) {
         for (const ex of n.exports) if (!symbols[ex]) symbols[ex] = [n.id];
     }
 
+    // 2b. JSX-использования компонентов (op=component): name → [{fileId, line}] в порядке
+    // обхода узлов. Служебный индекс: в graph-deps.json не выводится, узлы очищаются ниже
+    // (как usages); для графа, загруженного из файла без перестройки, opComponent
+    // достраивает индекс на месте.
+    const jsxByName = new Map();
+    for (const n of nodes)
+        for (const u of n.jsxUsages || [])
+            put(jsxByName, u.name, {fileId: n.id, line: u.line});
+
     // 3. Использование в шаблонах (html и inline-template): шаблон → компонент/директива/пайп
     for (const n of nodes) {
         if (!n.usages) continue;
@@ -1186,7 +1216,7 @@ function buildGraph(files, inputs = graphInputs()) {
             for (const [id, ln] of n.importPairs)
                 if (!(id in n.importLines) || ln < n.importLines[id]) n.importLines[id] = ln;
         }
-        for (const k of ['specifiers', 'fileRefs', 'templateUrl', 'usages', 'importPairs']) delete n[k];
+        for (const k of ['specifiers', 'fileRefs', 'templateUrl', 'usages', 'importPairs', 'jsxUsages']) delete n[k];
         const type = fileType(n.path);
         n.kind = type === 'html' ? 'template' : type === 'style' ? 'style' : nodeKind(n);
         byKind[n.kind] = (byKind[n.kind] || 0) + 1;
@@ -1221,6 +1251,8 @@ function buildGraph(files, inputs = graphInputs()) {
     } catch (e) {
         graph.cacheIssue = 'cache-write-failed';
     }
+    // jsxByName — только в памяти: после сериализации (в graph-deps.json не выводится)
+    graph.jsxByName = jsxByName;
     return {graph, reparsed, ms: Date.now() - t0};
 }
 
@@ -1455,7 +1487,7 @@ function walk(graph, startId, depth, reverse, why) {
 // Каждый обработчик возвращает payload ответа или бросает OpError (ошибка запроса).
 // Это позволяет batch-режиму выполнять запросы без process.exit внутри элемента.
 
-const BATCH_OPS = ['info', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'read'];
+const BATCH_OPS = ['info', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'component', 'path', 'cycles', 'stats', 'read'];
 
 function opStats(g) {
     const rev = reverseIndex(g);
@@ -1615,6 +1647,44 @@ function opSelector(g, p) {
     };
 }
 
+/**
+ * op=component: где определён React-компонент (definedIn — общий индекс символов, как в
+ * op=symbol) и где использован в JSX (usedIn — открывающие теги <Имя>, собранные по маске
+ * кода). Имя точное, без fuzzy. Гейт React — как у opSelector: без react >= 16 команда
+ * неприменима; в batch элемент получает ошибку вместо кода выхода всего процесса.
+ */
+function opComponent(g, p) {
+    if (!isReact(cwd)) throw new OpError(REACT_ERROR);
+    if (!p.name) throw new OpError('Укажите payload.name');
+    const name = String(p.name);
+    // Граф, загруженный из graph-deps.json без перестройки, не содержит служебного
+    // jsxByName — достраиваем один раз на месте: изменённые файлы перепарсятся,
+    // остальные придут из parse-кэша.
+    if (!g.jsxByName) g.jsxByName = buildGraph(null).graph.jsxByName;
+    const byId = (id) => g.files[id - 1];
+    const ids = has(g.symbols, name) ? [...new Set(g.symbols[name])] : [];
+    const definedIn = ids.map((id) => {
+        const f = byId(id);
+        const e = f.entities.find((x) => x.name === name);
+        return {
+            file: f.path, kind: e ? e.kind : f.kind,
+            ...(e && e.line ? {line: e.line} : {}),
+            ...rangeOf(e)
+        };
+    });
+    const usedIn = (g.jsxByName.get(name) || [])
+        .map((u) => ({file: byId(u.fileId).path, line: u.line}))
+        .sort((a, b) => a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line);
+    return {
+        name,
+        found: definedIn.length > 0 || usedIn.length > 0,
+        definedIn,
+        usedIn,
+        usedTotal: usedIn.length,
+        ...structuralStatus(g)
+    };
+}
+
 function opPath(g, p) {
     if (!p.from || !p.to) throw new OpError('Укажите payload.from и payload.to');
     const a = findNode(g, p.from), b = findNode(g, p.to);
@@ -1735,6 +1805,7 @@ function dispatchOp(g, p) {
         case 'cycles': return opCycles(g);
         case 'symbol': return opSymbol(g, p);
         case 'selector': return opSelector(g, p);
+        case 'component': return opComponent(g, p);
         case 'path': return opPath(g, p);
         case 'node': return opNode(g, p);
         case 'deps': return opDepsRdeps(g, p, 'deps');
@@ -1886,7 +1957,7 @@ function applyCompactBatch(envelope) {
     };
     // Строковые пути верхнего уровня и известные списки: объекты с .file, массивы строк,
     // table-строки (columns) — первая колонка.
-    const ROW_LISTS = ['imports', 'importedBy', 'definedIn', 'topImported', 'usedInTemplates', 'chain'];
+    const ROW_LISTS = ['imports', 'importedBy', 'definedIn', 'usedIn', 'topImported', 'usedInTemplates', 'chain'];
     for (const res of envelope.results) {
         if (res.error) continue;
         for (const k of ['file', 'from', 'to'])
@@ -1932,8 +2003,8 @@ try {
 }
 
 const op = args.op;
-if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats | read');
-if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'read', 'selftest'].includes(op))
+if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | component | path | cycles | stats | read');
+if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'component', 'path', 'cycles', 'stats', 'read', 'selftest'].includes(op))
     fail('Неизвестный op: ' + op);
 if (args.format && args.format !== 'table') fail('format поддерживает только table');
 
@@ -1947,6 +2018,12 @@ if (op === 'read') {
 
 if (op === 'selector' && !isAngular(cwd)) {
     console.log(ANGULAR_ERROR);
+    process.exit(1);
+}
+
+// component гейтится по React до построения графа — по образцу гейта selector по Angular
+if (op === 'component' && !isReact(cwd)) {
+    console.log(REACT_ERROR);
     process.exit(1);
 }
 
@@ -2064,6 +2141,38 @@ if (op === 'selftest') {
     const i6 = info2();
     chk('info: react 15.6 → projectType=ts и warning', i6.projectType === 'ts' && (i6.warnings || []).some((w) => w.includes('react >= 16')), JSON.stringify(i6).slice(0, 160));
     fs.rmSync(dir2, {recursive: true, force: true});
+
+    // задача 3: react op=component — definedIn и использования JSX-компонентов (мини-проект dir3)
+    const dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'te-ts-react-'));
+    const w3 = (rel, text) => {
+        fs.mkdirSync(path.dirname(path.join(dir3, rel)), {recursive: true});
+        fs.writeFileSync(path.join(dir3, rel), text);
+    };
+    w3('package.json', '{"name":"selftest-react","dependencies":{"react":"^18.2.0"}}');
+    w3('src/UserCard.tsx', 'export function UserCard() {\n    return <section>card</section>;\n}\n');
+    w3('src/App.tsx', "import {UserCard} from './UserCard';\n\nexport default function App() {\n    return (\n        <div>\n            <UserCard id={1} />\n            <UserCard id={2} />\n        </div>\n    );\n}\n");
+    const run3 = (argv) => {
+        try {
+            return cp.execFileSync(process.execPath, [path.join(__dirname, 'graph-tool.js'), ...argv], {cwd: dir3, encoding: 'utf8'});
+        } catch (e) {
+            return String(e.stdout || '');
+        }
+    };
+    const c1 = JSON.parse(run3(['op=component', 'name=UserCard']));
+    chk('component: definedIn и два usedIn в App.tsx', c1.found === true && c1.definedIn.length === 1
+        && c1.definedIn[0].file.endsWith('UserCard.tsx') && c1.definedIn[0].line === 1
+        && c1.usedTotal === 2 && c1.usedIn.map((u) => u.line).join(',') === '6,7',
+        JSON.stringify(c1).slice(0, 200));
+    // повторный вызов: граф берётся из graph-deps.json без jsxByName — индекс достраивается на месте
+    const c1b = JSON.parse(run3(['op=component', 'name=UserCard']));
+    chk('component: повторный вызов по кэшу графа — тот же ответ', c1b.found === true && c1b.usedTotal === 2
+        && JSON.stringify(c1b.usedIn) === JSON.stringify(c1.usedIn), JSON.stringify(c1b).slice(0, 200));
+    const dumped3 = fs.readFileSync(path.join(dir3, 'graph-deps.json'), 'utf8');
+    chk('component: jsx-индекс служебный — не попадает в graph-deps.json', !dumped3.includes('jsxUsages') && !dumped3.includes('jsxByName'), 'jsx-поля в сериализации');
+    fs.writeFileSync(path.join(dir3, 'package.json'), '{"name":"selftest-react","dependencies":{"fake-lib":"^1.0.0"}}');
+    const c2 = run3(['op=component', 'name=UserCard']);
+    chk('component: без react-зависимости — REACT_ERROR до построения графа', c2.startsWith('React не найден'), c2.slice(0, 200));
+    fs.rmSync(dir3, {recursive: true, force: true});
 
     fs.rmSync(dir, {recursive: true, force: true});
     console.log(bad.length ? '\nпровалено: ' + bad.join(', ') : '\nвсе проверки пройдены (' + total + ')');
