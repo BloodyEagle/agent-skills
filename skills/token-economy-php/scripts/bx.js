@@ -393,8 +393,16 @@ const ops = {
     const idx = ensureIndex(ctx);
     const n = findNode(idx, args.file);
     const lines = [`${n.p}  [${n.kind}]  ${n.loc} строк  ${n.enc}${n.o === 'core' ? '  (ядро)' : ''}`];
-    for (const d of n.decls || []) lines.push(`  ${d.kind} ${d.fqn}  ${d.line}-${d.end}`);
-    for (const f of n.funcs || []) lines.push(`  function ${f.f}  ${f.l}-${f.e}`);
+    // decls и funcs — один список объявлений с пагинацией: totals всегда, страница 50, limit=0 — весь список
+    const declLines = [
+      ...(n.decls || []).map((d) => `  ${d.kind} ${d.fqn}  ${d.line}-${d.end}`),
+      ...(n.funcs || []).map((f) => `  function ${f.f}  ${f.l}-${f.e}`),
+    ];
+    const lim = args.limit === undefined ? 50 : Math.max(0, Math.round(Number(args.limit) || 0));
+    const off = args.offset === undefined ? 0 : Math.max(0, Math.round(Number(args.offset) || 0));
+    const page = declLines.slice(off, lim ? off + lim : undefined); // offset за концом списка — пустое окно, не ошибка
+    lines.push(`объявлений: ${declLines.length} (показано ${page.length} со смещения ${off})`);
+    lines.push(...page);
     if (n.comps) lines.push('  компоненты: ' + n.comps.map(([id, t, l]) => `${id}${t ? '/' + t : ''}@${l}`).join(', '));
     if (n.mods) lines.push('  модули: ' + n.mods.map(([id]) => id).join(', '));
     if (n.events) lines.push(`  обработчиков событий: ${n.events.length}`);
@@ -419,8 +427,10 @@ const ops = {
     if (n.cmds) lines.push('  команды: ' + n.cmds.map((c) => c.sig).join(', '));
     if (n.sched) lines.push('  расписание: ' + n.sched.length + ' (op=console)');
     if (n.views) lines.push('  рендерит views: ' + n.views.slice(0, 8).map((v) => v[0]).join(', '));
-    lines.push('использует:', ...(fmtEdges(bfs(idx, n.id, 1, false), 40).length ? fmtEdges(bfs(idx, n.id, 1, false), 40) : ['  -']));
-    lines.push('используют его:', ...(fmtEdges(bfs(idx, n.id, 1, true), 40).length ? fmtEdges(bfs(idx, n.id, 1, true), 40) : ['  -']));
+    const uses = fmtEdges(bfs(idx, n.id, 1, false), 40);
+    lines.push('использует:', ...(uses.length ? uses : ['  -']));
+    const usedBy = fmtEdges(bfs(idx, n.id, 1, true), 40);
+    lines.push('используют его:', ...(usedBy.length ? usedBy : ['  -']));
     out(...lines);
   },
 
