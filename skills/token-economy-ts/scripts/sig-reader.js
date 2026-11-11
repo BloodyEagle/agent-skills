@@ -33,7 +33,7 @@ if (!Object.keys(args).length && process.stdin.isTTY !== true) {
 
 const cwd = process.cwd();
 const projectRoot = fs.realpathSync(cwd);
-const MAX_SIG = 200;        // максимум символов в одной сигнатуре
+const MAX_SIG = 200;        // максимум символов в одной сигнатуре (full=1 отключает)
 const MAX_DEPTH = 10;       // глубина прохода по реэкспортам
 const MAX_STARS = 6;        // сколько export * проверяем в поиске члена
 const MAX_AVAILABLE = 40;   // имен в списке доступных экспортов
@@ -43,7 +43,56 @@ const fail = (msg) => {
     emit({error: msg});
     process.exit(1);
 };
-const oneline = (s) => s.replace(/\s+/g, ' ').trim();
+const truthy = (v) => v === true || v === '1' || v === 'true';
+const fullSig = truthy(args.full);
+
+/**
+ * Пробелы схлопываются только вне строковых литералов: внутренние пробелы literal type
+ * ('a  b') и шаблонов сохраняются дословно, внешние — нормализуются в один пробел.
+ */
+function oneline(s) {
+    let out = '', str = null, pending = false, seen = false;
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (str) {
+            out += c;
+            if (c === '\\') { out += s[i + 1] || ''; i++; }
+            else if (c === str) str = null;
+            continue;
+        }
+        if (c === '"' || c === "'" || c === '`') {
+            if (pending && seen) out += ' ';
+            pending = false;
+            str = c;
+            out += c;
+            continue;
+        }
+        if (/\s/.test(c)) {
+            if (seen) pending = true;
+            continue;
+        }
+        if (pending && seen) { out += ' '; pending = false; }
+        seen = true;
+        out += c;
+    }
+    return out;
+}
+
+/**
+ * Сигнатуры со счётчиком обрезанных позиций: обрезка по MAX_SIG помечается индексами,
+ * full=1 возвращает текст целиком.
+ */
+function sigSlice(items, from, count, key = 'sig') {
+    const shown = items.slice(from, from + count);
+    const clipped = [];
+    shown.forEach((x, i) => { if (key === 'sig' ? x.clipped : x.declClipped) clipped.push(i); });
+    return {
+        signatures: shown.map((x) => x[key]),
+        ...(clipped.length ? {clippedSignatures: clipped} : {}),
+        ...(items.length > from + shown.length ? {truncated: true} : {})
+    };
+}
+const cut = (text) => fullSig ? {text, clipped: false} : {text: text.slice(0, MAX_SIG), clipped: text.length > MAX_SIG};
 const toPosix = (p) => {
     const rel = path.relative(cwd, p);
     return rel.startsWith('..') ? p.replace(/\\/g, '/') : rel.replace(/\\/g, '/');
@@ -196,11 +245,15 @@ function extractMembers(body, baseLine) {
     const push = (end) => {
         const chunk = body.slice(start, end);
         const text = oneline(chunk);
-        if (text) items.push({
-            name: memberName(chunk),
-            line: baseLine + body.slice(0, start).split('\n').length - 1,
-            sig: text.slice(0, MAX_SIG)
-        });
+        if (text) {
+            const c = cut(text);
+            items.push({
+                name: memberName(chunk),
+                line: baseLine + body.slice(0, start).split('\n').length - 1,
+                sig: c.text,
+                clipped: c.clipped
+            });
+        }
         start = -1;
     };
     for (let i = 0; i < body.length; i++) {
@@ -267,13 +320,19 @@ function enumMembers(body) {
         if ('{(['.includes(c)) depth++;
         if ('})]'.includes(c)) depth--;
         if (c === ',' && depth === 0) {
-            if (chunk.trim()) items.push({name: memberName(chunk), sig: oneline(chunk).slice(0, MAX_SIG)});
+            if (chunk.trim()) {
+                const c = cut(oneline(chunk));
+                items.push({name: memberName(chunk), sig: c.text, clipped: c.clipped});
+            }
             chunk = '';
             continue;
         }
         chunk += c;
     }
-    if (chunk.trim()) items.push({name: memberName(chunk), sig: oneline(chunk).slice(0, MAX_SIG)});
+    if (chunk.trim()) {
+        const c = cut(oneline(chunk));
+        items.push({name: memberName(chunk), sig: c.text, clipped: c.clipped});
+    }
     return items;
 }
 
@@ -307,16 +366,20 @@ function scanDecls(text) {
             if (close === -1) continue;
             const body = text.slice(brace + 1, close);
             const members = kind === 'enum' ? enumMembers(body) : extractMembers(body, lineAt(brace + 1));
+            const header = cut(oneline(text.slice(m.index, brace)));
             decls.push({
                 kind, name, line: lineAt(m.index),
-                decl: oneline(text.slice(m.index, brace)).slice(0, MAX_SIG),
-                members: members.slice(0, 400), membersTotal: members.length
+                decl: header.text,
+                declClipped: header.clipped,
+                // Полный список членов: cap не ставится, усечение выдачи делает limit/offset.
+                members, membersTotal: members.length
             });
             skipUntil = close + 1;
             re.lastIndex = close + 1;
         } else {
             const end = stmtEnd(text, nameEnd - name.length - kind.length - 1);
-            decls.push({kind, name, line: lineAt(m.index), decl: oneline(text.slice(m.index, end + 1)).slice(0, MAX_SIG)});
+            const d = cut(oneline(text.slice(m.index, end + 1)));
+            decls.push({kind, name, line: lineAt(m.index), decl: d.text, declClipped: d.clipped});
             skipUntil = end + 1;
         }
     }
@@ -556,6 +619,7 @@ function analyze(target, member, depth, visited) {
     let [spec, member] = String(args.name).split('#');
     member = args.member || member || null;
     const limit = Math.max(1, Number(args.limit) || 40);
+    const offset = Math.max(0, Number(args.offset) || 0);
 
     // Прямые пути проверяются и лексически, и по realpath до чтения деклараций.
     const direct = path.isAbsolute(spec) || /^[a-z]:/i.test(spec) || /^\.{1,2}(?:[\\/]|$)/.test(spec)
@@ -599,9 +663,9 @@ function analyze(target, member, depth, visited) {
                 owner: d.name,
                 line: d.line,
                 decl: d.decl,
-                signatures: d.members.slice(0, limit).map((x) => x.sig),
-                signaturesTotal: d.members.length,
-                ...(d.members.length > limit ? {truncated: true} : {})
+                ...(d.declClipped ? {declClipped: true} : {}),
+                ...sigSlice(d.members, offset, limit),
+                signaturesTotal: d.membersTotal
             });
             process.exit(0);
         }
@@ -616,7 +680,8 @@ function analyze(target, member, depth, visited) {
                     owner: d.name,
                     line: matched[0].line,
                     decl: d.decl,
-                    signatures: matched.slice(0, limit).map((x) => x.sig),
+                    ...(d.declClipped ? {declClipped: true} : {}),
+                    ...sigSlice(matched, offset, limit),
                     signaturesTotal: matched.length
                 });
             } else {
@@ -637,22 +702,34 @@ function analyze(target, member, depth, visited) {
             found: true,
             kind: d.kind,
             line: d.line,
-            signatures: r.decls.map((x) => x.decl).slice(0, limit),
+            ...sigSlice(r.decls, offset, limit, 'decl'),
             signaturesTotal: r.decls.length
         });
         process.exit(0);
     }
 
     // Без члена: классы/интерфейсы — с членами, функции/типы — своими сигнатурами
-    const items = r.decls.slice(0, limit).map((d) => (d.members
-        ? {kind: d.kind, name: d.name, line: d.line, decl: d.decl, members: d.members.slice(0, limit).map((x) => x.sig), membersTotal: d.membersTotal}
-        : {kind: d.kind, name: d.name, line: d.line, decl: d.decl}));
-    const truncated = r.decls.length > limit || r.decls.some((d) => (d.membersTotal || 0) > limit);
+    const page = r.decls.slice(offset, offset + limit);
+    const items = page.map((d) => {
+        const shownMembers = (d.members || []).slice(0, limit);
+        const clippedMembers = [];
+        shownMembers.forEach((x, i) => { if (x.clipped) clippedMembers.push(i); });
+        return {
+            kind: d.kind, name: d.name, line: d.line, decl: d.decl,
+            ...(d.declClipped ? {clipped: true} : {}),
+            ...(d.members
+                ? {members: shownMembers.map((x) => x.sig), membersTotal: d.membersTotal,
+                    ...(clippedMembers.length ? {clippedMembers} : {}),
+                    ...(d.membersTotal > shownMembers.length ? {membersTruncated: d.membersTotal - shownMembers.length} : {})}
+                : {})
+        };
+    });
+    const truncated = r.decls.length > offset + items.length || page.some((d) => (d.membersTotal || 0) > limit);
     emit({
         ...base,
         found: r.decls.length > 0,
         declarations: items,
-        ...(r.decls.length > limit ? {declarationsTotal: r.decls.length} : {}),
+        ...(r.decls.length > offset + items.length ? {declarationsTotal: r.decls.length} : {}),
         ...(truncated ? {hint: 'вывод усечён (limit=' + limit + '); точечный запрос: name=' + spec + '#ИмяЧлена'} : {}),
         ...(!r.decls.length && r.available && r.available.length ? {available: r.available} : {})
     });
