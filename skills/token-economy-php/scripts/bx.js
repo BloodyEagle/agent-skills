@@ -9,7 +9,7 @@ const path = require('path');
 const { posix, safePath, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
 const { makeCtx, ensureIndex, buildIndex, docPath, classifyFor, CACHE_DIR } = require('./lib/index');
 const { classify, pcreToRegExp, resolveInclude } = require('./lib/bitrix');
-const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams } = require('./lib/php');
+const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams, locateBody, lex, matchBrackets } = require('./lib/php');
 const { detectModx } = require('./lib/detect');
 const {
   composerFramework, composerNamespace, structureVersion, modelTable, routeUriToRegExp,
@@ -288,7 +288,7 @@ const ops = {
     if (ctx.mode === 'generic') {
       const top = cust.filter((n) => n.loc).sort((a, b) => b.loc - a.loc).slice(0, 5);
       if (top.length) lines.push('самые крупные: ' + top.map((n) => `${n.p} (${n.loc} строк)`).join(', '));
-      lines.push('операции: info, search, symbol, outline, deps, rdeps, path, node, stats, read, patch, create, build. Профильные операции Битрикса, Laravel и MODX отключены.');
+      lines.push('операции: info, search, symbol, outline, deps, rdeps, path, node, stats, read, patch, patch_symbol, create, build. Профильные операции Битрикса, Laravel и MODX отключены.');
       lines.push('ВНИМАНИЕ: связи через конфигурацию DI/сервис-контейнера и не-PHP файлы (шаблоны, YAML) не индексируются — пустой rdeps не значит «никем не используется».');
     }
     lines.push(`в индексе файлов: ${idx.nodes.length} (${cust.length} своих)` + (ctx.mode === 'bitrix' && !ctx.core ? '; ядро не индексируется ("core":true включит его)' : ''));
@@ -393,8 +393,16 @@ const ops = {
     const idx = ensureIndex(ctx);
     const n = findNode(idx, args.file);
     const lines = [`${n.p}  [${n.kind}]  ${n.loc} строк  ${n.enc}${n.o === 'core' ? '  (ядро)' : ''}`];
-    for (const d of n.decls || []) lines.push(`  ${d.kind} ${d.fqn}  ${d.line}-${d.end}`);
-    for (const f of n.funcs || []) lines.push(`  function ${f.f}  ${f.l}-${f.e}`);
+    // decls и funcs — один список объявлений с пагинацией: totals всегда, страница 50, limit=0 — весь список
+    const declLines = [
+      ...(n.decls || []).map((d) => `  ${d.kind} ${d.fqn}  ${d.line}-${d.end}`),
+      ...(n.funcs || []).map((f) => `  function ${f.f}  ${f.l}-${f.e}`),
+    ];
+    const lim = args.limit === undefined ? 50 : Math.max(0, Math.round(Number(args.limit) || 0));
+    const off = args.offset === undefined ? 0 : Math.max(0, Math.round(Number(args.offset) || 0));
+    const page = declLines.slice(off, lim ? off + lim : undefined); // offset за концом списка — пустое окно, не ошибка
+    lines.push(`объявлений: ${declLines.length} (показано ${page.length} со смещения ${off})`);
+    lines.push(...page);
     if (n.comps) lines.push('  компоненты: ' + n.comps.map(([id, t, l]) => `${id}${t ? '/' + t : ''}@${l}`).join(', '));
     if (n.mods) lines.push('  модули: ' + n.mods.map(([id]) => id).join(', '));
     if (n.events) lines.push(`  обработчиков событий: ${n.events.length}`);
@@ -419,8 +427,10 @@ const ops = {
     if (n.cmds) lines.push('  команды: ' + n.cmds.map((c) => c.sig).join(', '));
     if (n.sched) lines.push('  расписание: ' + n.sched.length + ' (op=console)');
     if (n.views) lines.push('  рендерит views: ' + n.views.slice(0, 8).map((v) => v[0]).join(', '));
-    lines.push('использует:', ...(fmtEdges(bfs(idx, n.id, 1, false), 40).length ? fmtEdges(bfs(idx, n.id, 1, false), 40) : ['  -']));
-    lines.push('используют его:', ...(fmtEdges(bfs(idx, n.id, 1, true), 40).length ? fmtEdges(bfs(idx, n.id, 1, true), 40) : ['  -']));
+    const uses = fmtEdges(bfs(idx, n.id, 1, false), 40);
+    lines.push('использует:', ...(uses.length ? uses : ['  -']));
+    const usedBy = fmtEdges(bfs(idx, n.id, 1, true), 40);
+    lines.push('используют его:', ...(usedBy.length ? usedBy : ['  -']));
     out(...lines);
   },
 
@@ -456,25 +466,43 @@ const ops = {
     const n = findNode(idx, args.file || args.target);
     const lines = [`${n.p}  [${n.kind}]  (${n.loc} строк, ${n.enc})`];
     if (n.ns) lines.push('namespace ' + n.ns);
+    const lim = args.limit === undefined ? 60 : Math.max(0, Math.round(Number(args.limit) || 0)); // 0 — без капа
+    // Кап — только по печатаемым строкам объявлений основного файла: заголовки decls, строка таблицы,
+    // их члены, funcs, consts. Extras-блоки и inherit-блоки (у наследования свой кап 40 на предка) не входят.
+    let full = 0;
+    const blocks = []; // { counted: [...], inherit: [...] } — на каждый decl / функцию / константу
     for (const d of n.decls || []) {
       const hdr = `${(d.mods || []).join(' ')} ${d.kind} ${d.name}`.trim() + (d.ext.length ? ' extends ' + d.ext.join(', ') : '') + (d.impl.length ? ' implements ' + d.impl.join(', ') : '');
-      lines.push(`L${d.line}-${d.end}`.padEnd(10) + hdr);
-      if (d.table) lines.push('          таблица ' + d.table + (d.fields ? '; поля: ' + d.fields.join(', ') : ''));
+      const counted = [`L${d.line}-${d.end}`.padEnd(10) + hdr];
+      if (d.table) counted.push('          таблица ' + d.table + (d.fields ? '; поля: ' + d.fields.join(', ') : ''));
       for (const m of d.members || []) {
-        lines.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + (m.k === 'method' ? short(m.sig, 150) : m.k === 'const' ? 'const ' + m.n : 'case ' + m.n));
+        counted.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + (m.k === 'method' ? short(m.sig, 150) : m.k === 'const' ? 'const ' + m.n : 'case ' + m.n));
       }
+      const inherit = [];
       if (truthy(args.inherit)) { // методы предков: в старом API основные методы лежат в CAll*-классах
         const dm = declMap(idx);
         for (const [bn, bd] of ancestors(dm, d)) {
-          lines.push(`  -- унаследовано от ${bd.name} (${bn.p}:${bd.line})`);
+          inherit.push(`  -- унаследовано от ${bd.name} (${bn.p}:${bd.line})`);
           const ms = (bd.members || []).filter((m) => m.k === 'method' && m.v !== 'private');
-          ms.slice(0, 40).forEach((m) => lines.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + short(m.sig, 150)));
-          if (ms.length > 40) lines.push(`  … ещё ${ms.length - 40}`);
+          ms.slice(0, 40).forEach((m) => inherit.push(`L${m.l}-${m.e}`.padEnd(10) + '  ' + short(m.sig, 150)));
+          if (ms.length > 40) inherit.push(`  … ещё ${ms.length - 40}`);
         }
       }
+      full += counted.length;
+      blocks.push({ counted, inherit });
     }
-    for (const f of n.funcs || []) lines.push(`L${f.l}-${f.e}`.padEnd(10) + short(f.sig, 150));
-    for (const [c, l] of n.consts || []) lines.push(`L${l}`.padEnd(10) + 'const ' + c);
+    for (const f of n.funcs || []) { full++; blocks.push({ counted: [`L${f.l}-${f.e}`.padEnd(10) + short(f.sig, 150)], inherit: [] }); }
+    for (const [c, l] of n.consts || []) { full++; blocks.push({ counted: [`L${l}`.padEnd(10) + 'const ' + c], inherit: [] }); }
+    const cut = lim > 0 && full > lim;
+    let left = cut ? lim : Infinity;
+    for (const b of blocks) {
+      if (left <= 0) break;
+      const take = b.counted.slice(0, left);
+      lines.push(...take);
+      left -= take.length;
+      if (b.inherit.length) lines.push(...b.inherit); // inherit-блок печатается целиком и в кап не входит
+    }
+    if (cut) lines.push(`показано ${lim} из ${full} объявлений (limit=0 — вывести все)`);
     if (!(n.decls || []).length && !(n.funcs || []).length) lines.push('(объявлений классов и функций нет — шаблон или страница)');
     if (n.comps) lines.push('компоненты: ' + n.comps.map(([id, t, l]) => `${id}${t ? ' [' + t + ']' : ''} L${l}`).join('; '));
     if (n.mods) lines.push('модули: ' + n.mods.map(([id, l]) => `${id} L${l}`).join(', '));
@@ -704,6 +732,42 @@ const ops = {
     if (!fs.existsSync(abs)) fail('файл не найден: ' + f);
     const { text, enc } = readText(abs);
     const ls = text.split(/\r?\n/);
+    // задача 3: ranges — несколько диапазонов за один вызов: строка "10-20,30-40" (argv)
+    // или JSON-массив [[10,20],[30,40]] (@-payload). Совместно с offset/limit запрещён.
+    if (args.ranges !== undefined) {
+      if (args.offset !== undefined || args.limit !== undefined) fail('ranges несовместим с offset/limit — передайте что-то одно');
+      let merged;
+      try {
+        merged = mergeRanges((Array.isArray(args.ranges) ? args.ranges : String(args.ranges).split(',')).map((r) => {
+          if (typeof r === 'number') return r;
+          if (Array.isArray(r)) { // [10,20] или [15] — одна строка
+            if (r.length < 1 || r.length > 2) throw new RangeError('элемент должен быть числом или парой [start, end]');
+            return r.length === 1 ? Number(r[0]) : [Number(r[0]), Number(r[1])];
+          }
+          const t = String(r).trim();
+          if (!t) throw new RangeError('пустой элемент');
+          const dash = t.indexOf('-');
+          if (dash < 0) return Number(t); // «15» — диапазон одной строки
+          return [Number(t.slice(0, dash)), Number(t.slice(dash + 1))];
+        }));
+      } catch (e) { fail('ranges: ' + e.message); }
+      const blocks = [];
+      for (const [s, e] of merged) {
+        if (s > ls.length) fail(`ranges: диапазон ${s}-${e} за концом файла (в файле ${ls.length} строк)`);
+        blocks.push([s, Math.min(e, ls.length)]); // диапазон, выходящий за конец частично, клампится к размеру файла
+      }
+      const total = blocks.reduce((acc, [s, e]) => acc + (e - s + 1), 0);
+      if (total > 2000) fail(`ranges: суммарно ${total} строк — больше 2000, отказ без усечки; сузьте диапазоны или читайте частями`);
+      const body = [];
+      let prev = 0;
+      for (const [s, e] of blocks) {
+        if (prev) body.push(`--- пропуск L${prev + 1}-${s - 1} ---`);
+        for (let i = s; i <= e; i++) body.push(`${i}: ${ls[i - 1]}`);
+        prev = e;
+      }
+      out(`${posix(path.relative(ctx.root, abs))}  (${ls.length} строк, ${enc})`, ...body);
+      return;
+    }
     const off = Math.max(Number(args.offset) || 1, 1);
     const lim = Number(args.limit) || 200;
     const part = ls.slice(off - 1, off - 1 + lim);
@@ -960,23 +1024,31 @@ const ops = {
   console() {
     const idx = ensureIndex(ctx);
     const d = laravelScan(idx);
+    const lim = args.limit === undefined ? 50 : Math.max(0, Math.round(Number(args.limit) || 0));
+    const total = d.cmds.length + d.sched.length;
+    if (!total) return out('команды и расписание не найдены (app/Console/Commands, routes/console.php, Kernel::schedule)');
+    const shown = lim > 0 ? Math.min(lim, total) : total;
+    const cmdRows = [];
+    for (const c of d.cmds) cmdRows.push(`  ${c.sig}  ${c.cls ? c.cls + '  (' + c.p + ':' + c.l + ')' : '(' + c.p + ':' + c.l + ')'}${c.desc ? '  — ' + short(c.desc, 60) : ''}`);
+    const schedRows = [];
+    for (const s of d.sched) {
+      let cmd = s.cmd;
+      if (/::class$/.test(cmd)) {
+        const cc = d.cmds.find((x) => x.cls === cmd.replace(/::class$/, ''));
+        if (cc) cmd = cc.sig;
+      }
+      schedRows.push(`  ${cmd}  ${s.freq}  (${s.p}:${s.l})`);
+    }
     const lines = [];
-    if (!d.cmds.length && !d.sched.length) return out('команды и расписание не найдены (app/Console/Commands, routes/console.php, Kernel::schedule)');
     if (d.cmds.length) {
       lines.push(`команды (${d.cmds.length}):`);
-      for (const c of d.cmds) lines.push(`  ${c.sig}  ${c.cls ? c.cls + '  (' + c.p + ':' + c.l + ')' : '(' + c.p + ':' + c.l + ')'}${c.desc ? '  — ' + short(c.desc, 60) : ''}`);
+      lines.push(...cmdRows.slice(0, shown));
     }
     if (d.sched.length) {
       lines.push(`расписание (${d.sched.length}):`);
-      for (const s of d.sched) {
-        let cmd = s.cmd;
-        if (/::class$/.test(cmd)) {
-          const cc = d.cmds.find((x) => x.cls === cmd.replace(/::class$/, ''));
-          if (cc) cmd = cc.sig;
-        }
-        lines.push(`  ${cmd}  ${s.freq}  (${s.p}:${s.l})`);
-      }
+      lines.push(...schedRows.slice(0, Math.max(0, shown - cmdRows.length)));
     }
+    if (shown < total) lines.push(`… ещё ${total - shown} (limit=0 — полностью)`);
     out(...lines);
   },
 
@@ -1085,8 +1157,163 @@ const ops = {
     writeAtomic(abs, buf, { root: ctx.root });
     const line = cur.text.slice(0, cur.text.indexOf(oldS)).split('\n').length;
     out(`OK: ${posix(path.relative(ctx.root, abs))}, замен: ${count}, первая со строки ${line}, кодировка ${enc}, EOL ${cur.eol}`);
+  },
+
+  // Правка тела метода/функции без чтения старого тела в контекст: заменяется только содержимое
+  // между { и }; сигнатура, модификаторы, doc-комментарии, кодировка, BOM и EOL — байт в байт.
+  // Доступна во всех режимах; при неоднозначности или сомнении — отказ, файл не тронут.
+  patch_symbol() {
+    const f = args.file;
+    const sym = String(args.symbol || '').trim();
+    if (!f) fail('укажите file');
+    if (!sym) fail('укажите symbol: Класс::метод или имя_функции');
+    if ((args.body === undefined) === (args.body_file === undefined)) fail('нужно ровно одно: body или body_file');
+    if (args.indent !== undefined && !['auto', '2', '4', 'tab', 'raw'].includes(String(args.indent).toLowerCase())) fail('indent: auto|2|4|tab|raw');
+    const indentMode = args.indent === undefined ? 'auto' : String(args.indent).toLowerCase();
+    const dry = args.dry === undefined ? true : truthy(args.dry);
+    let bodyRaw;
+    if (args.body !== undefined) bodyRaw = String(args.body).replace(/\\r/g, '\r').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    else {
+      let bfAbs;
+      try { bfAbs = safeAbs(args.body_file); } catch (e) { fail('body_file: ' + e.message); }
+      if (!fs.existsSync(bfAbs)) fail('body_file не найден: ' + args.body_file);
+      bodyRaw = fs.readFileSync(bfAbs, 'utf8');
+    }
+    // резолюция по индексу — как op symbol: класс по имени/FQN (варианты mssql/oracle скрыты, если есть основной)
+    const parts = sym.replace(/^\\/, '').split('::');
+    if (parts.length > 2 || !parts[parts.length - 1]) fail('symbol: ожидается Класс::метод или имя_функции');
+    const isMethod = parts.length === 2;
+    const idx = ensureIndex(ctx);
+    const fRel = posix(f).replace(/^\.\//, '');
+    const sameFile = (p) => (process.platform === 'win32' ? p.toLowerCase() === fRel.toLowerCase() : p === fRel);
+    let fileP = null;
+    if (isMethod) {
+      const clsQ = parts[0].replace(/^\\/, '').toLowerCase();
+      const byFqn = clsQ.includes('\\');
+      const cands = [];
+      for (const n of idx.nodes) for (const d of n.decls || []) {
+        const ok = byFqn ? (d.fqn.toLowerCase() === clsQ || d.fqn.toLowerCase().endsWith('\\' + clsQ)) : d.name.toLowerCase() === clsQ;
+        if (ok) cands.push([n, d.fqn]);
+      }
+      const main = cands.filter(([n]) => !dbVariant(n.p));
+      const sel = main.length ? main : cands;
+      if (!sel.length) fail(`класс «${parts[0]}» не найден (проверьте имя: op=symbol name=${sym})`);
+      const files = [...new Map(sel.map(([n, fq]) => [n.p, fq])).entries()];
+      if (files.length > 1) fail(`класс «${parts[0]}» найден в нескольких файлах, уточните (FQN или уникальное имя):\n` + files.map(([p, fq]) => '  ' + p + '  ' + fq).join('\n'));
+      fileP = files[0][0];
+    } else {
+      const q = parts[0].replace(/^\\/, '').toLowerCase();
+      const cands = [];
+      for (const n of idx.nodes) for (const fn of n.funcs || []) {
+        if (fn.n.toLowerCase() === q || fn.f.toLowerCase() === q || fn.f.toLowerCase().endsWith('\\' + q)) cands.push([n, fn.f]);
+      }
+      const main = cands.filter(([n]) => !dbVariant(n.p));
+      const sel = main.length ? main : cands;
+      if (!sel.length) fail(`функция «${sym}» не найдена (проверьте имя: op=symbol name=${sym})`);
+      const files = [...new Map(sel.map(([n, fq]) => [n.p, fq])).entries()];
+      if (files.length > 1) fail(`функция «${sym}» найдена в нескольких файлах, уточните file:\n` + files.map(([p, fq]) => '  ' + p + '  ' + fq).join('\n'));
+      fileP = files[0][0];
+    }
+    if (!sameFile(fileP)) fail(`символ «${sym}» найден в ${fileP}, а указан file=${f} (подсказка: op=symbol name=${sym})`);
+    const abs = safeAbs(f);
+    if (!fs.existsSync(abs)) fail('файл не найден: ' + f);
+    const cur = readText(abs);
+    if (cur.text.includes('\0')) fail('бинарный файл');
+    // тело ищем заново из текущего текста: индекс мог устареть
+    const loc = locateBody(cur.text, isMethod ? 'method' : 'function', isMethod ? parts[0] : null, parts[parts.length - 1]);
+    if (!loc) fail(`тело «${sym}» не найдено: символ отсутствует в файле, abstract или интерфейсный (если метод унаследован — правьте базовый класс; проверьте: op=symbol name=${sym})`);
+    if (loc.ambiguous) fail(`«${sym}»: в файле несколько подходящих объявлений (строки ${loc.candidates.map((c) => c.openLine).join(', ')}); правка отменена`);
+    // новое тело должно быть сбалансировано по скобкам: стек пуст, у всех скобок есть пара
+    const bt = lex('<?php ' + bodyRaw);
+    const bm = matchBrackets(bt);
+    const isBr = (v) => v === '(' || v === '[' || v === '{' || v === ')' || v === ']' || v === '}';
+    for (let i = 0; i < bt.length; i++) {
+      if (bt[i].k === 'op' && isBr(bt[i].v) && bm[i] < 0) fail('новое тело несбалансировано по скобкам — правка отменена');
+    }
+    // замена: только между { и }; отступы — как в TS edit-symbol
+    const eol = cur.eol === 'crlf' ? '\r\n' : '\n';
+    const text = cur.text;
+    const lineStart = (off) => text.lastIndexOf('\n', off) + 1;
+    const declIndent = /^[ \t]*/.exec(text.slice(lineStart(loc.openChar), loc.openChar))[0];
+    const closeLineWs = text.slice(lineStart(loc.closeChar), loc.closeChar);
+    const closeIsFirst = closeLineWs.trim() === '';
+    const oldInner = text.slice(loc.openChar + 1, loc.closeChar);
+    let base;
+    if (indentMode === 'raw') base = null;
+    else if (indentMode === '2' || indentMode === '4') base = declIndent + ' '.repeat(+indentMode);
+    else if (indentMode === 'tab') base = declIndent + '\t';
+    else { // auto: минимальный отступ непустых строк старого тела; иначе отступ объявления + 4 пробела
+      let minInd = null;
+      for (const line of oldInner.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const ind = /^[ \t]*/.exec(line)[0];
+        if (minInd === null || ind.length < minInd.length) minInd = ind;
+      }
+      base = minInd && minInd.length > declIndent.length && minInd.startsWith(declIndent) ? minInd : declIndent + '    ';
+    }
+    const nl = bodyRaw.replace(/\r\n?/g, '\n');
+    let dedent;
+    if (indentMode === 'raw') dedent = nl.replace(/\n+$/, '').split('\n');
+    else {
+      const lines = nl.replace(/^\n+/, '').replace(/\n+$/, '').split('\n');
+      const inds = lines.filter((l) => l.trim()).map((l) => /^[ \t]*/.exec(l)[0]);
+      const common = inds.length ? inds.reduce((a, b) => (b.length < a.length ? b : a)) : '';
+      dedent = lines.map((l) => (l.startsWith(common) ? l.slice(common.length) : l.replace(/^[ \t]+/, '')));
+    }
+    const newBody = (indentMode === 'raw' ? dedent : dedent.map((l) => (l.trim() ? base + l : ''))).join(eol);
+    let inner;
+    if (!newBody) inner = ''; // пустое новое тело → {}
+    else if (closeIsFirst) inner = eol + newBody + eol + closeLineWs; // многострочный стиль
+    else if (!oldInner.trim()) inner = eol + newBody + eol + declIndent; // пустое старое {} — разворачиваем
+    else inner = ' ' + (dedent.length === 1 ? dedent[0] : newBody) + ' '; // однострочный стиль — держим в тех же скобках, без базового отступа
+    const result = text.slice(0, loc.openChar + 1) + inner + text.slice(loc.closeChar);
+    let enc = cur.enc;
+    if (enc === 'ascii' && /[^\x00-\x7F]/.test(result)) {
+      if (args.enc === 'utf8' || args.enc === 'cp1251') enc = args.enc;
+      else {
+        const c = { utf8: 0, cp1251: 0 };
+        for (const n of idx.nodes) if (n.o === 'custom' && c[n.enc] !== undefined) c[n.enc]++;
+        enc = c.cp1251 > c.utf8 ? 'cp1251' : 'utf8';
+      }
+    }
+    let buf;
+    try { buf = encodeText(result, enc, cur.bom); } catch (e) { fail('запись отменена, файл не тронут: ' + e.message); }
+    const noun = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'строка' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'строки' : 'строк');
+    const relP = posix(path.relative(ctx.root, abs));
+    const range = `тело L${loc.openLine}-L${loc.closeLine} → ${dedent.length} ${noun(dedent.length)}`;
+    if (dry) return out(`dry: ${relP}  ${sym}  ${range}  (кодировка ${enc})`);
+    writeAtomic(abs, buf, { root: ctx.root });
+    out(`OK: ${relP}  ${sym}  ${range}  кодировка ${enc}  EOL ${cur.eol}`);
   }
 };
+
+// ---------- задача 3: слияние диапазонов строк для op read ----------
+// Чистая функция (без args/fs): принимает список диапазонов — число «15» (одна строка)
+// или пара [start, end], 1-based включительно; возвращает отсортированный список
+// [start, end] без перекрытий: перекрывающиеся и вплотную соседние диапазоны слиты,
+// дубликаты строк исключены. Кламп к размеру файла здесь не делается — размер
+// файла известен только op read.
+function mergeRanges(list) {
+  const pairs = (Array.isArray(list) ? list : []).map((r) => {
+    let s, e;
+    if (Array.isArray(r)) {
+      if (r.length < 1 || r.length > 2) throw new RangeError('«' + JSON.stringify(r) + '»: элемент ranges — число или пара [start, end]');
+      s = Number(r[0]);
+      e = Number(r.length > 1 ? r[1] : r[0]);
+    } else { s = Number(r); e = s; }
+    if (!Number.isInteger(s) || !Number.isInteger(e) || s < 1 || e < 1) throw new RangeError('«' + (Array.isArray(r) ? r.join('-') : String(r)) + '»: нужны целые числа от 1');
+    if (s > e) throw new RangeError(s + '-' + e + ': начало больше конца');
+    return [s, e];
+  });
+  pairs.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const res = [];
+  for (const [s, e] of pairs) {
+    const last = res[res.length - 1];
+    if (last && s <= last[1] + 1) last[1] = Math.max(last[1], e); // перекрытие или вплотную — слить
+    else res.push([s, e]);
+  }
+  return res;
+}
 
 function relations(reverse) {
   if (!args.file) fail('укажите file');
@@ -1275,6 +1502,45 @@ ops.selftest = function () {
   chk('modx: разбор tpl', (mt.snippets || []).some(([n]) => n === 'pdoMenu') && (mt.snippets || []).some(([n]) => n === 'helloSnippet') && mt.chunks[0][0] === 'headerChunk' && mt.settings[0][0] === 'site_name' && mt.tvs[0][0] === 'pagetitle' && mt.placeholders[0][0] === 'content' && mt.fenomInc[0][0] === 'chunks/nav.tpl', JSON.stringify(mt).slice(0, 400));
   const mp = md.parseModxPhp('<?php\n$out = $modx->runSnippet("hello", ["n" => 1]);\n$c = $modx->getChunk(\'hdr\');');
   chk('modx: вызовы из PHP', mp.snipCalls[0][0] === 'hello' && mp.chunkCalls[0][0] === 'hdr', JSON.stringify(mp));
+
+  // задача 3: mergeRanges — чистое слияние диапазонов строк для op read
+  const mr = (list) => JSON.stringify(mergeRanges(list));
+  chk('read/mergeRanges: перекрытие слито', mr([[10, 20], [15, 25]]) === '[[10,25]]', mr([[10, 20], [15, 25]]));
+  chk('read/mergeRanges: вплотную слито', mr([[10, 20], [21, 30]]) === '[[10,30]]', mr([[10, 20], [21, 30]]));
+  chk('read/mergeRanges: зазор сохранён (два блока)', mr([[10, 20], [30, 40]]) === '[[10,20],[30,40]]', mr([[10, 20], [30, 40]]));
+  chk('read/mergeRanges: обратный порядок входа', mr([[30, 40], [10, 20]]) === '[[10,20],[30,40]]', mr([[30, 40], [10, 20]]));
+  chk('read/mergeRanges: дубликат исключён', mr([[10, 20], [10, 20]]) === '[[10,20]]', mr([[10, 20], [10, 20]]));
+  chk('read/mergeRanges: одиночная форма — одна строка', mr([15]) === '[[15,15]]' && mr([[15, 15]]) === '[[15,15]]', mr([15]));
+  chk('read/mergeRanges: вложенность', mr([[10, 40], [15, 20]]) === '[[10,40]]', mr([[10, 40], [15, 20]]));
+  chk('read/mergeRanges: множество диапазонов', mr([[1, 3], [5, 6], [2, 4], [10, 12], [7, 7]]) === '[[1,7],[10,12]]', mr([[1, 3], [5, 6], [2, 4], [10, 12], [7, 7]]));
+
+  // задача 4: locateBody — диапазон тела метода/функции для patch_symbol
+  const locBody = (src, kind, cls, member) => locateBody(src, kind, cls, member);
+  const rLb = locBody(php, 'method', 'Api', 'run');
+  chk('patch_symbol: метод в классе (многострочное тело)', !!rLb && !rLb.ambiguous && rLb.openLine === 9 && rLb.closeLine === 12 && rLb.openChar > 0 && rLb.openChar < rLb.closeChar, JSON.stringify(rLb));
+  const rLbFqn = locBody(php, 'method', 'Demo\\Mod\\Api', 'hidden');
+  chk('patch_symbol: класс по FQN', !!rLbFqn && !rLbFqn.ambiguous && rLbFqn.openLine === 15 && rLbFqn.closeLine === 17, JSON.stringify(rLbFqn));
+  const rLbOne = locBody('<?php\nclass One {\n    public function a() { return 1; }\n}\n', 'method', 'One', 'a');
+  chk('patch_symbol: однострочное тело', !!rLbOne && !rLbOne.ambiguous && rLbOne.openLine === 3 && rLbOne.closeLine === 3, JSON.stringify(rLbOne));
+  const rLbFn = locBody('<?php\nfunction hello($n)\n{\n    return $n;\n}\n', 'function', null, 'hello');
+  chk('patch_symbol: глобальная функция', !!rLbFn && !rLbFn.ambiguous && rLbFn.openLine === 3 && rLbFn.closeLine === 5, JSON.stringify(rLbFn));
+  chk('patch_symbol: abstract-метод и метод интерфейса → null', locBody('<?php abstract class A { abstract public function run(); }', 'method', 'A', 'run') === null && locBody('<?php interface I { public function run(); }', 'method', 'I', 'run') === null);
+  chk('patch_symbol: не найден → null', locBody(php, 'method', 'Api', 'nope') === null && locBody(php, 'method', 'Missing', 'run') === null && locBody('<?php\nfunction a() {}\n', 'function', null, 'b') === null);
+  const te = '<?php\ntrait T {\n    public function go() {\n        return 2;\n    }\n}\nenum E: string {\n    case A = \'a\';\n    public function label(): string {\n        return $this->value;\n    }\n}\n';
+  const rLbT = locBody(te, 'method', 'T', 'go');
+  const rLbE = locBody(te, 'method', 'E', 'label');
+  chk('patch_symbol: трейт и enum', !!rLbT && rLbT.openLine === 3 && rLbT.closeLine === 5 && !!rLbE && rLbE.openLine === 9 && rLbE.closeLine === 11, JSON.stringify([rLbT, rLbE]));
+  const rLbDup = locBody('<?php\nclass D {\n    public function x() { return 1; }\n    public function x() { return 2; }\n}\n', 'method', 'D', 'x');
+  chk('patch_symbol: одноимённые члены → неоднозначность', !!rLbDup && rLbDup.ambiguous === true && (rLbDup.candidates || []).length === 2, JSON.stringify(rLbDup));
+  const rLbCls = locBody('<?php\nclass C { public function m() { return 1; } }\nclass C { public function m() { return 2; } }\n', 'method', 'C', 'm');
+  chk('patch_symbol: одноимённые классы в файле → неоднозначность', !!rLbCls && rLbCls.ambiguous === true && (rLbCls.candidates || []).length === 2, JSON.stringify(rLbCls));
+  const twoCls = '<?php\nclass A {\n    public function run() {\n        return \'A\';\n    }\n}\nclass B {\n    public function run() {\n        return \'B\';\n    }\n}\n';
+  const rLbA = locBody(twoCls, 'method', 'A', 'run');
+  const rLbB = locBody(twoCls, 'method', 'B', 'run');
+  chk('patch_symbol: метод в правильном классе из двух', !!rLbA && rLbA.openLine === 3 && rLbA.closeLine === 5 && !!rLbB && rLbB.openLine === 8 && rLbB.closeLine === 10, JSON.stringify([rLbA, rLbB]));
+  const hered = '<?php\nclass H {\n    public function doc($n) {\n        $s = <<<TXT\nстрока {фиг} $n\nTXT;\n        return $s;\n    }\n}\n';
+  const rLbH = locBody(hered, 'method', 'H', 'doc');
+  chk('patch_symbol: heredoc в теле не сбивает диапазон', !!rLbH && !rLbH.ambiguous && rLbH.openLine === 3 && rLbH.closeLine === 8, JSON.stringify(rLbH));
 
   if (bad.length) {
     console.log('\nпровалено: ' + bad.join(', '));

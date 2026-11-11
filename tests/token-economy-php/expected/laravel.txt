@@ -77,3 +77,18 @@ app/Http/Controllers/PostController.php [controller]: использует — 2
 1 app/Models/Post.php [model] (class)
 1 resources/views/posts/index.blade.php [view] (template)
 exit=0
+
+$ op=read file=routes/web.php ranges=1-3,5-7
+routes/web.php  (9 строк, ascii)
+1: <?php
+2: use App\Http\Controllers\PostController;
+3: use Illuminate\Support\Facades\Route;
+--- пропуск L4-4 ---
+5: Route::get('/posts', [PostController::class, 'index'])->name('posts.index');
+6: Route::get('/posts/{post}', [PostController::class, 'show'])->name('posts.show');
+7: Route::resource('comments', CommentController::class)->only(['index', 'store']);
+exit=0
+
+$ op=patch_symbol file=app/Models/Post.php symbol=App\Models\Post::comments body=return $this->hasMany(Comment::class); dry=true
+dry: app/Models/Post.php  App\Models\Post::comments  тело L8-L8 → 1 строка  (кодировка ascii)
+exit=0

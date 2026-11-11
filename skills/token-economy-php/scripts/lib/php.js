@@ -584,4 +584,105 @@ function parseComponentParams(src) {
   return [];
 }
 
-module.exports = { lex, matchBrackets, parsePhp, parseLang, parseUrlRewrite, parseComponentParams, collapse };
+/**
+ * Диапазон тела метода или глобальной функции в тексте PHP-файла (для patch_symbol).
+ * locateBody(src, 'method', 'ClassName', 'methodName') — класс/интерфейс/трейт/enum по короткому
+ * имени или FQN (namespace файла учитывается), затем член-функция по имени;
+ * locateBody(src, 'function', null, 'funcName') — глобальная функция файла: объявления внутри
+ * классов и вложенные функции пропускаются, анонимные классы не считаются объявлениями.
+ * Тело ищется по образцу parseFunction: `function [&] имя (…) … {` с парной `}` (matchBrackets),
+ * строки — T[токен].l. heredoc/строки — один токен, скобки внутри не сбивают диапазон.
+ * @returns {{openLine: number, closeLine: number, openChar: number, closeChar: number}} — строки
+ *   (1-based) с `{` и `}` тела и смещения этих символов; при нескольких совпадениях в одном файле —
+ *   {ambiguous: true, candidates: [{openLine, closeLine}, …]}; не найдено или тела нет
+ *   (abstract-метод, метод интерфейса) — null.
+ */
+function locateBody(src, kind, className, memberName) {
+  if (kind !== 'method' && kind !== 'function') return null;
+  const want = String(memberName || '').toLowerCase();
+  const wantCls = String(className || '').replace(/^\\/, '').toLowerCase();
+  if (!want || (kind === 'method' && !wantCls)) return null;
+  const T = lex(src);
+  const match = matchBrackets(T);
+  const lc = (t) => (t && t.k === 'name' ? t.v.toLowerCase() : '');
+  const isOp = (t, v) => !!t && t.k === 'op' && t.v === v;
+  // namespace-ы файла (в том числе блочные) — для сопоставления FQN
+  const nsList = [];
+  for (let i = 0; i < T.length - 1; i++) {
+    if (lc(T[i]) === 'namespace' && T[i + 1].k === 'name' && !(isOp(T[i - 1], '->') || isOp(T[i - 1], '?->') || isOp(T[i - 1], '::'))) {
+      const v = T[i + 1].v.toLowerCase();
+      if (!nsList.includes(v)) nsList.push(v);
+      i++;
+    }
+  }
+  const isDeclKw = (i) => {
+    const w = lc(T[i]), prev = T[i - 1], nx = T[i + 1];
+    if (!['class', 'interface', 'trait', 'enum'].includes(w)) return false;
+    if (isOp(prev, '::') || isOp(prev, '->') || isOp(prev, '?->') || ['new', 'instanceof'].includes(lc(prev))) return false;
+    if (!nx || nx.k !== 'name' || KEYWORDS.has(lc(nx))) return false;
+    if (w === 'enum') return isOp(T[i + 2], '{') || isOp(T[i + 2], ':') || lc(T[i + 2]) === 'implements';
+    return true;
+  };
+  // граница тела объявления: до `{` или `;`, вложенные скобки пропускаются
+  const declBodyOpen = (j) => {
+    while (j < T.length && !isOp(T[j], '{') && !isOp(T[j], ';')) { if (T[j].k === 'op' && OPEN[T[j].v] && match[j] > j) j = match[j]; j++; }
+    return isOp(T[j], '{') && match[j] > j ? j : -1;
+  };
+  // function [&] имя (…) … { или ; — по образцу parseFunction
+  const readFunc = (i) => {
+    let j = i + 1;
+    if (isOp(T[j], '&')) j++;
+    if (!T[j] || T[j].k !== 'name') return null; // closure
+    const open = j + 1;
+    if (!isOp(T[open], '(') || match[open] <= open) return null;
+    const bodyOpen = declBodyOpen(match[open] + 1);
+    const bodyClose = bodyOpen >= 0 ? match[bodyOpen] : -1;
+    return { name: T[j].v, bodyOpen, bodyClose, next: bodyOpen >= 0 ? bodyClose + 1 : match[open] + 2 };
+  };
+  const hit = (r) => ({ openLine: T[r.bodyOpen].l, closeLine: T[r.bodyClose].l, openChar: T[r.bodyOpen].s, closeChar: T[r.bodyClose].s });
+  let cls = null;
+  if (kind === 'method') {
+    const classes = [];
+    for (let i = 0; i < T.length; i++) {
+      if (!isDeclKw(i)) continue;
+      const nameTok = T[i + 1];
+      const open = declBodyOpen(i + 2);
+      if (open < 0) continue;
+      const nameLc = nameTok.v.toLowerCase();
+      const fqnVariants = [nameLc, ...nsList.map((n) => n + '\\' + nameLc)];
+      const ok = wantCls.includes('\\')
+        ? fqnVariants.some((f) => f === wantCls || f.endsWith('\\' + wantCls))
+        : nameLc === wantCls;
+      if (ok) classes.push({ open, close: match[open] });
+      i = open; // тело просматривается отдельно; пропуск заголовка не прячет вложенные объявления
+    }
+    if (!classes.length) return null;
+    if (classes.length > 1) return { ambiguous: true, candidates: classes.map((c) => ({ openLine: T[c.open].l, closeLine: T[c.close].l })) };
+    cls = classes[0];
+  }
+  const hits = [];
+  let k = kind === 'method' ? cls.open + 1 : 0;
+  const stop = kind === 'method' ? cls.close : T.length;
+  while (k < stop) {
+    const t = T[k];
+    if (kind === 'function' && t.k === 'name' && isDeclKw(k)) { // тело класса пропускаем целиком
+      const open = declBodyOpen(k + 2);
+      k = open >= 0 ? match[open] + 1 : k + 2;
+      continue;
+    }
+    if (t.k === 'name' && lc(t) === 'function' && !isOp(T[k - 1], '::')) {
+      const r = readFunc(k);
+      if (r) {
+        if (r.name.toLowerCase() === want && r.bodyOpen >= 0) hits.push(hit(r));
+        k = r.next;
+        continue;
+      }
+    }
+    if (t.k === 'op' && OPEN[t.v] && match[k] > k) { k = match[k] + 1; continue; }
+    k++;
+  }
+  if (hits.length > 1) return { ambiguous: true, candidates: hits };
+  return hits.length === 1 ? hits[0] : null;
+}
+
+module.exports = { lex, matchBrackets, parsePhp, parseLang, parseUrlRewrite, parseComponentParams, collapse, locateBody };
