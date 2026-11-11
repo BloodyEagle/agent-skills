@@ -1689,22 +1689,38 @@ if (op === 'node' || op === 'deps' || op === 'rdeps') {
         const rev = reverseIndex(graph);
         // члены не выводим: их задача — поиск в op=symbol, в node они только раздули бы ответ
         const bare = n.entities.map(({members, ...rest}) => rest);
+        // Пагинация: offset/limit для entities/importedBy; imports целиком (кап не вводится).
+        // Наличие срезов отражается счётчиками, полный доступ реален через offset.
+        const offset = Math.max(0, Math.round(Number(args.offset) || 0));
+        let limit = 0; // 0 — дефолтные пределы (50/30), как до пагинации
+        if (args.limit !== undefined && args.limit !== null && args.limit !== '') {
+            limit = Math.max(1, Math.round(Number(args.limit) || 1));
+        }
+        const entPage = bare.slice(offset, offset + (limit || 50));
+        const importers = rev.get(n.id) || [];
+        const impPage = importers.slice(offset, offset + (limit || 30));
+        const omitted = (bare.length - entPage.length) + (importers.length - impPage.length);
         emit({
             file: n.path, id: n.id, kind: n.kind, loc: n.loc,
-            entities: bare.slice(0, 50),
-            ...(bare.length > 50 ? {entitiesTruncated: bare.length - 50} : {}),
+            entitiesTotal: bare.length,
+            entities: entPage,
+            ...(bare.length > entPage.length ? {entitiesTruncated: bare.length - entPage.length} : {}),
             ...(n.reexportAll ? {reexportAll: true} : {}),
+            importsTotal: n.imports.length,
             imports: n.imports.map((id) => {
                 const ln = args.why ? (n.importLines || {})[id] : null;
                 return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
             }),
-            importedBy: (rev.get(n.id) || []).slice(0, 30).map((id) => {
+            importedByTotal: importers.length,
+            importedBy: impPage.map((id) => {
                 const ln = args.why ? ((byId(id).importLines || {})[n.id]) : null;
                 return {file: byId(id).path, kind: byId(id).kind, ...(ln ? {via: 'L' + ln} : {})};
             }),
+            ...(importers.length > impPage.length ? {importedByTruncated: importers.length - impPage.length} : {}),
             unresolved: n.unresolved.length,
             ...unresolvedSummary(n),
-            ...(n.external.length ? {external: n.external} : {})
+            ...(n.external.length ? {external: n.external} : {}),
+            ...structuralStatus(graph, omitted)
         });
         process.exit(0);
     }
