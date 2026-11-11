@@ -1,4 +1,5 @@
 const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'function', 'return', 'new', 'else', 'do', 'try', 'finally', 'typeof', 'instanceof', 'in', 'of', 'case', 'throw', 'await']);
+const {entityRanges} = require('./ranges');
 
 /**
  * Маскирует строки, комментарии и regex; выражения ${…} остаются кодом.
@@ -119,12 +120,12 @@ function params(text) {
 function classify(text) {
     const t = text.trim();
     let m;
-    if ((m = t.match(/^(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'class', name: m[1]};
-    if ((m = t.match(/^(?:export\s+)?interface\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'interface', name: m[1]};
-    if ((m = t.match(/^(?:export\s+)?(?:const\s+)?enum\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'enum', name: m[1]};
-    if ((m = t.match(/^(?:export\s+)?type\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*=/u))) return {kind: 'type', name: m[1]};
-    if ((m = t.match(/^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'function', name: m[1]};
-    m = t.match(/^(?:export\s+)?(?:const|let|var)\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*=\s*([\s\S]*)/u);
+    if ((m = t.match(/^(?:export\s+(?:default\s+)?)?(?:declare\s+)?(?:abstract\s+)?class\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'class', name: m[1]};
+    if ((m = t.match(/^(?:export\s+)?(?:declare\s+)?interface\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'interface', name: m[1]};
+    if ((m = t.match(/^(?:export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'enum', name: m[1]};
+    if ((m = t.match(/^(?:export\s+)?(?:declare\s+)?type\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*=/u))) return {kind: 'type', name: m[1]};
+    if ((m = t.match(/^(?:export\s+(?:default\s+)?)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?function\s*\*?\s*([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) return {kind: 'function', name: m[1]};
+    m = t.match(/^(?:export\s+)?(?:declare\s+)?(?:const|let|var)\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*=\s*([\s\S]*)/u);
     if (m && (isArrowExpression(m[2]) || /^(?:async\s+)?function\b/.test(m[2]))) return {kind: 'function', name: m[1] + '(' + params(m[2]) + ')'};
     if ((m = t.match(/^(?:module\.exports|exports)\.([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*=/u))) return {kind: 'export', name: m[1]};
     m = t.match(/^(?:(?:public|private|protected|static|readonly|override|abstract|async|get|set)\s+|\*\s*)*(#?[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)\s*\([^;]*\)\s*(?:\{|=>|:)/u);
@@ -142,24 +143,48 @@ function classify(text) {
 /**
  * Извлекает объявления TS/JS и экспорты CommonJS без внешнего парсера.
  * @param {string} text Исходный текст.
- * @returns {{kind: string, name: string, line: number, owner?: string}[]} Символы с номерами строк.
+ * @param {boolean} jsx JSX-режим маски (для .tsx/.jsx).
+ * @returns {{kind: string, name: string, line: number, offset: number, owner?: string, startLine?: number, endLine?: number, bodyStartLine?: number, bodyEndLine?: number}[]} Символы с номерами строк, смещениями и диапазонами.
  */
-function parseSymbols(text) {
+function parseSymbols(text, jsx) {
     const normalized = text.replace(/\r\n?/g, '\n');
     const lines = sourceCodeMask(normalized).split('\n');
     const symbols = [];
     const classes = [];
     let depth = 0;
     let exportDepth = null;
+    // Диапазоны считаются по отдельной JSX-aware маске (same length), lineAt — бинарным поиском.
+    const lineStarts = [0];
+    for (let i = 0; i < normalized.length; i++) if (normalized[i] === '\n') lineStarts.push(i + 1);
+    const lineAt = (off) => {
+        let lo = 0, hi = lineStarts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (lineStarts[mid] <= off) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo + 1;
+    };
+    let rmask = null;
+    const rangesFor = (offset, kind) => {
+        if (kind === 'export') return {};
+        try {
+            rmask = rmask || require('./mask').maskCode(normalized, jsx === true);
+            return entityRanges(rmask, offset, kind, lineAt);
+        } catch (e) {
+            return {};
+        }
+    };
     lines.forEach((code, i) => {
         const t = code.trim();
         const c = t ? classify(code) : null;
         const owner = classes[classes.length - 1];
         if (c) {
+            const offset = lineStarts[i] + (code.length - code.replace(/^\s+/, '').length);
             if (['class', 'interface', 'enum', 'type', 'function', 'export'].includes(c.kind)) {
-                symbols.push({...c, line: i + 1});
+                symbols.push({...c, line: i + 1, offset, ...rangesFor(offset, c.kind)});
             } else if (owner && depth === owner.depth && owner.kind === 'class') {
-                symbols.push({...c, line: i + 1, owner: owner.name});
+                symbols.push({...c, line: i + 1, offset, owner: owner.name, ...rangesFor(offset, c.kind)});
             }
         }
         const objectExport = code.match(/\bmodule\.exports\s*=\s*\{/);

@@ -18,6 +18,8 @@ const path = require('path');
 const crypto = require('crypto');
 const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, ANGULAR_ERROR} = require('./lib/files');
 const {parseSymbols, sourceCodeMask, isArrowExpression} = require('./lib/symbols');
+const {entityRanges} = require('./lib/ranges');
+const {maskCode} = require('./lib/mask');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
@@ -54,7 +56,7 @@ const rootArg = args.root || (fs.existsSync(path.join(cwd, 'src')) ? 'src' : '.'
 const ROOT = path.resolve(cwd, rootArg);
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
-const GRAPH_VERSION = 8; // единая маска символов, Unicode и учёт JSON-ресурсов
+const GRAPH_VERSION = 9; // v9: диапазоны объявлений и тел в parsed entities (lib/ranges.js)
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const NG_KINDS = {
     Component: 'component',
@@ -587,24 +589,67 @@ function matchBrace(text, open) {
 /**
  * Члены тела класса/интерфейса (методы и свойства с номерами строк): куски до ';' на нулевой
  * глубине (свойства, абстрактные методы) либо до '}', закрывающего тело метода.
+ * body/srcBody — срез тела по маске и по исходнику (одинаковые смещения), absBase — смещение
+ * тела в полной маске файла; диапазоны членов считаются по полной маске (lib/ranges.js).
  */
-function extractMembersTs(body, lineAt) {
+function extractMembersTs(body, lineAt, absMask, absBase, srcBody) {
     const out = [];
     let start = -1, opened = false, str = null, depth = 0;
     const push = (end) => {
         if (start === -1) return;
         const raw = body.slice(start, end);
+        const rawSrc = srcBody ? srcBody.slice(start, end) : raw;
         const line = lineAt(start);
+        const absStart = absBase + start;
         start = -1;
         let t = raw.replace(/\s+/g, ' ').trim(), m;
         while ((m = t.match(/^(public|private|protected|static|readonly|abstract|override|async|declare|get|set)\s+/))) t = t.slice(m[0].length);
-        m = t.match(/^([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u);
-        if (!m) return;
-        const rest = t.slice(m[0].length).replace(/^\s+/, '');
+        let name = null, nameLen = 0;
+        if ((m = t.match(/^([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) {
+            name = m[1];
+            nameLen = m[0].length;
+        } else if ((m = t.match(/^(#[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/u))) {
+            name = m[1]; // имя с решёткой — так же, как в parseSymbols (private-method/property)
+            nameLen = m[0].length;
+        } else if (/^\[/.test(t)) {
+            // computed-член: имя — содержимое скобок из исходника ([Symbol.iterator], ["prop"]);
+            // index signature («[key: string]: T») членом не считается
+            let d = 0, closeT = -1;
+            for (let j = 0; j < t.length; j++) {
+                if (t[j] === '[') d++;
+                else if (t[j] === ']') {
+                    d--;
+                    if (!d) { closeT = j; break; }
+                }
+            }
+            const src = rawSrc.trim();
+            const open = src.indexOf('[');
+            let sd = 0, closeS = -1;
+            for (let j = open >= 0 ? open : 0; j < src.length; j++) {
+                if (src[j] === '[') sd++;
+                else if (src[j] === ']') {
+                    sd--;
+                    if (!sd) { closeS = j; break; }
+                }
+            }
+            if (closeT !== -1 && closeS !== -1) {
+                const inner = src.slice(open + 1, closeS).trim();
+                if (inner && !inner.includes(':')) {
+                    name = inner.replace(/^(['"`])|(['"`])$/g, '').replace(/\s+/g, ' ').trim();
+                    nameLen = closeT + 1;
+                }
+            }
+        }
+        if (!name) return;
+        const rest = t.slice(nameLen).replace(/^\s+/, '');
         const assignment = rest.indexOf('=');
         const isMethod = /^\??\(/.test(rest) || rest.startsWith('<')
             || (assignment >= 0 && isArrowExpression(rest.slice(assignment + 1)));
-        out.push({name: m[1], kind: isMethod ? 'method' : 'property', line});
+        const kind = name.startsWith('#') ? (isMethod ? 'private-method' : 'private-property') : (isMethod ? 'method' : 'property');
+        const rangeKind = kind.startsWith('private-') ? kind.slice('private-'.length) : kind;
+        // absMask/absStart — абсолютные; lineAt здесь относительный (от тела класса) — компенсируем
+        const ranges = absMask ? entityRanges(absMask, absStart, rangeKind, (off) => lineAt(off - absBase)) : {};
+        out.push({name, kind, line, ...ranges});
     };
     for (let i = 0; i < body.length; i++) {
         const c = body[i];
@@ -644,16 +689,29 @@ function extractMembersTs(body, lineAt) {
 }
 
 /**
- * Разбирает содержимое TS/JS: импорты, экспорты, объявления с номерами строк,
- * а для @Component — templateUrl, styleUrl(s) и использование в inline-template.
+ * Разбирает содержимое TS/JS: импорты, экспорты, объявления с номерами строк
+ * и диапазонами (lib/ranges.js), а для @Component — templateUrl, styleUrl(s)
+ * и использование в inline-template.
  */
-function parseTs(content, sourceType = 'ts') {
+function parseTs(content, sourceType = 'ts', jsx = false) {
     content = content.replace(/^\uFEFF/, '');
     const specifiers = [], entities = [], exports = [], fileRefs = [];
     let reexportAll = false, templateUrl = null, usages = null, m;
     const decorated = new Set();
-    const lineAt = (idx) => content.slice(0, idx).split('\n').length;
+    const lineStarts = [0];
+    for (let i = 0; i < content.length; i++) if (content[i] === '\n') lineStarts.push(i + 1);
+    const lineAt = (idx) => {
+        let lo = 0, hi = lineStarts.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (lineStarts[mid] <= idx) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo + 1;
+    };
     const codeMask = sourceCodeMask(content);
+    // отдельная JSX-aware маска для диапазонов объявлений (lib/ranges.js)
+    const rmask = maskCode(content, jsx);
 
     // Импорты, реэкспорты, require и динамические import(); многострочные поддержаны.
     // Спецификаторы исходников хранятся объектами {m, line} для rdeps/deps why.
@@ -681,10 +739,12 @@ function parseTs(content, sourceType = 'ts') {
             if (name && name !== '*') exports.push(name);
         }
 
-    const reDecl = /^[ \t]*(export\s+)?(?:default\s+)?(?:abstract\s+)?(class|interface|enum|type|function|const|let|var)\s+([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/gmu;
+    const reDecl = /^[ \t]*(export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(class|interface|enum|type|function|const|let|var)\b\s*\*?\s*([$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*)/gmu;
     while (sourceType === 'ts' && (m = reDecl.exec(codeMask))) {
         const kind = m[2] === 'let' || m[2] === 'var' ? 'const' : m[2];
-        entities.push({name: m[3], kind, line: lineAt(m.index + m[0].search(/\S/))});
+        entities.push({name: m[3], kind, line: lineAt(m.index + m[0].search(/\S/)),
+            // диапазоны полного объявления и тела — только когда разбор надёжен
+            ...entityRanges(rmask, m.index, kind, lineAt)});
         if (m[1]) exports.push(m[3]);
         // члены класса/интерфейса — для graph symbol по методам и свойствам
         if (kind === 'class' || kind === 'interface') {
@@ -693,16 +753,17 @@ function parseTs(content, sourceType = 'ts') {
                 const close = matchBrace(codeMask, brace);
                 if (close !== -1)
                     entities[entities.length - 1].members =
-                        extractMembersTs(codeMask.slice(brace + 1, close), (off) => lineAt(brace + 1 + off));
+                        extractMembersTs(codeMask.slice(brace + 1, close), (off) => lineAt(brace + 1 + off),
+                            rmask, brace + 1, content.slice(brace + 1, close));
             }
         }
     }
 
     if (sourceType === 'js') {
-        const symbols = parseSymbols(content).map((s) => ({...s, name: s.name.replace(/\(.*$/, '')}));
+        const symbols = parseSymbols(content, jsx).map((s) => ({...s, name: s.name.replace(/\(.*$/, '')}));
         const declarations = new Set(symbols.filter((s) => !s.owner && s.kind !== 'export').map((s) => s.name));
         const seen = new Set();
-        for (const {owner, ...symbol} of symbols) {
+        for (const {owner, offset, ...symbol} of symbols) {
             if (owner) continue;
             if (symbol.kind === 'export') {
                 exports.push(symbol.name);
@@ -713,7 +774,7 @@ function parseTs(content, sourceType = 'ts') {
             seen.add(key);
             entities.push(symbol);
         }
-        for (const {owner, ...member} of symbols) {
+        for (const {owner, offset, ...member} of symbols) {
             if (!owner) continue;
             const entity = entities.find((e) => e.kind === 'class' && e.name === owner);
             if (entity) (entity.members = entity.members || []).push(member);
@@ -727,7 +788,14 @@ function parseTs(content, sourceType = 'ts') {
         const body = m[2];
         // members собраны в reDecl-сущности «class» — переносим: дедупликация ниже оставит только эту
         const prev = entities.find((e) => e.name === m[3] && e.kind === 'class');
-        const entity = {name: m[3], kind: NG_KINDS[m[1]], line: lineAt(m.index), ...(prev && prev.members ? {members: prev.members} : {})};
+        // диапазоны не теряются при замене class-entity на Angular-entity: считаем от ключевого слова class
+        let clsStart = -1;
+        const reCls = /\bclass\b/g;
+        let mc;
+        while ((mc = reCls.exec(m[0]))) clsStart = m.index + mc.index;
+        const entity = {name: m[3], kind: NG_KINDS[m[1]], line: lineAt(m.index),
+            ...(clsStart !== -1 ? entityRanges(rmask, clsStart, 'class', lineAt) : {}),
+            ...(prev && prev.members ? {members: prev.members} : {})};
         const sel = body.match(/\bselector\s*:\s*['"`]([^'"`]+)['"`]/);
         if (sel) entity.selector = sel[1];
         if (m[1] === 'Pipe') {
@@ -767,7 +835,7 @@ function parseFile(content, rel) {
     const type = fileType(rel);
     if (type === 'html') return parseHtml(content);
     if (type === 'style') return parseStyle(content, rel);
-    return parseTs(content, type);
+    return parseTs(content, type, /\.(tsx|jsx)$/i.test(rel));
 }
 
 // ---------- резолвинг ссылок ----------
@@ -947,8 +1015,20 @@ function validParsedData(data, type) {
         || !data.exports.every(name => typeof name === 'string')
         || !Array.isArray(data.specifiers) || !Number.isInteger(data.loc) || data.loc < 1
         || typeof data.reexportAll !== 'boolean') return false;
-    if (!data.entities.every(e => e && typeof e.name === 'string' && typeof e.kind === 'string'
-        && Number.isInteger(e.line) && e.line > 0)) return false;
+    // диапазоны — положительные целые в пределах loc, конец ≥ начала; рекурсивно для members
+    const validRange = (e) => {
+        const chk = (a, b) => (a == null || (Number.isInteger(a) && a > 0 && a <= data.loc))
+            && (b == null || (Number.isInteger(b) && b > 0 && b <= data.loc && (a == null || b >= a)));
+        if (!chk(e.startLine, e.endLine) || !chk(e.bodyStartLine, e.bodyEndLine)) return false;
+        if (e.bodyStartLine != null && e.startLine != null && e.bodyStartLine < e.startLine) return false;
+        if (e.bodyEndLine != null && e.endLine != null && e.bodyEndLine > e.endLine) return false;
+        return true;
+    };
+    const validEntity = (e) => e && typeof e.name === 'string' && typeof e.kind === 'string'
+        && Number.isInteger(e.line) && e.line > 0 && validRange(e)
+        && (!Array.isArray(e.members) || e.members.every(mm => mm && typeof mm.name === 'string'
+            && typeof mm.kind === 'string' && Number.isInteger(mm.line) && mm.line > 0 && validRange(mm)));
+    if (!data.entities.every(validEntity)) return false;
     if (!data.specifiers.every(s => type === 'ts' || type === 'js'
         ? s && typeof s.m === 'string' && Number.isInteger(s.line) && s.line > 0
         : typeof s === 'string')) return false;
@@ -1210,6 +1290,17 @@ function selectorWarnings(graph, selector) {
     return (graph.duplicateSelectors || []).filter(item => !selector || item.selector === selector).slice(0, 5)
         .map(item => 'Дубликат селектора ' + item.selector + ': ' + item.files.slice(0, 5).join(', ')
             + (item.files.length > 5 ? ' (ещё ' + (item.files.length - 5) + ')' : ''));
+}
+
+/**
+ * Диапазонные поля сущности/члена (только реально определённые).
+ */
+function rangeOf(e) {
+    const r = {};
+    if (!e) return r;
+    for (const k of ['startLine', 'endLine', 'bodyStartLine', 'bodyEndLine'])
+        if (e[k] != null) r[k] = e[k];
+    return r;
 }
 
 function structuralStatus(graph, truncated = 0, extra = []) {
@@ -1497,7 +1588,7 @@ if (op === 'symbol') {
                 if (!e.members || (owner && e.name !== owner)) continue;
                 for (const mm of e.members)
                     if (mm.name === args.name)
-                        hits.push({file: f.path, kind: mm.kind, owner: e.name, line: mm.line});
+                        hits.push({file: f.path, kind: mm.kind, owner: e.name, line: mm.line, ...rangeOf(mm)});
             }
         }
         emit({
@@ -1520,6 +1611,7 @@ if (op === 'symbol') {
             return {
                 file: f.path, kind: e ? e.kind : f.kind,
                 ...(e && e.line ? {line: e.line} : {}),
+                ...rangeOf(e),
                 ...(e && e.selector ? {selector: e.selector} : {}),
                 ...(e && e.pipeName ? {pipe: e.pipeName} : {})
             };
