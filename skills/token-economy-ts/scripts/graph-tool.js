@@ -50,6 +50,7 @@ if (!Object.keys(args).length && process.stdin.isTTY !== true) {
 args.depth = Number(args.depth) || 1;
 args.specs = args.specs === true || args.specs === 'true' || args.specs === '1';
 args.why = args.why === true || args.why === 'true' || args.why === '1';
+args.format = args.format === undefined || args.format === null ? '' : String(args.format);
 
 const cwd = process.cwd();
 const rootArg = args.root || (fs.existsSync(path.join(cwd, 'src')) ? 'src' : '.');
@@ -1368,6 +1369,7 @@ const op = args.op;
 if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | path | cycles | stats');
 if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'path', 'cycles', 'stats', 'selftest'].includes(op))
     fail('Неизвестный op: ' + op);
+if (args.format && args.format !== 'table') fail('format поддерживает только table');
 if (op === 'selector' && !isAngular(cwd)) {
     console.log(ANGULAR_ERROR);
     process.exit(1);
@@ -1729,6 +1731,13 @@ if (op === 'node' || op === 'deps' || op === 'rdeps') {
     const all = walk(graph, n.id, depth, op === 'rdeps', args.why);
     const list = all.slice(0, 60);
     const status = structuralStatus(graph, Math.max(0, all.length - 60));
+    // format=table (opt-in): однородные списки рёбер — строки-массивы с общей схемой columns.
+    // Все значения и порядок сохраняются; отсутствующий via передаётся null (он не был
+    // самостоятельным значением), декодер восстанавливает объекты {file,kind,level,via?}.
+    const table = args.format === 'table';
+    const rows = table
+        ? list.map((x) => [x.file, x.kind, x.level, x.via == null ? null : x.via])
+        : list;
     emit(op === 'deps'
         ? {
             file: n.path,
@@ -1737,9 +1746,17 @@ if (op === 'node' || op === 'deps' || op === 'rdeps') {
             ...status,
             unresolved: n.unresolved.length,
             ...unresolvedSummary(n),
-            imports: list, ...(n.external.length ? {external: n.external} : {})
+            ...(table ? {columns: ['file', 'kind', 'level', 'via']} : {}),
+            imports: rows, ...(n.external.length ? {external: n.external} : {})
         }
-        : {file: n.path, kind: n.kind, importedByTotal: all.length, importedBy: list, ...status});
+        : {
+            file: n.path,
+            kind: n.kind,
+            importedByTotal: all.length,
+            ...status,
+            ...(table ? {columns: ['file', 'kind', 'level', 'via']} : {}),
+            importedBy: rows
+        });
     process.exit(0);
 }
 
