@@ -9,7 +9,7 @@ const path = require('path');
 const { posix, safePath, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
 const { makeCtx, ensureIndex, buildIndex, docPath, classifyFor, CACHE_DIR } = require('./lib/index');
 const { classify, pcreToRegExp, resolveInclude } = require('./lib/bitrix');
-const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams } = require('./lib/php');
+const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams, locateBody, lex, matchBrackets } = require('./lib/php');
 const { detectModx } = require('./lib/detect');
 const {
   composerFramework, composerNamespace, structureVersion, modelTable, routeUriToRegExp,
@@ -1157,6 +1157,133 @@ const ops = {
     writeAtomic(abs, buf, { root: ctx.root });
     const line = cur.text.slice(0, cur.text.indexOf(oldS)).split('\n').length;
     out(`OK: ${posix(path.relative(ctx.root, abs))}, замен: ${count}, первая со строки ${line}, кодировка ${enc}, EOL ${cur.eol}`);
+  },
+
+  // Правка тела метода/функции без чтения старого тела в контекст: заменяется только содержимое
+  // между { и }; сигнатура, модификаторы, doc-комментарии, кодировка, BOM и EOL — байт в байт.
+  // Доступна во всех режимах; при неоднозначности или сомнении — отказ, файл не тронут.
+  patch_symbol() {
+    const f = args.file;
+    const sym = String(args.symbol || '').trim();
+    if (!f) fail('укажите file');
+    if (!sym) fail('укажите symbol: Класс::метод или имя_функции');
+    if ((args.body === undefined) === (args.body_file === undefined)) fail('нужно ровно одно: body или body_file');
+    if (args.indent !== undefined && !['auto', '2', '4', 'tab', 'raw'].includes(String(args.indent).toLowerCase())) fail('indent: auto|2|4|tab|raw');
+    const indentMode = args.indent === undefined ? 'auto' : String(args.indent).toLowerCase();
+    const dry = args.dry === undefined ? true : truthy(args.dry);
+    let bodyRaw;
+    if (args.body !== undefined) bodyRaw = String(args.body).replace(/\\r/g, '\r').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    else {
+      let bfAbs;
+      try { bfAbs = safeAbs(args.body_file); } catch (e) { fail('body_file: ' + e.message); }
+      if (!fs.existsSync(bfAbs)) fail('body_file не найден: ' + args.body_file);
+      bodyRaw = fs.readFileSync(bfAbs, 'utf8');
+    }
+    // резолюция по индексу — как op symbol: класс по имени/FQN (варианты mssql/oracle скрыты, если есть основной)
+    const parts = sym.replace(/^\\/, '').split('::');
+    if (parts.length > 2 || !parts[parts.length - 1]) fail('symbol: ожидается Класс::метод или имя_функции');
+    const isMethod = parts.length === 2;
+    const idx = ensureIndex(ctx);
+    const fRel = posix(f).replace(/^\.\//, '');
+    const sameFile = (p) => (process.platform === 'win32' ? p.toLowerCase() === fRel.toLowerCase() : p === fRel);
+    let fileP = null;
+    if (isMethod) {
+      const clsQ = parts[0].replace(/^\\/, '').toLowerCase();
+      const byFqn = clsQ.includes('\\');
+      const cands = [];
+      for (const n of idx.nodes) for (const d of n.decls || []) {
+        const ok = byFqn ? (d.fqn.toLowerCase() === clsQ || d.fqn.toLowerCase().endsWith('\\' + clsQ)) : d.name.toLowerCase() === clsQ;
+        if (ok) cands.push([n, d.fqn]);
+      }
+      const main = cands.filter(([n]) => !dbVariant(n.p));
+      const sel = main.length ? main : cands;
+      if (!sel.length) fail(`класс «${parts[0]}» не найден (проверьте имя: op=symbol name=${sym})`);
+      const files = [...new Map(sel.map(([n, fq]) => [n.p, fq])).entries()];
+      if (files.length > 1) fail(`класс «${parts[0]}» найден в нескольких файлах, уточните (FQN или уникальное имя):\n` + files.map(([p, fq]) => '  ' + p + '  ' + fq).join('\n'));
+      fileP = files[0][0];
+    } else {
+      const q = parts[0].replace(/^\\/, '').toLowerCase();
+      const cands = [];
+      for (const n of idx.nodes) for (const fn of n.funcs || []) {
+        if (fn.n.toLowerCase() === q || fn.f.toLowerCase() === q || fn.f.toLowerCase().endsWith('\\' + q)) cands.push([n, fn.f]);
+      }
+      const main = cands.filter(([n]) => !dbVariant(n.p));
+      const sel = main.length ? main : cands;
+      if (!sel.length) fail(`функция «${sym}» не найдена (проверьте имя: op=symbol name=${sym})`);
+      const files = [...new Map(sel.map(([n, fq]) => [n.p, fq])).entries()];
+      if (files.length > 1) fail(`функция «${sym}» найдена в нескольких файлах, уточните file:\n` + files.map(([p, fq]) => '  ' + p + '  ' + fq).join('\n'));
+      fileP = files[0][0];
+    }
+    if (!sameFile(fileP)) fail(`символ «${sym}» найден в ${fileP}, а указан file=${f} (подсказка: op=symbol name=${sym})`);
+    const abs = safeAbs(f);
+    if (!fs.existsSync(abs)) fail('файл не найден: ' + f);
+    const cur = readText(abs);
+    if (cur.text.includes('\0')) fail('бинарный файл');
+    // тело ищем заново из текущего текста: индекс мог устареть
+    const loc = locateBody(cur.text, isMethod ? 'method' : 'function', isMethod ? parts[0] : null, parts[parts.length - 1]);
+    if (!loc) fail(`тело «${sym}» не найдено: символ отсутствует в файле, abstract или интерфейсный (если метод унаследован — правьте базовый класс; проверьте: op=symbol name=${sym})`);
+    if (loc.ambiguous) fail(`«${sym}»: в файле несколько подходящих объявлений (строки ${loc.candidates.map((c) => c.openLine).join(', ')}); правка отменена`);
+    // новое тело должно быть сбалансировано по скобкам: стек пуст, у всех скобок есть пара
+    const bt = lex('<?php ' + bodyRaw);
+    const bm = matchBrackets(bt);
+    const isBr = (v) => v === '(' || v === '[' || v === '{' || v === ')' || v === ']' || v === '}';
+    for (let i = 0; i < bt.length; i++) {
+      if (bt[i].k === 'op' && isBr(bt[i].v) && bm[i] < 0) fail('новое тело несбалансировано по скобкам — правка отменена');
+    }
+    // замена: только между { и }; отступы — как в TS edit-symbol
+    const eol = cur.eol === 'crlf' ? '\r\n' : '\n';
+    const text = cur.text;
+    const lineStart = (off) => text.lastIndexOf('\n', off) + 1;
+    const declIndent = /^[ \t]*/.exec(text.slice(lineStart(loc.openChar), loc.openChar))[0];
+    const closeLineWs = text.slice(lineStart(loc.closeChar), loc.closeChar);
+    const closeIsFirst = closeLineWs.trim() === '';
+    const oldInner = text.slice(loc.openChar + 1, loc.closeChar);
+    let base;
+    if (indentMode === 'raw') base = null;
+    else if (indentMode === '2' || indentMode === '4') base = declIndent + ' '.repeat(+indentMode);
+    else if (indentMode === 'tab') base = declIndent + '\t';
+    else { // auto: минимальный отступ непустых строк старого тела; иначе отступ объявления + 4 пробела
+      let minInd = null;
+      for (const line of oldInner.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const ind = /^[ \t]*/.exec(line)[0];
+        if (minInd === null || ind.length < minInd.length) minInd = ind;
+      }
+      base = minInd && minInd.length > declIndent.length && minInd.startsWith(declIndent) ? minInd : declIndent + '    ';
+    }
+    const nl = bodyRaw.replace(/\r\n?/g, '\n');
+    let dedent;
+    if (indentMode === 'raw') dedent = nl.replace(/\n+$/, '').split('\n');
+    else {
+      const lines = nl.replace(/^\n+/, '').replace(/\n+$/, '').split('\n');
+      const inds = lines.filter((l) => l.trim()).map((l) => /^[ \t]*/.exec(l)[0]);
+      const common = inds.length ? inds.reduce((a, b) => (b.length < a.length ? b : a)) : '';
+      dedent = lines.map((l) => (l.startsWith(common) ? l.slice(common.length) : l.replace(/^[ \t]+/, '')));
+    }
+    const newBody = (indentMode === 'raw' ? dedent : dedent.map((l) => (l.trim() ? base + l : ''))).join(eol);
+    let inner;
+    if (!newBody) inner = ''; // пустое новое тело → {}
+    else if (closeIsFirst) inner = eol + newBody + eol + closeLineWs; // многострочный стиль
+    else if (!oldInner.trim()) inner = eol + newBody + eol + declIndent; // пустое старое {} — разворачиваем
+    else inner = ' ' + (dedent.length === 1 ? dedent[0] : newBody) + ' '; // однострочный стиль — держим в тех же скобках, без базового отступа
+    const result = text.slice(0, loc.openChar + 1) + inner + text.slice(loc.closeChar);
+    let enc = cur.enc;
+    if (enc === 'ascii' && /[^\x00-\x7F]/.test(result)) {
+      if (args.enc === 'utf8' || args.enc === 'cp1251') enc = args.enc;
+      else {
+        const c = { utf8: 0, cp1251: 0 };
+        for (const n of idx.nodes) if (n.o === 'custom' && c[n.enc] !== undefined) c[n.enc]++;
+        enc = c.cp1251 > c.utf8 ? 'cp1251' : 'utf8';
+      }
+    }
+    let buf;
+    try { buf = encodeText(result, enc, cur.bom); } catch (e) { fail('запись отменена, файл не тронут: ' + e.message); }
+    const noun = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'строка' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'строки' : 'строк');
+    const relP = posix(path.relative(ctx.root, abs));
+    const range = `тело L${loc.openLine}-L${loc.closeLine} → ${dedent.length} ${noun(dedent.length)}`;
+    if (dry) return out(`dry: ${relP}  ${sym}  ${range}  (кодировка ${enc})`);
+    writeAtomic(abs, buf, { root: ctx.root });
+    out(`OK: ${relP}  ${sym}  ${range}  кодировка ${enc}  EOL ${cur.eol}`);
   }
 };
 
@@ -1386,6 +1513,34 @@ ops.selftest = function () {
   chk('read/mergeRanges: одиночная форма — одна строка', mr([15]) === '[[15,15]]' && mr([[15, 15]]) === '[[15,15]]', mr([15]));
   chk('read/mergeRanges: вложенность', mr([[10, 40], [15, 20]]) === '[[10,40]]', mr([[10, 40], [15, 20]]));
   chk('read/mergeRanges: множество диапазонов', mr([[1, 3], [5, 6], [2, 4], [10, 12], [7, 7]]) === '[[1,7],[10,12]]', mr([[1, 3], [5, 6], [2, 4], [10, 12], [7, 7]]));
+
+  // задача 4: locateBody — диапазон тела метода/функции для patch_symbol
+  const locBody = (src, kind, cls, member) => locateBody(src, kind, cls, member);
+  const rLb = locBody(php, 'method', 'Api', 'run');
+  chk('patch_symbol: метод в классе (многострочное тело)', !!rLb && !rLb.ambiguous && rLb.openLine === 9 && rLb.closeLine === 12 && rLb.openChar > 0 && rLb.openChar < rLb.closeChar, JSON.stringify(rLb));
+  const rLbFqn = locBody(php, 'method', 'Demo\\Mod\\Api', 'hidden');
+  chk('patch_symbol: класс по FQN', !!rLbFqn && !rLbFqn.ambiguous && rLbFqn.openLine === 15 && rLbFqn.closeLine === 17, JSON.stringify(rLbFqn));
+  const rLbOne = locBody('<?php\nclass One {\n    public function a() { return 1; }\n}\n', 'method', 'One', 'a');
+  chk('patch_symbol: однострочное тело', !!rLbOne && !rLbOne.ambiguous && rLbOne.openLine === 3 && rLbOne.closeLine === 3, JSON.stringify(rLbOne));
+  const rLbFn = locBody('<?php\nfunction hello($n)\n{\n    return $n;\n}\n', 'function', null, 'hello');
+  chk('patch_symbol: глобальная функция', !!rLbFn && !rLbFn.ambiguous && rLbFn.openLine === 3 && rLbFn.closeLine === 5, JSON.stringify(rLbFn));
+  chk('patch_symbol: abstract-метод и метод интерфейса → null', locBody('<?php abstract class A { abstract public function run(); }', 'method', 'A', 'run') === null && locBody('<?php interface I { public function run(); }', 'method', 'I', 'run') === null);
+  chk('patch_symbol: не найден → null', locBody(php, 'method', 'Api', 'nope') === null && locBody(php, 'method', 'Missing', 'run') === null && locBody('<?php\nfunction a() {}\n', 'function', null, 'b') === null);
+  const te = '<?php\ntrait T {\n    public function go() {\n        return 2;\n    }\n}\nenum E: string {\n    case A = \'a\';\n    public function label(): string {\n        return $this->value;\n    }\n}\n';
+  const rLbT = locBody(te, 'method', 'T', 'go');
+  const rLbE = locBody(te, 'method', 'E', 'label');
+  chk('patch_symbol: трейт и enum', !!rLbT && rLbT.openLine === 3 && rLbT.closeLine === 5 && !!rLbE && rLbE.openLine === 9 && rLbE.closeLine === 11, JSON.stringify([rLbT, rLbE]));
+  const rLbDup = locBody('<?php\nclass D {\n    public function x() { return 1; }\n    public function x() { return 2; }\n}\n', 'method', 'D', 'x');
+  chk('patch_symbol: одноимённые члены → неоднозначность', !!rLbDup && rLbDup.ambiguous === true && (rLbDup.candidates || []).length === 2, JSON.stringify(rLbDup));
+  const rLbCls = locBody('<?php\nclass C { public function m() { return 1; } }\nclass C { public function m() { return 2; } }\n', 'method', 'C', 'm');
+  chk('patch_symbol: одноимённые классы в файле → неоднозначность', !!rLbCls && rLbCls.ambiguous === true && (rLbCls.candidates || []).length === 2, JSON.stringify(rLbCls));
+  const twoCls = '<?php\nclass A {\n    public function run() {\n        return \'A\';\n    }\n}\nclass B {\n    public function run() {\n        return \'B\';\n    }\n}\n';
+  const rLbA = locBody(twoCls, 'method', 'A', 'run');
+  const rLbB = locBody(twoCls, 'method', 'B', 'run');
+  chk('patch_symbol: метод в правильном классе из двух', !!rLbA && rLbA.openLine === 3 && rLbA.closeLine === 5 && !!rLbB && rLbB.openLine === 8 && rLbB.closeLine === 10, JSON.stringify([rLbA, rLbB]));
+  const hered = '<?php\nclass H {\n    public function doc($n) {\n        $s = <<<TXT\nстрока {фиг} $n\nTXT;\n        return $s;\n    }\n}\n';
+  const rLbH = locBody(hered, 'method', 'H', 'doc');
+  chk('patch_symbol: heredoc в теле не сбивает диапазон', !!rLbH && !rLbH.ambiguous && rLbH.openLine === 3 && rLbH.closeLine === 8, JSON.stringify(rLbH));
 
   if (bad.length) {
     console.log('\nпровалено: ' + bad.join(', '));
