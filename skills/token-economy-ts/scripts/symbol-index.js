@@ -41,8 +41,15 @@ if (!args.file || !SOURCE_EXT.includes(sourceExt) || !fs.existsSync(file) || !fs
 const text = fs.readFileSync(file, 'utf8');
 const symbols = parseSymbols(text);
 const limit = Math.max(1, Number(args.limit) || 60);
+// compact=1 (opt-in): без декоративного выравнивания; для объявлений с известным концом
+// диапазон L<start>-<end> — полный span объявления (как endLine в graph), поэтому
+// точечное чтение считается как limit = end - start + 1. Legacy-формат не изменён:
+// те же номера, kind, name и порядок.
+const compact = args.compact === true || args.compact === '1' || args.compact === 'true';
 const outline = symbols.slice(0, limit)
-    .map(s => `  L${String(s.line).padStart(4)}  [${s.kind}] ${s.name}`)
+    .map(s => compact
+        ? (s.endLine != null ? `L${s.line}-${s.endLine}` : `L${s.line}`) + ` [${s.kind}] ${s.name}`
+        : `  L${String(s.line).padStart(4)}  [${s.kind}] ${s.name}`)
     .join('\n');
 
 // Массив symbols в вывод не включаем: он дублирует outline и удваивает расход токенов.
