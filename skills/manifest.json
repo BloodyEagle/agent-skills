@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generated": "2026-11-11",
+  "generated": "2026-11-12",
   "skills": [
     {
       "name": "token-economy-har",
@@ -54,10 +54,10 @@
     },
     {
       "name": "token-economy-ts",
-      "version": "1.3.0",
-      "updated": "2026-11-11",
+      "version": "1.3.1",
+      "updated": "2026-11-12",
       "files": 15,
-      "sha256": "8ad18378a4498b59c218b3aeb30b3fc4f92589880ff3c9016a4541ee10dd3f50",
+      "sha256": "cc08336c3d3ddc5a78960cb307c0b2240eb8cdfae32566cbdf83ad1fea3922af",
       "requires": [
         "node>=18"
       ]

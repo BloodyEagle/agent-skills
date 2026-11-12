@@ -1,6 +1,6 @@
 ---
 name: token-economy-ts
-version: 1.3.0
+version: 1.3.1
 description: Обязательный навык для TypeScript/JavaScript/Angular-проектов, включая React, Node.js (Express/Fastify/Koa), NestJS и Vue. Применять всегда для поиска текста (search, в том числе пакетно: requests=/requests_file=), определений и связей ESM/CommonJS (graph symbol/deps/rdeps/selector/path), точечного чтения диапазонов (graph op=read), оглавления больших TS/JS-файлов (outline, с диапазонами L<start>-<end> и пагинацией node), сигнатур сторонних библиотек (sig), использования React-компонентов в JSX (graph op=component), замены тела метода/функции (edit_symbol) и создания Angular-сущностей (generate). Все читающие команды — graph, search, outline, sig — поддерживают batch: один вызов, много запросов, общий scope и один проход по графу; compact=1 даёт компактный вывод со словарём путей. Тип проекта определяется автоматически (graph op=info → projectType); Angular- и React-специфика подключаются по типу проекта (references/angular.md, references/react.md). Полностью заменяет встроенный поиск (search_files/ripgrep) и ручные заготовки.
 ---
 
@@ -18,6 +18,8 @@ TypeScript/JavaScript/Angular, а также React, Node.js (Express/Fastify/Koa
 | кто вызывает `require('./util')` | graph rdeps → graph-tool.js |
 | где объявлен экспорт `module.exports.name` | graph symbol → graph-tool.js |
 | большой TS/JS-файл | outline → symbol-index.js |
+| где React-компонент и где он в JSX | graph op=component → graph-tool.js |
+| точное чтение нескольких диапазонов | graph op=read → graph-tool.js |
 | API библиотеки | sig → sig-reader.js |
 | новая Angular-сущность | generate → scaffold-helper.js |
 | заменить тело метода/функции | edit_symbol → edit-symbol.js |
@@ -109,6 +111,8 @@ TS ESM explicit `.js` разрешается в `.ts`, затем `.tsx`, зат
 - `rdeps` стиля — компоненты и стили, которые его подключают.
 
 Что граф не видит: динамически собранные шаблоны и селекторы, использование через `ComponentFactory`/`ViewContainerRef` по имени класса без импорта, определения CSS-классов (ищи через `search`), глобальные стили из `angular.json` (`styles`), значения атрибутов в селекторах (учитывается только наличие атрибута), `:not()` в селекторах. Применение компонента в его собственном шаблоне (рекурсия, например дерево) в граф не заносится — иначе возникает ложный цикл ts↔html. В Angular-проектах действуют дополнительные правила (селекторы, пайпы, generate) — см. references/angular.md.
+
+`op=component name=<Имя>` — где объявлен React-компонент и где он применён в JSX. Требует `react` >= 16 в `package.json` (иначе «React не найден в проекте», код 1). Ответ: `{found, definedIn:[{file, kind, line, startLine, endLine}], usedTotal, usedIn:[{file, line}], scope, completeness}`. `usedIn` собирается по открывающим тегам `<Имя`; строки, комментарии и шаблонные литералы замаскированы и использованиями не считаются, поэтому `<Имя>` внутри строки или комментария в ответ не попадает. Использование в собственном файле компонента тоже считается. Правила React-проектов — references/react.md.
 
 ### Изменение
 
