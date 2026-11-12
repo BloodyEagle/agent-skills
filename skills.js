@@ -208,6 +208,36 @@ function frontmatterVersion(skillDir) {
     return m ? m[1] : null;
 }
 
+// Лимиты на description: ZCode и Claude Code отказываются грузить скилл, если строка длиннее 1024 символов.
+const DESCRIPTION_LIMIT = 1024;
+const DESCRIPTION_WARN = 900;
+
+// Возвращает description из frontmatter с поддержкой однострочного и блочного (| и >) значений.
+function frontmatterDescription(skillDir) {
+    const p = path.join(skillDir, 'SKILL.md');
+    if (!fs.existsSync(p)) return null;
+    const parts = /^(?:\uFEFF?---[^\S\r\n]*\r?\n)([\s\S]*?)^---[^\S\r\n]*(?:\r?\n|$)/m.exec(readRegularFile(p));
+    if (!parts || parts.index !== 0) return null;
+    const lines = parts[1].split(/\r?\n/);
+    const start = lines.findIndex((l) => /^description:/.test(l));
+    if (start < 0) return null;
+    const first = lines[start].replace(/^description:\s*/, '');
+    if (/^[|>][-+]?\s*$/.test(first)) {
+        const block = [];
+        for (let i = start + 1; i < lines.length; i++) {
+            if (/^[A-Za-z_][\w-]*:/.test(lines[i])) break;
+            block.push(lines[i]);
+        }
+        return block.join('\n').trim();
+    }
+    const value = [first];
+    for (let i = start + 1; i < lines.length; i++) {
+        if (!/^\s+\S/.test(lines[i])) break;
+        value.push(lines[i].trim());
+    }
+    return value.join(' ').trim();
+}
+
 // Готовит новый frontmatter без изменения файла; запись выполняется вместе с VERSION и манифестом.
 function frontmatterText(skillDir, version) {
     const p = path.join(skillDir, 'SKILL.md');
@@ -466,6 +496,7 @@ async function cmdCheck(flags) {
 
 function cmdVerify() {
     const errors = [];
+    const warnings = [];
     const manifest = loadManifest(MANIFEST_PATH);
     const dirs = fs.readdirSync(SKILLS_DIR, {withFileTypes: true})
         .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && fs.existsSync(path.join(SKILLS_DIR, e.name, 'SKILL.md')))
@@ -484,6 +515,17 @@ function cmdVerify() {
             errors.push(`skills/${name}: в SKILL.md нет version: в frontmatter`);
         } else if (fv !== versionToString(vf)) {
             errors.push(`skills/${name}: VERSION (${versionToString(vf)}) и version: в SKILL.md (${fv}) расходятся`);
+        }
+        const desc = frontmatterDescription(dir);
+        if (desc === null || !desc) {
+            errors.push(`skills/${name}: в SKILL.md нет description: в frontmatter`);
+        } else {
+            const len = [...desc].length;
+            if (len > DESCRIPTION_LIMIT) {
+                errors.push(`skills/${name}: description ${len} символов > ${DESCRIPTION_LIMIT} — ZCode/Claude Code не загрузят скилл`);
+            } else if (len > DESCRIPTION_WARN) {
+                warnings.push(`skills/${name}: description ${len} символов — близко к лимиту ${DESCRIPTION_LIMIT}`);
+            }
         }
         const entry = manifest.skills.find((s) => s.name === name);
         if (!entry) {
@@ -508,6 +550,10 @@ function cmdVerify() {
         if (!dirs.includes(s.name)) errors.push(`в манифесте лишняя запись: ${s.name} — каталога skills/${s.name} нет`);
     }
 
+    if (warnings.length) {
+        console.log('Предупреждения:');
+        for (const w of warnings) console.log('  ' + w);
+    }
     if (errors.length) {
         console.error('Несогласованности:');
         for (const e of errors) console.error('  ' + e);
