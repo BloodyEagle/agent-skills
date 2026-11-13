@@ -1,4 +1,4 @@
-# Шаблон план-файла (tasks/scheduled/<slug>/NN-имя.md)
+# Шаблон план-файла (tasks/input/<slug>/NN-имя.md)
 
 Файл исполняется субагентом plan-executor / plan-executor-sol (их определения — в `.zcode/agents/` workspace автоматизации). Тело — на русском, UTF-8, пункты по порядку.
 
