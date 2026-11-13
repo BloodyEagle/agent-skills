@@ -4,10 +4,10 @@
   "skills": [
     {
       "name": "automateskill",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "updated": "2026-11-13",
       "files": 4,
-      "sha256": "8a8fe405cc7fa94cf6ae0df2bad9dc617b0a27380d65b8a016a6fb1c08ea67ca",
+      "sha256": "7bcdda3728a495081156247a8a1da4b79ac592c2ba98f8a865199e107843a27d",
       "requires": []
     },
     {
