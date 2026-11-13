@@ -6,7 +6,7 @@
 
 ```powershell
 node --test "<REPO_DIR>\tests\token-economy-har\har.test.js" "<REPO_DIR>\tests\token-economy-har\parse.test.js" "<REPO_DIR>\tests\token-economy-har\redact.test.js"
-node --test "<REPO_DIR>\tests\token-economy-har\compact-list.test.js" "<REPO_DIR>\tests\token-economy-har\compact-entry.test.js" "<REPO_DIR>\tests\token-economy-har\compact-values.test.js" "<REPO_DIR>\tests\token-economy-har\compact-cli.test.js"
+node --test "<REPO_DIR>\tests\token-economy-har\compact-list.test.js" "<REPO_DIR>\tests\token-economy-har\compact-entry.test.js" "<REPO_DIR>\tests\token-economy-har\compact-values.test.js" "<REPO_DIR>\tests\token-economy-har\compact-cli.test.js" "<REPO_DIR>\tests\token-economy-har\compact-format.test.js" "<REPO_DIR>\tests\token-economy-har\compact-analysis.test.js" "<REPO_DIR>\tests\token-economy-har\compact-budget.test.js" "<REPO_DIR>\tests\token-economy-har\compact-combinations.test.js" "<REPO_DIR>\tests\token-economy-har\compact-docs.test.js"
 ```
 
 Регрессии включают scaling 16/32/64 KiB и длинные/malformed токены в отдельных процессах (таймаут 8 с, широкий лимит обработки 1 с вместо 5 мс), а также искусственный HAR не менее 100 MiB с JSON/base64-телами. E2E запускает `redact --stream` с таймаутом 120 с, проверяет все очищенные тела, сохранность blobs и размеров, выводит время/размеры и удаляет временные файлы. Отдельный запуск после разрешения:

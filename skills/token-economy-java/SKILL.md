@@ -1,6 +1,6 @@
 ---
 name: token-economy-java
-version: 1.0.1
+version: 1.0.2
 description: Экономия токенов в проектах на Java 17+ и Spring Boot 3+: поиск определений, граф связей (наследование, внедрение зависимостей, использование), оглавление класса, реализации интерфейса, HTTP-эндпоинты, бины, конфигурация с маскированием секретов, JPA-сущности и репозитории, схема таблиц, слушатели событий и очередей, сигнатуры классов библиотек из jar без декомпиляции. Все команды — PowerShell.
 ---
 
@@ -20,7 +20,7 @@ description: Экономия токенов в проектах на Java 17+ �
       },
       "payload": {
         "type": "object",
-        "description": "JSON-объект с параметрами операции; при вызове передаётся argv-аргументами ключ=значение (универсально), одним JSON-аргументом (pwsh 7.3+) или @файлом с JSON."
+        "description": "JSON-объект с параметрами операции; при вызове передаётся argv-аргументами ключ=значение (универсально) или @файлом с JSON."
       }
     },
     "required": [
@@ -70,7 +70,7 @@ deps / rdeps / path / node / stats — граф связей между файл
 
 | Тип | Что значит |
 |---|---|
-| extends/implements | наследование и реализация интерфейса |
+| extends/implements | наследование, реализация интерфейса, `permits` (sealed-иерархия) |
 | inject | внедрение зависимости: параметр единственного конструктора, `@Autowired`, `@Inject`, `@Resource`, параметры `@Bean`-методов, конструктор Lombok (`@RequiredArgsConstructor`, `@AllArgsConstructor`), компоненты record-бинов |
 | uses | любое другое использование типа: поле, вызов, аннотация, generic, статический импорт |
 
@@ -80,25 +80,25 @@ impls — все наследники и реализации типа (с гл�
 
 beans — стереотипные классы (`@Service`, `@Component`, `@Repository`, `@Controller`, `@Configuration`, `@ConfigurationProperties`, `@FeignClient`…), репозитории Spring Data и `@Bean`-методы с типом результата, условиями (`@Profile`, `@Primary`, `@ConditionalOn…`) и внедряемыми зависимостями. Фильтр — `query`.
 
-endpoints — HTTP-эндпоинты: метод, полный путь (путь класса + путь метода, константы вида `ApiPaths.USERS` разворачиваются), контроллер и метод с параметрами (`@PathVariable`, `@RequestBody`…), ограничения (`@PreAuthorize`, `@Secured`, `@RolesAllowed`). Включает декларативные клиенты (`@HttpExchange`, `@FeignClient`) с пометкой `[client]`. Фильтр — `query` (часть пути, метода HTTP или имени).
+endpoints — HTTP-эндпоинты: метод, полный путь (путь класса + путь метода, константы вида `ApiPaths.USERS` разворачиваются), контроллер и метод с параметрами (`@PathVariable`, `@RequestBody`…), ограничения (`@PreAuthorize`, `@PostAuthorize`, `@Secured`, `@RolesAllowed`). Включает декларативные клиенты (`@HttpExchange`, `@FeignClient`) с пометкой `[client]`. Фильтр — `query` (часть пути, метода HTTP или имени).
 
-config — ключи из `application*.yml|yaml|properties` и `bootstrap*` по всем профилям: значение, профиль, файл и строка. Секреты (password, passwd, pwd, secret, token, credential, private-key, api-key, access-key, client-secret, salt) показываются как `***`, чистые ссылки `${ENV}` без значения по умолчанию — как есть. `${ENV:секрет}` скрывается; inline-контейнер с чувствительным ключом маскируется целиком. Для каждого ключа показано, где он используется: `@Value`, `@ConfigurationProperties(prefix)`, `@ConditionalOnProperty`, `getProperty`. Поиск не зависит от регистра и вида записи (`page-size`, `pageSize`, `page_size` совпадают). Без `query` — сводка по файлам, профилям и префиксам.
+config — ключи из `application*.yml|yaml|properties` и `bootstrap*` по всем профилям: значение, профиль, файл и строка. Секреты (password, passwd, pwd, secret, token, credential, private-key, api-key, access-key, client-secret, salt) показываются как `***`, чистые ссылки `${ENV}` без значения по умолчанию — как есть. `${ENV:секрет}` скрывается; inline-контейнер с чувствительным ключом маскируется целиком. Для каждого ключа показано, где он используется: `@Value`, `@ConfigurationProperties(prefix)`, `@ConditionalOnProperty`, `getProperty`/`getRequiredProperty`. Поиск не зависит от регистра и вида записи (`page-size`, `pageSize`, `page_size` совпадают). Без `query` — сводка по файлам, профилям и префиксам.
 
 entities — JPA-сущности (`@Entity`, `@Embeddable`, `@MappedSuperclass`): таблица (явная или по умолчанию), поля с типами и пометками (PK, generated, колонка, unique, связи с `mappedBy` и `join`), унаследованные поля, репозиторий с методами и `@Query`.
 
 table — таблица БД по имени: JPA-сущность, `CREATE TABLE` из SQL-миграций (Flyway и аналогичные) с колонками и ключами, последующие `ALTER TABLE`, упоминания в Liquibase.
 
-listeners — слушатели `@EventListener`, `@TransactionalEventListener`, `@KafkaListener` (топики, группа), `@RabbitListener`, `@JmsListener`, `@Scheduled`, а также публикации `publishEvent(new X())` и отправка сообщений через `kafkaTemplate.send(...)`, `rabbitTemplate.convertAndSend(...)`. Фильтр — `query` (имя события, топика, класса).
+listeners — слушатели `@EventListener`, `@TransactionalEventListener`, `@KafkaListener` (топики, группа), `@RabbitListener`, `@JmsListener`, `@SqsListener`, `@StreamListener`, `@Scheduled`, а также публикации `publishEvent(new X())` и отправка сообщений через шаблоны kafka/rabbit/jms/sqs/sns/amqp (`send`, `convertAndSend`, …) и `streamBridge`. Фильтр — `query` (имя события, топика, класса).
 
 ### Библиотеки
 
-sig — сигнатуры класса из jar: Maven `~/.m2` (учитывается `localRepository` из `settings.xml`), Gradle `~/.gradle/caches`, `lib/` проекта, каталоги из `JV_JARS` или параметра `jars`, а также `target/classes` и `build/classes`. Работает без JDK и без запуска кода: разбирает `.class` напрямую. Принимает `org.springframework.web.client.RestClient`, член через `#` (`RestClient#get`) или параметр `member`; короткое имя допустимо, если класс импортирован в проекте. При отсутствующем/битом `cache.json` импорты читаются из актуальных исходников. Выводит публичные и protected члены с generics, `throws` и пометкой `@Deprecated`; имена параметров показываются, если библиотека собрана с `-parameters`. При нескольких версиях выбирается старшая исправная (`jar` задаёт подстроку имени jar): повреждённые архивы/классы пропускаются с предупреждением. Битая Signature завершается понятной ошибкой, а не зависанием; если все найденные классы повреждены — exit 1. ZIP64 и многотомные ZIP не поддерживаются; пределы: центральный каталог 64 MiB, class-файл 16 MiB, вложенность типов 128.
+sig — сигнатуры класса из jar: Maven `~/.m2` (учитывается `localRepository` из `settings.xml`), Gradle `~/.gradle/caches` (учитывается `GRADLE_USER_HOME`), `lib/` проекта, каталоги из `JV_JARS` или параметра `jars`, а также `target/classes` и `build/classes/java/main`. Работает без запуска кода: разбирает `.class` напрямую; JDK нужен только для `sig` по `java.*`/`javax.*` — там вызывается внешний `javap`. Принимает `org.springframework.web.client.RestClient`, член через `#` (`RestClient#get`) или параметр `member`; короткое имя допустимо, если класс импортирован в проекте. При отсутствующем/битом `cache.json` импорты читаются из актуальных исходников. Выводит публичные и protected члены с generics, `throws` и пометкой `@Deprecated`; имена параметров показываются, если библиотека собрана с `-parameters`. При нескольких версиях выбирается старшая исправная (`jar` задаёт подстроку имени jar): повреждённые архивы/классы пропускаются с предупреждением. Битая Signature завершается понятной ошибкой, а не зависанием; если все найденные классы повреждены — exit 1. ZIP64 и многотомные ZIP не поддерживаются; пределы: центральный каталог 64 MiB, class-файл 16 MiB, вложенность типов 128.
 
 ### Изменение
 
 patch — точная замена фрагмента с сохранением кодировки, BOM и перевода строк. Ровно одно вхождение (`"all":true` — все). Нужен только для файлов не в UTF-8.
 
-create — новый файл; кодировка по умолчанию UTF-8 (или преобладающая в проекте, если в тексте есть не-ASCII и в проекте больше файлов в cp1251).
+create — новый файл; кодировка по умолчанию UTF-8 (или преобладающая в проекте, если в тексте есть не-ASCII и в проекте больше файлов в cp1251). Явно: `enc=utf8|cp1251`, `eol=crlf` — переводы строк CRLF.
 
 ## Выполнение команд (PowerShell)
 
