@@ -1,6 +1,6 @@
 ---
 name: token-economy-ts
-version: 1.3.2
+version: 1.3.3
 description: Обязательный навык для TypeScript/JavaScript/Angular/React/Node (Express, Fastify, Koa), NestJS и Vue. Применять всегда для поиска текста (search, пакетно requests=/requests_file=), определений и связей модулей (graph symbol/deps/rdeps/selector/path), чтения диапазонов (graph op=read), оглавления файлов (outline с L<start>-<end> и пагинацией), сигнатур библиотек (sig), использования React-компонентов (graph op=component), замены тела функции (edit_symbol) и генерации Angular-сущностей (generate). Читающие команды graph, search, outline, sig поддерживают batch: один вызов — много запросов, один проход по графу; compact=1 — компактный вывод. Тип проекта определяется сам (graph op=info); Angular/React-специфика — в references/angular.md и references/react.md. Заменяет встроенный поиск (search_files/ripgrep).
 ---
 
@@ -136,7 +136,7 @@ edit_symbol — хирургическая замена тела функции 
 
 Команда — одна строка, параметры передаются argv-аргументами `ключ=значение` (разделитель значения — первый `=`):
 
-    node "<SCRIPTS_DIR>\code-searcher.js" query=ИскомыйТекст ext=.ts
+    node "<SCRIPTS_DIR>\code-searcher.js" query='ИскомыйТекст' ext=.ts
 
 Не используй пайп (`|`), `;`, `&`, `$()`, backtick, `>` и переносы строк — права среды их отклоняют, прежние вызовы через stdin-пайп больше не проходят. Права разрешают вызов по имени скрипта, поэтому полный путь в двойных кавычках допустим: команда выглядит как `node "<SCRIPTS_DIR>\<скрипт>.js" ключ=значение…`.
 
@@ -144,24 +144,32 @@ edit_symbol — хирургическая замена тела функции 
 
 Файл Angular-правил лежит в том же каталоге скилла, рядом со `scripts`: `<каталог скилла>\references\angular.md`. Читай его стандартным инструментом чтения файлов. Рядом лежит и файл React-правил: `<каталог скилла>\references\react.md` — читается при `projectType=react`.
 
-Значения аргументов: с пробелами — в одинарных кавычках; апостроф внутри значения удваивается (`''`); значения, начинающиеся с `$`, тоже бери в одинарные кавычки, иначе PowerShell раскроет их как переменные; двойные кавычки `"` внутри значений не используй — PowerShell 5.1 их портит, ищи подстроку без кавычек. Кириллица через argv не портится: node читает командную строку через Unicode API Windows (раньше портилась только кодировка stdin-пайпа).
+Значение `query` всегда заключай в одинарные кавычки, даже без пробелов. Остальные значения с пробелами или спецсимволами PowerShell (например, скобками `()[]{}`, апострофом `'` или `$` в любой позиции) тоже заключай в одинарные кавычки: иначе оболочка может разобрать их как код до запуска Node.js. Апостроф внутри значения удваивай (`''`); двойные кавычки `"` внутри значений не используй — PowerShell 5.1 их портит, ищи подстроку без них. Удвоение апострофов — синтаксис PowerShell, не Bash или cmd.
+
+Поиск буквальной подстроки `restService.search('users'`:
+
+    node "<SCRIPTS_DIR>\code-searcher.js" query='restService.search(''users''' ext=.ts root=src/app/modules/admin format=grouped limit=10
+
+Скрипт получит `restService.search('users'` без внешних кавычек и с одиночными апострофами. Закрывающую `)` не добавляй: запрос — фрагмент текста, а не вызов функции. `ParserError` / `UnexpectedToken` от PowerShell возникает до запуска скрипта: исправь кавычки аргумента, а не код скрипта.
+
+Кириллица через argv не портится: node читает командную строку через Unicode API Windows (раньше портилась только кодировка stdin-пайпа).
 
 Скрипты создают в корне проекта `graph-deps.json` и `.graph-deps-cache.json` — добавь их в `.gitignore`. Временный файл тела `.kilo-edit-body.txt` тоже добавь в `.gitignore` (он удаляется сам после успешной записи edit_symbol).
 
 ### search
 
-    node "<SCRIPTS_DIR>\code-searcher.js" query=ИскомыйТекст ext=.ts
-    node "<SCRIPTS_DIR>\code-searcher.js" query=app-profile ext=.html
+    node "<SCRIPTS_DIR>\code-searcher.js" query='ИскомыйТекст' ext=.ts
+    node "<SCRIPTS_DIR>\code-searcher.js" query='app-profile' ext=.html
 
 Параметры: `query` (обязательный), `ext` (по умолчанию `.ts,.tsx,.js,.jsx,.mjs,.cjs`; явный список заменяет дефолт), `root` (по умолчанию `src`, при его отсутствии `.`), `i=1` (без учёта регистра), `regex=1` (`query` — регулярное выражение), `word=1` (границы идентификатора; с `regex=1` не сочетается), `limit` (по умолчанию 30), `files=1` (только список файлов со счётчиком совпадений), `format=grouped|runs` (компактная форма: путь один раз на файл), `context=N` (соседний код блоками), `requests`/`requests_file` (пакетный поиск). Компактные формы и context включаются по потребности и не обещают выигрыш на каждом ответе.
 
 Без учёта регистра и по нескольким расширениям сразу:
 
-    node "<SCRIPTS_DIR>\code-searcher.js" query=userName ext=.ts,.html i=1
+    node "<SCRIPTS_DIR>\code-searcher.js" query='userName' ext=.ts,.html i=1
 
 Регулярное выражение и только файлы:
 
-    node "<SCRIPTS_DIR>\code-searcher.js" query=app-[a-z-]+ ext=.html regex=1 files=1
+    node "<SCRIPTS_DIR>\code-searcher.js" query='app-[a-z-]+' ext=.html regex=1 files=1
 
 ### outline
 

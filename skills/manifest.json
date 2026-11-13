@@ -62,10 +62,10 @@
     },
     {
       "name": "token-economy-ts",
-      "version": "1.3.2",
-      "updated": "2026-11-12",
+      "version": "1.3.3",
+      "updated": "2026-11-13",
       "files": 15,
-      "sha256": "60d1cdaea6ea1ca2eb06b791758724293f2af87de304c95240a2c93949c4e8ba",
+      "sha256": "cf1425d188262a3b9c7fea0016aa5c5bb24e4f026e754cfb3ec44b1512fbea63",
       "requires": [
         "node>=18"
       ]
