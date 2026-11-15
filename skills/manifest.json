@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generated": "2026-11-13",
+  "generated": "2026-11-15",
   "skills": [
     {
       "name": "automateskill",
@@ -62,10 +62,10 @@
     },
     {
       "name": "token-economy-ts",
-      "version": "1.3.4",
-      "updated": "2026-11-13",
-      "files": 15,
-      "sha256": "33a34c4a23c41115d57377dac11bf54157f278a82eba7cd1a3069d0fd284b631",
+      "version": "1.4.0",
+      "updated": "2026-11-15",
+      "files": 16,
+      "sha256": "a8c87e6ef94b310545a065e73886201e31eae86513c8d058c118aed6ec3330ee",
       "requires": [
         "node>=18"
       ]

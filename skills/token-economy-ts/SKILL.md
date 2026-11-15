@@ -1,6 +1,6 @@
 ---
 name: token-economy-ts
-version: 1.3.4
+version: 1.4.0
 description: Обязательный навык для TypeScript/JavaScript/Angular/React/Node (Express, Fastify, Koa), NestJS и Vue. Применять всегда для поиска текста (search, пакетно requests=/requests_file=), определений и связей модулей (graph symbol/deps/rdeps/selector/path), чтения диапазонов (graph op=read: file+ranges, в 1.4+ ещё ref=файл:N-M), оглавления файлов (outline с L<start>-<end>), сигнатур библиотек (sig), использования React-компонентов (graph op=component), замены тела функции (edit_symbol) и генерации Angular-сущностей (generate). Читающие команды graph, search, outline, sig поддерживают batch (requests=/requests_file=); компактные выводы: graph compact=1/format=table, search format=grouped/runs, outline compact=1. Тип проекта определяется сам (graph op=info); Angular/React-специфика — в references/angular.md и references/react.md. Заменяет встроенный поиск (search_files/ripgrep).
 ---
 
