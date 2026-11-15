@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const {SOURCE_EXT, IGNORED_DIRS, walk: walkFiles, isAngular, isReact, parseReactMajor, ANGULAR_ERROR, REACT_ERROR} = require('./lib/files');
 const {parseSymbols, sourceCodeMask, isArrowExpression} = require('./lib/symbols');
 const {entityRanges} = require('./lib/ranges');
+const {parseRefLocator, SUPPORTED_READ_KINDS} = require('./lib/refs');
 const {maskCode} = require('./lib/mask');
 
 let args = {};
@@ -1375,17 +1376,15 @@ function unresolvedSummary(node) {
 // ---------- op=read: точное чтение диапазонов ----------
 
 const MAX_READ_LINES = 2000; // суммарный лимит строк за запрос: отказ, а не молчаливая усечка
+const BARE_REF_MAX_LINES = 300; // bare ref=path читает файл целиком только меньше 300 строк (правило 1 SKILL)
+const MAX_LINE_BYTES = 64 * 1024; // лимит одной строки вывода ref=: длиннее — отказ, не частичный текст
 
 /**
- * Читает диапазоны строк одного файла одним ответом: перекрытия и вплотную соседние
- * диапазоны объединяются, промежуток с зазором — нет (лишний source text не добавляется).
- * Полный текст строк без обрезки; контракт line-блоков: BOM снят, EOL нормализованы в \n.
- * Пути проверяются лексически и по realpath; диапазоны сверяются с фактическим файлом,
- * а не с координатами кэша графа.
+ * Общая защитная проверка пути чтения: лексически внутри cwd и по realpath
+ * (symlink/junction не обходят границу). Сообщения ошибок те же, что у прежнего
+ * file+ranges, — общий защитный путь для обоих входов.
  */
-function readRanges(params) {
-    const fileArg = String(params.file || '');
-    if (!fileArg) return {error: 'Укажите payload.file'};
+function locateReadFile(fileArg) {
     const abs = path.resolve(cwd, fileArg);
     const rel = path.relative(cwd, abs);
     if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
@@ -1399,7 +1398,115 @@ function readRanges(params) {
     const relReal = path.relative(cwd, real);
     if (relReal === '..' || relReal.startsWith('..' + path.sep) || path.isAbsolute(relReal))
         return {error: 'Путь вне рабочей директории запрещён: ' + fileArg};
-    let rangesArg = params.ranges;
+    return {real};
+}
+
+/**
+ * Читает диапазоны строк одного файла одним ответом: перекрытия и вплотную соседние
+ * диапазоны объединяются, промежуток с зазором — нет (лишний source text не добавляется).
+ * Полный текст строк без обрезки; контракт line-блоков: BOM снят, EOL нормализованы в \n
+ * (нормализованная выдача — не исходные байты файла: для artifact hash их не использовать).
+ * Пути проверяются лексически и по realpath; диапазоны сверяются с фактическим файлом,
+ * а не с координатами кэша графа.
+ *
+ * Additive-вход (этап W3): params.ref — сырой ref без модельных преобразований
+ * (path, path:N, path:N-M, path#LN, path#LN-LM; git-виды распознаются и отклоняются явно).
+ * Старый вход file+ranges сохранён без изменений; ref одновременно с file/ranges —
+ * явный конфликт аргументов. Чтение не требует графа и не зависит от нового аргумента
+ * по цене (разбор локатора — константный).
+ */
+function readRanges(params) {
+    const refArg = params.ref === undefined || params.ref === null ? '' : String(params.ref);
+    const fileArg = String(params.file || '');
+    const hasRanges = params.ranges !== undefined && params.ranges !== null && params.ranges !== '';
+    if (refArg && (fileArg || hasRanges))
+        return {error: 'ref= указан одновременно с file/ranges — конфликт аргументов; передайте один способ адресации', code: 'conflicting_args'};
+    if (refArg) return readByRef(refArg);
+    if (!fileArg) return {error: 'Укажите payload.file'};
+    return readRangesOf(fileArg, params.ranges);
+}
+
+/** Структурные поля ошибки ref= (code/refKind/supported) — additive к тексту error. */
+function refErrorExtras(r) {
+    const out = {};
+    for (const k of ['code', 'refKind', 'supported'])
+        if (r[k] !== undefined) out[k] = r[k];
+    return out;
+}
+
+/** Явный отказ чтения целиком: точный путь и следующий шаг (outline/read), без частичной выдачи. */
+function bareRefRequired(fileArg, reason) {
+    return {error: 'Чтение целиком по ref=' + fileArg + ' отклонено: ' + reason + '. Следующий шаг: outline (symbol-index.js file=' + fileArg + ') или точечное чтение ref=' + fileArg + ':N-M (либо прежний file= + ranges=)',
+        code: 'range_required'};
+}
+
+/**
+ * Чтение по ref= (W3): тот же защитный путь и те же ошибки диапазонов, что у file+ranges;
+ * bare ref=path — только малый файл (<300 строк, в байтовом лимите), иначе range_required.
+ * git-виды распознаны грамматикой, но не поддержаны: unsupported_ref_kind без сети,
+ * без запуска git и без подмены working tree.
+ */
+function readByRef(raw) {
+    const parsed = parseRefLocator(raw);
+    if (parsed.kind === 'git_ref')
+        return {error: 'Вид ref= распознан как git_ref (git:' + parsed.scheme + ':' + parsed.name + ') — op=read читает только файлы рабочей директории; проверка git-опоры выполняется в MegaMemory (check_artifacts). Поддерживаемые виды: ' + SUPPORTED_READ_KINDS.join(', '),
+            code: 'unsupported_ref_kind', refKind: 'git_ref', supported: SUPPORTED_READ_KINDS};
+    if (parsed.kind === 'git_blob')
+        return {error: 'Вид ref= распознан как git_blob (' + parsed.rev + ':' + parsed.path + ') — чтение git-объектов в op=read не поддержано (без подмены рабочим деревом). Поддерживаемые виды: ' + SUPPORTED_READ_KINDS.join(', '),
+            code: 'unsupported_ref_kind', refKind: 'git_blob', supported: SUPPORTED_READ_KINDS};
+    const located = locateReadFile(parsed.path);
+    if (located.error) return located;
+    if (parsed.start === undefined) {
+        // bare ref=path: полный текст только для малого файла; частичный текст не выдаётся за полное
+        let size = 0;
+        try { size = fs.statSync(located.real).size; } catch (e) { return {error: 'Файл не найден: ' + parsed.path}; }
+        if (size > MAX_BYTES)
+            return bareRefRequired(parsed.path, 'файл ' + size + ' байт превышает байтовый лимит ' + MAX_BYTES);
+        let text;
+        try {
+            text = fs.readFileSync(located.real, 'utf8');
+        } catch (e) {
+            return {error: 'Файл не найден: ' + parsed.path};
+        }
+        const lines = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
+        const loc = lines.length - (lines[lines.length - 1] === '' ? 1 : 0);
+        if (loc >= BARE_REF_MAX_LINES)
+            return bareRefRequired(parsed.path, 'в файле ' + loc + ' строк (полное чтение по ref= — только <' + BARE_REF_MAX_LINES + ')');
+        return {file: toPosix(located.real), loc,
+            blocks: loc === 0 ? [] : [{startLine: 1, endLine: loc, lines: lines.slice(0, loc)}]};
+    }
+    const {start, end} = parsed;
+    let text;
+    try {
+        text = fs.readFileSync(located.real, 'utf8');
+    } catch (e) {
+        return {error: 'Файл не найден: ' + parsed.path};
+    }
+    const lines = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
+    const loc = lines.length - (lines[lines.length - 1] === '' ? 1 : 0);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start)
+        return {error: 'Некорректный диапазон: ' + parsed.locator + ' (1-based, конец ≥ начала)'};
+    if (end > loc)
+        return {error: 'Диапазон ' + start + '-' + end + ' за пределами файла (' + loc + ' строк); сверитесь с источником, не с кэшем графа'};
+    if (end - start + 1 > MAX_READ_LINES)
+        return {error: 'Запрошено ' + (end - start + 1) + ' строк (максимум ' + MAX_READ_LINES + ') — разбейте чтение на несколько запросов'};
+    const slice = lines.slice(start - 1, end);
+    for (let i = 0; i < slice.length; i++) {
+        const b = Buffer.byteLength(slice[i], 'utf8');
+        if (b > MAX_LINE_BYTES)
+            return {error: 'Строка ' + (start + i) + ' длиннее лимита вывода (' + b + ' B > ' + MAX_LINE_BYTES + '); чтение такой строки по ref= отклонено без частичной выдачи', code: 'line_too_long'};
+    }
+    return {file: toPosix(located.real), loc, blocks: [{startLine: start, endLine: end, lines: slice}]};
+}
+
+/**
+ * Прежний вход file+ranges — поведение без изменений: те же сообщения, порядок
+ * проверок, слияние диапазонов и лимиты.
+ */
+function readRangesOf(fileArg, rangesParam) {
+    const located = locateReadFile(fileArg);
+    if (located.error) return located;
+    let rangesArg = rangesParam;
     if (typeof rangesArg === 'string') rangesArg = rangesArg.split(',').map((s) => s.trim()).filter(Boolean);
     if (!Array.isArray(rangesArg) || !rangesArg.length)
         return {error: 'Укажите ranges: 10-20,30-40 либо массив [[10,20],[30,40]] (1-based, включительно)'};
@@ -1426,7 +1533,7 @@ function readRanges(params) {
     }
     let text;
     try {
-        text = fs.readFileSync(real, 'utf8');
+        text = fs.readFileSync(located.real, 'utf8');
     } catch (e) {
         return {error: 'Файл не найден: ' + fileArg};
     }
@@ -1438,7 +1545,7 @@ function readRanges(params) {
     if (total > MAX_READ_LINES)
         return {error: 'Запрошено ' + total + ' строк (максимум ' + MAX_READ_LINES + ') — разбейте чтение на несколько запросов'};
     return {
-        file: toPosix(real),
+        file: toPosix(located.real),
         loc,
         blocks: merged.map(([a, b]) => ({startLine: a, endLine: b, lines: lines.slice(a - 1, b)}))
     };
@@ -1891,7 +1998,7 @@ function runBatch() {
             for (const i of grp.idxs) {
                 const r = readRanges(requests[i]);
                 if (r.error) {
-                    results[i] = {index: i, error: r.error};
+                    results[i] = {index: i, error: r.error, ...refErrorExtras(r)};
                     failed++;
                 } else {
                     results[i] = {index: i, ...r};
@@ -2011,7 +2118,10 @@ if (args.format && args.format !== 'table') fail('format поддерживае�
 // read не требует графа — отвечает до ensureGraph
 if (op === 'read') {
     const r = readRanges(args);
-    if (r.error) fail(r.error);
+    if (r.error) {
+        emit({error: r.error, ...refErrorExtras(r)});
+        process.exit(1);
+    }
     emit(r);
     process.exit(0);
 }
