@@ -11,6 +11,7 @@ __pycache__/
 node_modules/
 graph-deps.json
 .graph-deps-cache.json
+.git-signals.json
 .kilo-edit-body.txt
 .env
 .idea/
