@@ -12,15 +12,18 @@
 
 Навигация, поиск и создание сущностей — ТОЛЬКО через скилл token-economy по стеку проекта:
 
-| Стек | Скилл | Правила стека |
+| Стек | Скилл | Правила стека (в каталоге скилла) |
 |---|---|---|
-| TypeScript / JavaScript / Angular | token-economy-ts | Typescript.md + Angular.md |
-| PHP / 1С-Битрикс / Laravel / MODX | token-economy-php | php.md |
-| Java / Spring Boot | token-economy-java | Java.md |
-| Python | token-economy-py | Python.md |
-| Kotlin / Android | token-economy-kt | Kotlin.md |
+| TypeScript / JavaScript / Angular | token-economy-ts | references/typescript.md + references/angular.md |
+| PHP / 1С-Битрикс / Laravel / MODX | token-economy-php | references/php.md |
+| Java / Spring Boot | token-economy-java | references/java.md |
+| Python | token-economy-py | references/python.md |
+| Kotlin / Android | token-economy-kt | references/kotlin.md |
 
-Правила стека лежат рядом с этим файлом; в проект кладутся только подходящие. Синтаксис команд: `.zcode/skills/<имя-скилла>/SKILL.md` (в Kilo Code — `.kilocode/skills/<имя-скилла>/SKILL.md`) — открой перед первой командой сессии. Штатные инструменты — только Read и точечные правки. Отступление — только с моего разрешения.
+Правила стека лежат в каталоге скилла: `<каталог скиллов>/<имя-скилла>/references/<файл>.md`
+(ZCode — `.zcode/skills/…`, Kilo Code — `.kilocode/skills/…`), путь относительный от каталога
+скилла. В каталоге правил (`.zcode/rules/`) их больше нет — `~/.zcode/Typescript.md` неверный
+путь, файла там не существует. Синтаксис команд: `.zcode/skills/<имя-скилла>/SKILL.md` (в Kilo Code — `.kilocode/skills/<имя-скилла>/SKILL.md`) — открой перед первой командой сессии. Штатные инструменты — только Read и точечные правки. Отступление — только с моего разрешения.
 
 ## megamemory (обязательно)
 

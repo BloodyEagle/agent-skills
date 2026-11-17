@@ -1,9 +1,10 @@
 ---
 name: token-economy-kt
 version: 1.0.3
-description: Экономия токенов в Kotlin/Android-проектах (Jetpack Compose и XML Views, Java interop) — поиск определений, статический граф связей (наследование, эвристики Hilt/Dagger, использование, вызовы Compose-функций, ViewBinding), оглавление класса и функций, реализации интерфейса, исходный манифест (компоненты, разрешения, intent-фильтры, deep link, exported-предупреждения), Room (сущности, таблицы, SQL-методы DAO), каталог DI (модули, @Provides/@Binds, привязки типов и потребители), навигация Compose/nav-xml, строковые ресурсы по локалям и отсутствующие переводы, Retrofit-endpoint'ы, анализ Gradle-конфигурации без запуска сборки (модули, SDK, version catalog), layout-файлы, id, строки, сигнатуры классов из jar и classes.jar внутри aar без декомпиляции. Все команды — PowerShell.
+description: Экономия токенов в Kotlin/Android-проектах (Jetpack Compose и XML Views, Java interop) — поиск определений, статический граф связей (наследование, эвристики Hilt/Dagger, использование, вызовы Compose-функций, ViewBinding), оглавление класса и функций, реализации интерфейса, исходный манифест (компоненты, разрешения, intent-фильтры, deep link, exported-предупреждения), Room (сущности, таблицы, SQL-методы DAO), каталог DI (модули, @Provides/@Binds, привязки типов и потребители), навигация Compose/nav-xml, строковые ресурсы по локалям и отсутствующие переводы, Retrofit-endpoint'ы, анализ Gradle-конфигурации без запуска сборки (модули, SDK, version catalog), layout-файлы, id, строки, сигнатуры классов из jar и classes.jar внутри aar без декомпиляции. Все команды — PowerShell. Правила стека — references/kotlin.md.
 ---
 # Skill: token-economy-kt
+Правила стека — `references/kotlin.md` в этом же каталоге скилла: прочитай перед первой командой сессии. Путь относительный от каталога скилла, а не от корня агента.
 ## Декларация инструментов (Kilo Code Agent Tool Schema)
 ```json
 {

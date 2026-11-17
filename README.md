@@ -11,7 +11,7 @@
 | Раздел | Для чего |
 |---|---|
 | [`skills/`](skills) | семь скиллов: шесть `token-economy-*` — по одному на язык или формат данных — и `automateskill` |
-| [`rules/`](rules) | правила для агента: как вести себя в проекте, чего не делать без спроса |
+| [`rules/`](rules) | общие правила и паспорт проекта; правила стека лежат в самих скиллах |
 | [`docker-images/`](docker-images) | `docker-compose` для вспомогательных сервисов (Hindsight) |
 | [`tests/`](tests) | проверки для скиллов: самопроверка и фикстуры |
 
@@ -119,7 +119,7 @@
 
 ## rules — правила для агента
 
-`rules/RULES.md` — общие правила, по файлу на язык: `Angular.md`, `Typescript.md`, `Python.md`, `php.md`, `Java.md`, `Kotlin.md`. Отдельно `project-passport.md` (паспорт проекта) и `hindsight.md` (работа с внешней памятью).
+`rules/` содержит три файла: `RULES.md` (общие правила), `project-passport.md` (паспорт проекта) и `hindsight.md` (работа с внешней памятью). Правила стека лежат в каталогах самих скиллов и приезжают вместе с ними: `skills/token-economy-ts/references/typescript.md` (+ `references/angular.md`), `skills/token-economy-php/references/php.md`, `skills/token-economy-java/references/java.md`, `skills/token-economy-py/references/python.md`, `skills/token-economy-kt/references/kotlin.md`.
 
 ## docker-images
 
@@ -190,7 +190,7 @@ PHP-фикстуры и golden-проверки: [`tests/token-economy-php/READM
 
 1. Скопировать нужный каталог из `skills/` в каталог скиллов агента (например `~/.zcode/skills/` для ZCode или `~/.claude/skills/` для Claude Code; для остальных клиентов уточните их путь); тесты из `tests/` не копируются. Для `automateskill` нужен именно ZCode.
 2. Проверить путь к скриптам: в `SKILL.md` он обозначен как `<SCRIPTS_DIR>` или `<SKILL_DIR>` и должен указывать на каталог скилла.
-3. Положить рядом правила из `rules/` — они задают поведение: что читать, чего не делать без спроса, как отвечать.
+3. Положить рядом правила из `rules/` — копируются только `RULES.md`, `project-passport.md` и `hindsight.md`; правила стека отдельно не копируются — они уже внутри каталога скилла в `references/` и приезжают вместе с ним (в том числе при `skills.js install`).
 
 ## Принципы
 

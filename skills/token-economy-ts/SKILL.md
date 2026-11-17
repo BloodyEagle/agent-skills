@@ -1,7 +1,7 @@
 ---
 name: token-economy-ts
 version: 1.4.1
-description: Обязательный навык для TypeScript/JavaScript, Angular, React, Node (Express/Fastify/Koa), NestJS и отдельных JS/TS-файлов Vue (не .vue SFC). Применять для поиска текста (search), определений и связей (graph symbol/deps/rdeps/selector/path), чтения диапазонов (graph op=read file+ranges или ref=файл:N-M), оглавления (outline), сигнатур библиотек (sig), JSX-использований (graph op=component), замены тела функции (edit_symbol) и Angular-генерации (generate). Читающие команды graph/search/outline/sig поддерживают requests=/requests_file=; компактные формы — graph batch compact=1, deps/rdeps format=table, search format=grouped/runs, outline compact=1. Начинай с graph op=info; Angular/React-правила — references/angular.md и references/react.md. Заменяет встроенный поиск (search_files/ripgrep).
+description: Обязательный навык для TypeScript/JavaScript, Angular, React, Node (Express/Fastify/Koa), NestJS и отдельных JS/TS-файлов Vue (не .vue SFC). Применять для поиска текста (search), определений и связей (graph symbol/deps/rdeps/selector/path), чтения диапазонов (graph op=read file+ranges или ref=файл:N-M), оглавления (outline), сигнатур библиотек (sig), JSX-использований (graph op=component), замены тела функции (edit_symbol) и Angular-генерации (generate). Читающие команды graph/search/outline/sig поддерживают requests=/requests_file=; компактные формы — graph batch compact=1, deps/rdeps format=table, search format=grouped/runs, outline compact=1. Начинай с graph op=info; Angular/React-правила — references/angular.md и references/react.md. Правила стека — references/typescript.md. Заменяет встроенный поиск (search_files/ripgrep).
 ---
 
 # Skill: token-economy-ts
@@ -27,6 +27,8 @@ TypeScript/JavaScript/Angular, React, Node.js (Express/Fastify/Koa), NestJS и �
 ## MegaMemory и scope
 
 При доступной MegaMemory применяй общий порядок из `rules/RULES.md`, раздел «megamemory»: релевантная память → квалификация → актуальная навигация → необходимые диапазоны → проверенная запись. Без памяти действуй обычным путём. Декларация action/payload ниже не является executable dispatcher. Cwd — корень анализируемого проекта, каталог scripts задаётся независимо абсолютным путём.
+
+Правила стека — `references/typescript.md` и `references/angular.md` в этом же каталоге скилла: прочитай перед первой командой сессии. Путь относительный от каталога скилла, а не от корня агента.
 
 ## Декларация инструментов (Kilo Code Agent Tool Schema)
 ```json
