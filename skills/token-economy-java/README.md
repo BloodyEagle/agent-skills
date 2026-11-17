@@ -45,6 +45,7 @@
 | Оглавление класса с аннотациями, сигнатурами и диапазонами строк (с предками через `inherit`) | `outline` |
 | Кто использует файл, что использует он, цепочка связей | `rdeps`, `deps`, `path`, `node`, `stats` |
 | Где болит по git-истории: коммиты, churn, багфиксы, авторы, процентили | `hotspots` |
+| Файловая связанность и область воздействия: fan-in/out, dependents, impact, PageRank, percentile | `metrics` |
 | Реализации и наследники интерфейса | `impls` |
 | HTTP-эндпоинты: метод, полный путь, обработчик, ограничения доступа | `endpoints` |
 | Бины, внедряемые зависимости, `@Bean`-методы | `beans` |
@@ -55,6 +56,17 @@
 | Сигнатуры классов библиотек из jar без декомпиляции | `sig` |
 | Поиск по тексту с учётом кодировки | `search` |
 | Чтение, правка и создание файлов не в UTF-8 | `read`, `patch`, `create` |
+
+## Файловые метрики
+
+```text
+node "<SCRIPTS_DIR>\jv.js" op=metrics file=src/main/java/com/acme/UserService.java depth=2
+node "<SCRIPTS_DIR>\jv.js" op=metrics top=15
+```
+
+`file` **либо** `top` (вместе нельзя); `top` — положительное safe integer, default 15, без обоих тоже top-15. `depth` — строго целое 1..5, default 2 только для metrics (`deps`/`rdeps` остаются 1). `fan_in/out` — уникальные проектные соседи; `dependents` — обратная достижимость до depth; `impact` — вся обратная достижимость без ограничения, корень исключён. PageRank — 20 итераций, damping 0.85, равномерная dangling mass; percentile — midrank `(less + halfEqual)/N*100`, в тексте округлённый `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc.
+
+Учитываются все существующие виды связей и фильтры Java-индекса, включая проектные тесты; внешние endpoints не добавляются. Это статический файловый граф, не символьный/full runtime call graph, не проверка Spring-контекста и не гарантия риска правки. Вывод — общий текст с `dependents(2)` и `impact`; неизвестный файл — exit1 с `op=stats`, пустой граф показывает `.jv-cache/index.json`, цикл — `циклов: N` без подсказки `op=cycles`. Прогретые graph/parse-кэши не меняются. Полный контракт — в SKILL.md.
 
 Связи в графе трёх типов: `extends/implements`, `inject` (эвристика по конструкторам, `@Autowired`/`@Inject`, Lombok и `@Bean`-параметрам) и `uses`. Тесты из `src/test` входят с меткой `[test]`. `rdeps` по умолчанию показывает один уровень (до 60 файлов, `depth=1–5`); это статические зависимости в индексе, не полный список затронутых runtime-тестов.
 
@@ -92,6 +104,7 @@
 
 ```text
 node skills/token-economy-java/scripts/jv.js op=selftest
+node --test tests/token-economy-java/metrics.test.js
 node --test tests/token-economy-java/classfile.test.js tests/token-economy-java/jar.test.js tests/token-economy-java/paths.test.js tests/token-economy-java/cache.test.js tests/token-economy-java/config.test.js tests/token-economy-java/integration.test.js
 ```
 

@@ -26,6 +26,7 @@
 - `search` — найти текст или регулярку по проекту, с фильтром по расширениям; пакетно — `requests=`/`requests_file=`;
 - `graph symbol` / `graph selector` — где объявлен класс, пайп, селектор, `$`-переменная, миксин;
 - `graph deps` / `graph rdeps` / `graph path` — что использует файл, кто использует его, цепочка связей;
+- `graph op=metrics` — файловые fan-in/out, локальный dependents, полный impact, PageRank и percentile; одиночный ответ — текст, `json=1` и batch — JSON;
 - `graph op=read` — точное чтение нескольких диапазонов одного файла одним вызовом (вместо серии Read); с версии 1.4.0 также готовый локатор `ref=файл:N-M` или `ref=файл#LN-LM`. Без диапазона `ref=файл` читает только файл меньше 300 строк и в пределах 1 МиБ; Git-refs не читаются;
 - `outline` — оглавление TS/JS-файла, включая JSX: вместо 800 строк — список символов с номерами; `compact=1` даёт диапазоны `L<start>-<end>`, `node` листает оглавление больших файлов;
 - `sig` — сигнатуры функций и методов сторонних библиотек без чтения исходников;
@@ -34,7 +35,7 @@
 - `graph hotspots` — git-сигналы «где болит»: коммиты, churn, багфиксы, авторы и процентили p50/p90/p97 по каждому файлу; кэш валидируется по HEAD без запуска git;
 - `generate` — создание сущностей Angular через CLI.
 
-Все читающие команды (`graph`, `search`, `outline`, `sig`) поддерживают пакетный режим: один вызов — много запросов, у `graph` — один проход по графу на группу scope. Компактные выводы: `graph` — `compact=1` в batch (словарь путей) и `format=table` для deps/rdeps, `search` — `format=grouped`/`runs`, `outline` — `compact=1`.
+Все читающие команды (`graph`, `search`, `outline`, `sig`) поддерживают пакетный режим: один вызов — много запросов, у `graph` — один проход по графу на группу scope (`metrics` включён, `hotspots` не входит в batch). Компактные выводы: `graph` — `compact=1` в batch (словарь путей) и `format=table` для deps/rdeps, `search` — `format=grouped`/`runs`, `outline` — `compact=1`.
 
 Требуется Node.js. Скрипты в каталоге `scripts/`: `code-searcher.js` (search), `graph-tool.js` (graph), `symbol-index.js` (outline), `sig-reader.js` (sig), `edit-symbol.js` (edit_symbol), `scaffold-helper.js` (generate).
 
@@ -46,6 +47,7 @@
 - `graph build` — принудительное обновление графа;
 - `graph` — кто импортирует модуль, какие тесты заденет правка;
 - `graph hotspots` — «где болит» по git-истории: коммиты, churn, багфиксы, авторы, процентили; формат вывода совпадает с ts;
+- `graph metrics` — файловые метрики по всем внутренним импортам, включая lazy/types; stdlib-порт без Node.js, текст с LF;
 - `outline` — оглавление крупного файла;
 - `search` — текст по проекту;
 - `sig` — сигнатура функции установленной библиотеки без чтения её исходников.
@@ -63,12 +65,15 @@
 
 Во всех режимах — `hotspots`: git-сигналы «где болит» (коммиты, churn, багфиксы, авторы, процентили); в Битриксе `bitrix/modules` и `upload` не считаются.
 
+`op=metrics` — файловые метрики во всех четырёх режимах; все существующие виды рёбер, пользовательские модули и прежние core/vendor/cache-фильтры сохраняются.
+
 ### token-economy-java — Java 17+ / Spring Boot 3+
 
 Скрипт `jv.js`:
 
 - поиск определений, оглавление класса, реализации интерфейса;
 - граф связей: наследование, внедрение зависимостей, использование;
+- `op=metrics` — файловая связанность, dependents/impact, PageRank и percentile;
 - HTTP-эндпоинты и бины, конфигурация с маскированием секретов;
 - JPA-сущности, репозитории, статический каталог таблиц и фрагментов миграций (не итоговая схема базы после применения миграций);
 - слушатели событий и очередей;
@@ -80,6 +85,7 @@
 Скрипт `kt.js` для проектов на Jetpack Compose и XML Views, с Java interop:
 
 - граф связей: наследование, Hilt/Dagger, вызовы Compose-функций, ViewBinding;
+- `op=metrics` — файловые метрики исходников Kotlin/Java и XML manifests/layouts/navigation/values;
 - манифест: компоненты, разрешения, intent-фильтры, deep link, предупреждения `exported`;
 - Room: сущности, таблицы, SQL-методы DAO;
 - граф DI: модули, `@Provides`/`@Binds`, где связан тип и кто его получает;
@@ -90,6 +96,16 @@
 - `hotspots` — git-сигналы «где болит»: коммиты, churn, багфиксы, авторы, процентили.
 
 Связи Java/Kotlin строятся статическими эвристиками: это не разрешение всех runtime-вызовов, Spring-контекста, DI-привязок или результат Android resource-merger.
+
+### Общий контракт metrics
+
+Для пяти языковых скиллов: одна цель `file` **либо** рейтинг `top` (положительное safe integer ≤ 9007199254740991, default 15; без цели и top тоже top-15); в Python цель позиционная, top — `--top`. `depth` — целое 1..5, default 2 **только у metrics**, остальные операции сохраняют прежние defaults.
+
+`fan_in/out` считают уникальных проектных файлов-соседей; `dependents(depth)` — обратную достижимость до depth, `impact` — всю уникальную обратную достижимость **без ограничения глубины**, корень исключён. PageRank: 20 итераций, damping 0.85, равномерная dangling mass. Percentile: midrank `(less + halfEqual)/N*100`, текст округляет до `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc. Поля машинного объекта: `fan_in`, `fan_out`, `dependents`, `impact`, `pagerank`, `percentile:{fan_in,pagerank}`, `depth`.
+
+Это статический **файловый**, не символьный или полный runtime call graph; метрики не гарантируют риск или безопасность правки. Все существующие внутренние виды связей и фильтры сохраняются, внешние endpoints не добавляются. TS одиночный metrics по умолчанию печатает текст; `json=1` — `{perFile:[],total,cycles,depth,empty,scope,completeness,file?}` через emit, total/percentile/PageRank рассчитаны на полном графе; batch всегда JSON, compact кодирует `perFile[].path` в общем `paths`. Ошибки и неоднозначность TS остаются JSON. Python — stdlib-порт без Node.js/metrics.js, паритет с JS 1e-9 и текст LF; metrics учитывает lazy/types, тогда как `graph cycles` остаётся runtime-only. KT/Java/PHP показывают число циклов без hint несуществующего `op=cycles`. Пустой граф показывает путь к кэшу, неизвестная цель — ошибку и stats-подсказку. Прогретые graph/parse-кэши не меняются; холодный запуск законно строит граф.
+
+Четыре JS-копии `scripts/lib/metrics.js` (TS/KT/Java/PHP) должны совпадать побайтово; Python — порт, не пятая копия. `tests/metrics-copies.test.js` проверяет SHA256 и одинаковые тесты формул; численное совпадение Python проверяется его отдельным набором. Версии и манифест обновляются штатным `skills.js bump` при выпуске изменений.
 
 ### token-economy-har — разбор сетевых записей
 
@@ -151,6 +167,18 @@ node skills.js verify
 ```
 
 `node --test` находит наборы CLI (`tests/*.test.js`) и скиллов (`tests/token-economy-*/`), включая регрессии путей, кодировок и повреждённых входных данных. Для отдельной проверки укажите файл: `node --test tests/check-install.test.js`. Не передавайте каталог (`node --test tests/`): это несовместимо с Windows. Тесты работают во временных каталогах; проверки симлинков явно пропускаются, если ОС запрещает их создание.
+
+Целевые регрессии metrics (по одной команде на скилл; из корня репозитория):
+
+```sh
+node --test tests/token-economy-ts/metrics.test.js
+node --test tests/token-economy-kt/metrics.test.js
+node --test tests/token-economy-java/metrics.test.js
+node --test tests/token-economy-php/metrics.test.js
+node --test tests/token-economy-py/metrics.test.js
+```
+
+Python-скилл не требует Node.js; здесь Node — только runner тестов. Suites проверяют формулы, текст/CLI, ошибки, циклы и неизменность SHA прогретого графа. Проверка четырёх JS-копий — `tests/metrics-copies.test.js` на завершающем этапе.
 
 PHP-фикстуры и golden-проверки: [`tests/token-economy-php/README.md`](tests/token-economy-php/README.md). Полный HAR-бенчмарк запускается отдельно; bounded-регрессия очистки 100 MiB входит в обычный набор. Тесты в каталог скилла не входят: при копировании в агента переносится только содержимое `skills/<скилл>/`.
 

@@ -40,6 +40,7 @@
 | Оглавление файла или класса: методы, свойства, Compose-функции, inject | `outline` |
 | Кто использует файл, что использует он, цепочка связей, реализации интерфейса | `rdeps`, `deps`, `path`, `node`, `stats`, `impls` |
 | Где болит по git-истории: коммиты, churn, багфиксы, авторы, процентили | `hotspots` |
+| Файловая связанность и область воздействия: fan-in/out, dependents, impact, PageRank, percentile | `metrics` |
 | Манифест: компоненты, разрешения, intent-фильтры, deep link, exported-предупреждения | `manifest` |
 | Room: сущности, таблицы, DAO-методы с SQL | `room` |
 | DI (Hilt/Dagger): модули, провайдеры, где связан тип, кто получает | `di` |
@@ -49,6 +50,21 @@
 | Сигнатуры классов из jar/aar без декомпиляции | `sig` |
 | Поиск по тексту с учётом кодировки | `search` |
 | Чтение, правка и создание файлов с сохранением cp1251 / UTF-8 / UTF-16LE/BE, BOM и CRLF | `read`, `patch`, `create` |
+
+## Файловые метрики
+
+```text
+node "<SCRIPTS_DIR>\kt.js" op=metrics file=app/src/main/java/com/acme/UserDao.kt depth=2
+node "<SCRIPTS_DIR>\kt.js" op=metrics top=15
+```
+
+`file` **либо** `top` (вместе нельзя); `top` — положительное safe integer, default 15, без обоих тоже top-15. `depth` — строго целое 1..5, default 2 только для metrics; `deps`/`rdeps` остаются прямыми. `fan_in/out` — уникальные проектные соседи; `dependents` — обратная достижимость до depth; `impact` — вся обратная достижимость без ограничения, корень исключён. PageRank — 20 итераций, damping 0.85, равномерная dangling mass; percentile — midrank `(less + halfEqual)/N*100`, в тексте округлённый `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc.
+
+Учитываются Kotlin/Java и XML manifests/layouts/navigation/values с прежними фильтрами и всеми существующими видами рёбер; произвольные XML/Gradle-файлы и внешние endpoints не добавляются. Это статический файловый граф, не символьный/full runtime call graph и не гарантия риска правки. Вывод — общий текст с `dependents(2)` и `impact`; неизвестный файл — exit1 с `op=stats`, пустой граф показывает `.kt-cache/index.json`, цикл — `циклов: N` без подсказки `op=cycles`. Прогретый индекс не меняется. Полный контракт — в SKILL.md.
+
+## Регрессионные тесты metrics
+
+Из корня репозитория скиллов: `node --test tests/token-economy-kt/metrics.test.js`. Формулы совпадают с TS; проверяются CLI, XML-universe, typed-дедупликация, строгие аргументы и неизменность кэша после прогрева.
 
 Связи в графе: `extends`/`implements`, `inject` (эвристика по конструкторам, `@Inject` и непосредственным методам `@Provides`/`@Binds`), `uses`, `calls` (верхнеуровневые/Compose-функции), `binding` (ViewBinding). Это файловый граф по именам, не разрешение импортов/перегрузок и не Hilt-контекст. `deps`/`rdeps` показывают прямых соседей до 40 каждого вида; для цепочек — `path`. `outline inherit=true` работает только с `name=Класс`, не `file=…`.
 

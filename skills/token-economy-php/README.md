@@ -47,6 +47,7 @@
 | Оглавление: классы с диапазонами строк, сигнатуры, поля ORM-таблиц; список ограничен 60 строками объявлений — при усечении печатается точный count и `limit=0 — вывести все` (`limit=` задаёт предел; extras и inherit не входят); для страниц и шаблонов — вызванные компоненты, модули, ключи `$arResult` и `$arParams` | `outline` |
 | Кто использует файл, что использует он, цепочка связей; `node` — объявления файла с итогами и пагинацией (страница 50, `limit`/`offset`) | `rdeps`, `deps`, `path`, `node`, `stats` |
 | Где болит по git-истории: коммиты, churn, багфиксы, авторы, процентили (в Битриксе без `bitrix/modules` и `upload`) | `hotspots` |
+| Файловая связанность и область воздействия: fan-in/out, dependents, impact, PageRank, percentile | `metrics` во всех четырёх режимах |
 | Компонент: файлы, ключи параметров из `.parameters.php` (до 60), шаблоны и переопределения по сайтам, вызовы (до 30 с маркером остатка) | `component` |
 | Обработчики событий (`AddEventHandler`, `registerEventHandler`, `RegisterModuleDependences`) и вызовы `GetModuleEvents` | `events` |
 | Языковое сообщение по ключу или по тексту, где оно используется | `lang` |
@@ -60,6 +61,18 @@
 | Поиск по тексту с учётом кодировки | `search` |
 | Правка тела метода/функции без чтения старого тела в контекст: сигнатура, комментарии, кодировка, BOM и EOL — байт в байт | `patch_symbol` |
 | Чтение, правка и создание файлов с сохранением cp1251 / UTF-8 / UTF-16LE/BE, BOM и CRLF; чтение нескольких диапазонов строк за вызов (`ranges`) | `read`, `patch`, `create` |
+
+## Файловые метрики
+
+```text
+node "<SCRIPTS_DIR>\bx.js" op=metrics file=src/Support/helpers.php depth=2
+node "<SCRIPTS_DIR>\bx.js" op=metrics top=15
+node "<SCRIPTS_DIR>\bx.js" op=metrics file=local/modules/acme.module/include.php
+```
+
+`file` **либо** `top` (вместе нельзя); `top` — положительное safe integer, default 15, без обоих тоже top-15. `depth` — строго целое 1..5, default 2 только для metrics (`deps`/`rdeps` остаются 1). `fan_in/out` — уникальные проектные соседи; `dependents` — обратная достижимость до depth; `impact` — вся обратная достижимость без ограничения, корень исключён. PageRank — 20 итераций, damping 0.85, равномерная dangling mass; percentile — midrank `(less + halfEqual)/N*100`, в тексте округлённый `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc.
+
+Все существующие типы связей входят во всех четырёх режимах; внешние endpoints не добавляются. `core=true` включает ядро с прежней семантикой, не отменяя vendor/cache и служебные фильтры; свои модули `local/modules/acme.module` входят без core. Это статический файловый граф, не символьный/full runtime call graph и не гарантия риска правки. Вывод — общий текст с `dependents(2)` и `impact`; неизвестный файл — exit1 с `op=stats` и прежней core-подсказкой, если применима; пустой граф показывает `.bx-cache/index.json`, цикл — `циклов: N` без подсказки `op=cycles`. Прогретые graph/parse-кэши не меняются. Полный контракт — в SKILL.md.
 
 Связи в графе: класс, функция, `require`/`include`, `IncludeComponent` (на файл компонента и на шаблон), `IncludeFile` и `main.include`, класс или функция-обработчик события, `IncludeModule` (на `include.php` модуля), языковой файл. В Laravel дополнительно: `view('name')` и директивы Blade (`@extends`, `@include`, `@component`, `@each`) на файлы шаблонов, `__()`/`@lang` на языковые файлы. Старое API: глобальные классы, методы в базовых `CAll*`-классах, варианты `classes/mysql`, `mssql`, `oracle`, константы `BX_ROOT`, `SITE_DIR`, `SITE_TEMPLATE_PATH`, синтаксис PHP 5.
 
@@ -92,6 +105,7 @@
 ## Тесты в репозитории
 
 ```sh
+node --test tests/token-economy-php/metrics.test.js
 node --test tests/token-economy-php/audit.test.js tests/token-economy-php/golden.test.js tests/token-economy-php/task1-node-pagination.test.js tests/token-economy-php/task2-outline-limit.test.js tests/token-economy-php/task3-read-ranges.test.js tests/token-economy-php/task4-patch-symbol.test.js tests/token-economy-php/task5-console-cap.test.js
 node skills/token-economy-php/scripts/bx.js op=selftest
 node tests/token-economy-php/run-golden.js check
