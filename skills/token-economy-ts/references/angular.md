@@ -39,7 +39,11 @@
 
 ## generate
 
-Обёртка над локальным Angular CLI (`node_modules/.bin/ng`, без обращения к сети). Допустимые `type`: component, service, pipe, directive, guard, module, interface, enum, class, resolver, interceptor. Возвращает только список созданных и изменённых файлов.
+Обёртка над локальным Angular CLI (`node_modules/.bin/ng`, на Windows `ng.cmd`, без обращения к сети). Параметры `type` и `name` обязательны; остальные CLI-опции обёртка не передаёт. Допустимые `type`: component, service, pipe, directive, guard, module, interface, enum, class, resolver, interceptor. `name` допускает только ASCII-буквы, цифры, `_ - . / @`, без `..` и ведущего `/`.
+
+Для component/service/pipe/directive/guard/class/resolver/interceptor добавляется `--skip-tests=true`; module/interface/enum идут без него. При «Unknown option ... skip-tests» выполняется повтор без флага, возможен spec-файл. Ответ `{success:true,files}` содержит CREATE/UPDATE-строки, либо последние пять строк CLI, если таких строк нет. Валидация/отсутствие CLI дают `{success:false,error}` и exit1; пойманная ошибка запуска CLI даёт `{success:false,error}` с последними десятью строками, но exit0 — проверяй `success`, не только код.
+
+Гейт проверяет `angular.json` или `@angular/core` во всех четырёх секциях зависимостей; он не полностью совпадает с детектом `projectType` в `info` (см. SKILL.md).
 
     node "$env:USERPROFILE\.kilocode\skills\token-economy-ts\scripts\scaffold-helper.js" type=component name=components/profile
 
