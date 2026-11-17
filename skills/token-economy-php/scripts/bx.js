@@ -2,7 +2,7 @@
 'use strict';
 // bx.js — token-economy для PHP, 1С-Битрикс, Laravel (8 … 13) и MODX. Принимает JSON из stdin (или аргументы key=value),
 // отвечает компактным текстом. Операции: info, search, symbol, deps, rdeps, path, node, stats, outline,
-// component, events, lang, route, table, routes, model, container, blade, console, read, patch, create, build.
+// component, events, lang, route, table, routes, model, container, blade, console, read, patch, create, build, hotspots.
 
 const fs = require('fs');
 const path = require('path');
@@ -371,6 +371,16 @@ const ops = {
 
   deps() { relations(false); },
   rdeps() { relations(true); },
+
+  // git-сигналы без индекса: сбор и кэш в scripts/git-signals.js (общая копия JS-скиллов).
+  // В Битриксе вендор и пользовательские файлы кодом проекта не считаются.
+  hotspots() {
+    const { runHotspots } = require('./git-signals');
+    const hooks = ctx.mode === 'bitrix' ? { pathspec: [':(exclude)bitrix/modules', ':(exclude)upload'] } : {};
+    const r = runHotspots(ctx.root, args, hooks);
+    out(r.text);
+    if (r.exit) process.exit(r.exit);
+  },
 
   path() {
     if (!args.from || !args.to) fail('укажите from и to');
