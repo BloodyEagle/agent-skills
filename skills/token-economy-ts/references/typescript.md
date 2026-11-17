@@ -1,4 +1,4 @@
-# TypeScript / JavaScript — token-economy-ts
+# Правила стека: TypeScript / JavaScript (token-economy-ts)
 
 ## Код
 
