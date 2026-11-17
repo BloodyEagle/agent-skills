@@ -772,9 +772,14 @@ def format_metrics(rows, depth=2, single=False, cycles=0, cycles_op=False, cache
         prefix = "" if single else f"{i + 1}. "
         fan_rank = int(row["percentile"]["fan_in"] + 0.5)
         page_rank = int(row["percentile"]["pagerank"] + 0.5)
+        numerator, denominator = row["pagerank"].as_integer_ratio()
+        rounded, remainder = divmod(numerator * 10000, denominator)
+        if remainder * 2 >= denominator:
+            rounded += 1
+        page_text = f"{rounded // 10000}.{rounded % 10000:04d}"
         lines.append(f"{prefix}{row['path']}  fan-in {row['fan_in']} (p{fan_rank})  fan-out {row['fan_out']}"
                      f"  dependents({depth}) {row['dependents']}  impact {row['impact']}"
-                     f"  pagerank {row['pagerank']:.4f} (p{page_rank})")
+                     f"  pagerank {page_text} (p{page_rank})")
     if not rows:
         lines.append("Граф пуст" + (": " + cache_path if cache_path else ""))
     if cycles:

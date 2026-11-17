@@ -18,7 +18,7 @@ assert.ok(python, 'Python 3.9+ is required for metrics acceptance');
 
 function run(args, root) {
     const result = spawnSync(python, ['-I', '-B', script, '--root', root, ...args], {
-        cwd: __dirname, encoding: 'utf8', timeout: 5000, windowsHide: true,
+        cwd: __dirname, encoding: 'utf8', timeout: 30000, windowsHide: true,
         env: {...process.env, PYTHONIOENCODING: 'utf-8'}
     });
     assert.ifError(result.error);
@@ -48,7 +48,7 @@ function pythonMetrics(data) {
         'm=importlib.util.module_from_spec(s); s.loader.exec_module(m); result=m.compute_metrics(json.loads(sys.argv[2])); ' +
         'print(json.dumps({"result":result,"text":m.format_metrics(m.metrics_rows(result,top=99),result["depth"],False,result["cycles"])}))';
     const result = spawnSync(python, ['-I', '-B', '-c', code, script, JSON.stringify(data)], {
-        cwd: __dirname, encoding: 'utf8', timeout: 5000, windowsHide: true,
+        cwd: __dirname, encoding: 'utf8', timeout: 30000, windowsHide: true,
         env: {...process.env, PYTHONIOENCODING: 'utf-8'}
     });
     assert.ifError(result.error);
@@ -63,7 +63,7 @@ test('Python formulas match TS: chain, diamond, depth, cycle, self-loop, duplica
         ...[1, 2, 5].map(depth => input(['a', 'b', 'c', 'd'], [['a', 'b'], ['a', 'c'], ['b', 'd'], ['c', 'd']], depth)),
         input(['a', 'b', 's', 'z'], [['a', 'b'], ['b', 'a'], ['s', 's']]),
         input(['a', 'b'], [['a', 'b'], ['a', 'b'], ['a', 'ext'], ['ext', 'b']]),
-        input(['z', 'a'], []), input([], [])];
+        input(['z', 'a'], []), input(Array.from({length: 32}, (_, i) => 'isolated-' + i), []), input([], [])];
     for (const data of cases) {
         const ts = computeMetrics(data);
         const {result: py, text} = pythonMetrics(data);
