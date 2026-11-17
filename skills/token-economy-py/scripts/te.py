@@ -658,6 +658,7 @@ def tarjan_runtime(nodes):
 
 # ---------- metrics (чистый порт scripts/lib/metrics.js, без Node.js) ----------
 
+# Есть вторая реализация: см. percentile_ranks (hotspots); не путать и не объединять.
 def metrics_percentile_ranks(values):
     ordered = sorted(enumerate(values), key=lambda pair: pair[1])
     ranks = [0.0] * len(values)
@@ -1145,6 +1146,7 @@ def _load_signals(root, since, max_commits, pathspec):
     return data, False
 
 
+# Есть вторая реализация: см. metrics_percentile_ranks; не путать и не объединять.
 def percentile_ranks(data):
     """Процентильные метки p50/p90/p97 по commits/churn/bugfix — внутри репозитория, не
     абсолютные числа. Метка — старшая граница, которой значение достигло (0 метки не получает);
