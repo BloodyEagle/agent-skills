@@ -3414,6 +3414,16 @@ function opSelftest() {
   process.stdout.write('\nвсе проверки пройдены (' + total + ')\n');
 }
 
+// ---------- git-сигналы (hotspots) ----------
+// Сбор и кэш — scripts/git-signals.js (общая копия JS-скиллов); вызывается до loadIndex,
+// потому индекс Kotlin не строится и его кэш не трогается.
+function opHotspots(root, p) {
+  const { runHotspots } = require('./git-signals');
+  const r = runHotspots(root, p);
+  process.stdout.write(r.text + '\n');
+  if (r.exit) process.exit(r.exit);
+}
+
 // ---------- диспетчер ----------
 
 const OPS = {
@@ -3422,6 +3432,7 @@ const OPS = {
   impls: opImpls, manifest: opManifest, sig: opSig,
   room: opRoom, di: opDi, nav: opNav, res: opRes, api: opApi,
   read: opRead, patch: opPatch, create: opCreate,
+  hotspots: (data, p) => opHotspots(p.root ? path.resolve(String(p.root)) : process.cwd(), p),
   selftest: () => opSelftest()
 };
 
@@ -3438,6 +3449,7 @@ function main() {
   const root = p.root ? path.resolve(String(p.root)) : process.cwd();
   if (!fs.existsSync(root)) die('корень не найден: ' + root);
   if (!fs.statSync(root).isDirectory()) die('корень не является каталогом: ' + root);
+  if (op === 'hotspots') { opHotspots(root, p); return; } // git-сигналы не требуют индекса проекта
   const data = loadIndex(root);
   const out = [];
   OPS[op](data, p, out);
