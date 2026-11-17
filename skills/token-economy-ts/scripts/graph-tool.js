@@ -22,6 +22,7 @@ const {entityRanges} = require('./lib/ranges');
 const {parseRefLocator, SUPPORTED_READ_KINDS} = require('./lib/refs');
 const {maskCode} = require('./lib/mask');
 const {runHotspots} = require('./git-signals');
+const {computeMetrics, parseMetricsArgs, metricsRows, formatMetrics} = require('./lib/metrics');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
@@ -49,7 +50,8 @@ if (!Object.keys(args).length && process.stdin.isTTY !== true) {
     }
 }
 // argv передаёт значения строками: приводим типы (stdin-JSON приходит нативным)
-args.depth = Number(args.depth) || 1;
+const rawDepth = args.depth;
+args.depth = args.op === 'metrics' ? rawDepth : Number(args.depth) || 1;
 args.specs = args.specs === true || args.specs === 'true' || args.specs === '1';
 args.why = args.why === true || args.why === 'true' || args.why === '1';
 args.format = args.format === undefined || args.format === null ? '' : String(args.format);
@@ -90,7 +92,7 @@ const CONFIG_FILES = ['angular.json', '.angular.json', 'tsconfig.json', 'package
 
 const emit = (obj) => console.log(JSON.stringify(obj));
 const fail = (msg) => {
-    emit({error: msg, ...(['deps', 'rdeps', 'path'].includes(args.op)
+    emit({error: msg, ...(['deps', 'rdeps', 'path', 'metrics'].includes(args.op)
         ? {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.'}, completeness: {complete: false, reasons: ['request-error']}}
         : {})});
     process.exit(1);
@@ -1262,7 +1264,7 @@ function buildGraph(files, inputs = graphInputs()) {
  * Отдаёт актуальный граф: при добавлении/удалении/переименовании/изменении файлов
  * (а также angular.json и tsconfig.json) перестраивает сам.
  */
-function ensureGraph() {
+function ensureGraph(allowEmpty = false) {
     let graph = null;
     try {
         graph = JSON.parse(fs.readFileSync(GRAPH_FILE, 'utf8'));
@@ -1270,6 +1272,7 @@ function ensureGraph() {
     }
     const files = collectAll();
     const inputs = graphInputs();
+    if (allowEmpty && !files.length) return {graph: {files: [], cycles: [], configIssues: [...configIssues]}, reparsed: 0};
     let stale = !graph || graph.version !== GRAPH_VERSION
         || !Array.isArray(graph.files) || !graph.files.every((f, i) => f && f.id === i + 1 && typeof f.path === 'string'
             && Array.isArray(f.imports) && f.imports.every(id => Number.isInteger(id) && id > 0 && id <= graph.files.length)
@@ -1595,7 +1598,29 @@ function walk(graph, startId, depth, reverse, why) {
 // Каждый обработчик возвращает payload ответа или бросает OpError (ошибка запроса).
 // Это позволяет batch-режиму выполнять запросы без process.exit внутри элемента.
 
-const BATCH_OPS = ['info', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'component', 'path', 'cycles', 'stats', 'read'];
+const BATCH_OPS = ['info', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'component', 'path', 'cycles', 'stats', 'read', 'metrics'];
+
+function opMetrics(g, p) {
+    let options;
+    try {
+        options = parseMetricsArgs(p);
+    } catch (e) {
+        throw new OpError(e.message);
+    }
+    let node;
+    if (options.file !== null) {
+        const found = findNode(g, options.file);
+        if (found.error) throw new OpError(found.error + ' (op=stats: список файлов графа)');
+        if (found.ambiguous)
+            return {ambiguous: true, matches: found.ambiguous, ...structuralStatus(g, 0, ['ambiguous-query'])};
+        node = found.node;
+    }
+    const metrics = computeMetrics({files: g.files,
+        edges: g.files.flatMap(file => file.imports.map(to => ({from: file.id, to}))), depth: options.depth});
+    const rows = metricsRows(metrics, node ? {id: node.id} : {top: options.top});
+    return {...(node ? {file: node.path} : {}), perFile: rows, total: g.files.length,
+        cycles: metrics.cycles, depth: metrics.depth, empty: g.files.length === 0, ...structuralStatus(g)};
+}
 
 function opStats(g) {
     const rev = reverseIndex(g);
@@ -1911,6 +1936,7 @@ function dispatchOp(g, p) {
         case 'stats': return opStats(g);
         case 'info': return opInfo(g);
         case 'cycles': return opCycles(g);
+        case 'metrics': return opMetrics(g, p);
         case 'symbol': return opSymbol(g, p);
         case 'selector': return opSelector(g, p);
         case 'component': return opComponent(g, p);
@@ -1931,7 +1957,7 @@ function runQuery(g, p) {
         return {ok: true, payload: dispatchOp(g, p)};
     } catch (e) {
         if (e instanceof OpError) {
-            const extras = ['deps', 'rdeps', 'path'].includes(p.op)
+            const extras = ['deps', 'rdeps', 'path', 'metrics'].includes(p.op)
                 ? {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.'}, completeness: {complete: false, reasons: ['request-error']}}
                 : {};
             return {ok: false, payload: {error: e.message, ...extras}};
@@ -2022,7 +2048,7 @@ function runBatch() {
         scanIssues.clear();
         let graphCtx;
         try {
-            graphCtx = ensureGraph();
+            graphCtx = ensureGraph(grp.idxs.every(i => requests[i].op === 'metrics'));
         } catch (e) {
             for (const i of grp.idxs) {
                 results[i] = {index: i, error: e.message};
@@ -2034,7 +2060,7 @@ function runBatch() {
             const res = runQuery(graphCtx.graph, requests[i]);
             if (res.ok) results[i] = {index: i, ...res.payload};
             else {
-                results[i] = {index: i, error: res.payload.error};
+                results[i] = requests[i].op === 'metrics' ? {index: i, ...res.payload} : {index: i, error: res.payload.error};
                 failed++;
             }
         }
@@ -2070,6 +2096,8 @@ function applyCompactBatch(envelope) {
         if (res.error) continue;
         for (const k of ['file', 'from', 'to'])
             if (typeof res[k] === 'string') res[k] = intern(res[k]);
+        if (Array.isArray(res.perFile))
+            res.perFile = res.perFile.map(row => ({...row, path: intern(row.path)}));
         for (const k of ROW_LISTS) {
             const list = res[k];
             if (!Array.isArray(list)) continue;
@@ -2111,8 +2139,8 @@ try {
 }
 
 const op = args.op;
-if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | component | path | cycles | stats | read | hotspots');
-if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'component', 'path', 'cycles', 'stats', 'read', 'hotspots', 'selftest'].includes(op))
+if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | component | path | cycles | stats | read | hotspots | metrics');
+if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'component', 'path', 'cycles', 'stats', 'read', 'hotspots', 'metrics', 'selftest'].includes(op))
     fail('Неизвестный op: ' + op);
 if (args.format && args.format !== 'table') fail('format поддерживает только table');
 
@@ -2310,11 +2338,16 @@ if (op === 'build') {
 
 let graphCtx;
 try {
-    graphCtx = ensureGraph();
+    graphCtx = ensureGraph(op === 'metrics');
 } catch (e) {
     fail(e.message);
 }
 
 const result = runQuery(graphCtx.graph, args);
-emit(result.payload);
+if (op === 'metrics' && result.ok && !result.payload.ambiguous &&
+    !(args.json === true || args.json === '1' || args.json === 'true')) {
+    console.log(formatMetrics(result.payload.perFile, {depth: result.payload.depth,
+        single: result.payload.file !== undefined, cycles: result.payload.cycles, cyclesOp: true,
+        cachePath: GRAPH_FILE, completeness: result.payload.completeness}));
+} else emit(result.payload);
 process.exit(result.ok ? 0 : 1);
