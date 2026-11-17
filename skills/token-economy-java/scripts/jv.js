@@ -2,7 +2,7 @@
 'use strict';
 // jv.js — token-economy для Java и Spring Boot 3+. Принимает JSON из stdin (или аргументы key=value, или @файл.json),
 // отвечает компактным текстом. Операции: info, search, symbol, deps, rdeps, path, node, stats, outline, impls,
-// beans, endpoints, config, entities, table, listeners, sig, read, patch, create, build.
+// beans, endpoints, config, entities, table, listeners, sig, read, patch, create, build, hotspots.
 
 const fs = require('fs');
 const path = require('path');
@@ -246,6 +246,13 @@ const ops = {
   deps() { relations(false); },
   rdeps() { relations(true); },
 
+  // git-сигналы без индекса: сбор и кэш в scripts/git-signals.js (общая копия JS-скиллов)
+  hotspots() {
+    const { runHotspots } = require('./git-signals');
+    const r = runHotspots(ctx.root, args);
+    out(r.text);
+    if (r.exit) process.exit(r.exit);
+  },
   path() {
     if (!args.from || !args.to) fail('укажите from и to');
     const idx = ensureIndex(ctx);
