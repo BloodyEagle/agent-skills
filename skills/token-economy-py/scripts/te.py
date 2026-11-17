@@ -555,7 +555,7 @@ def graph_query(root, query):
     return q  # имя модуля/файла или фрагмент пути; неоднозначность обработает find_node
 
 
-def find_node(g, q):
+def find_node(g, q, metrics=False):
     q = posix(q).strip()
     nodes = g["nodes"]
     for pred in (
@@ -571,7 +571,7 @@ def find_node(g, q):
         if len(hits) > 1:
             lst = "\n".join("  " + h["path"] for h in hits[:15])
             fail(f"«{q}» неоднозначно, уточните путь:\n{lst}")
-    fail(f"файл не найден в графе: {q}")
+    fail(f"файл не найден в графе: {q}" + (" (op=stats: список файлов графа)" if metrics else ""))
 
 
 def bfs(g, start, depth, reverse):
@@ -656,20 +656,164 @@ def tarjan_runtime(nodes):
     return sccs
 
 
+# ---------- metrics (чистый порт scripts/lib/metrics.js, без Node.js) ----------
+
+def metrics_percentile_ranks(values):
+    ordered = sorted(enumerate(values), key=lambda pair: pair[1])
+    ranks = [0.0] * len(values)
+    start = 0
+    while start < len(ordered):
+        end = start + 1
+        while end < len(ordered) and ordered[end][1] == ordered[start][1]:
+            end += 1
+        rank = (start + (end - start) / 2) / len(ordered) * 100
+        for i in range(start, end):
+            ranks[ordered[i][0]] = rank
+        start = end
+    return ranks
+
+
+def metrics_cycles(outgoing, incoming):
+    seen, order = set(), []
+    for root in range(len(outgoing)):
+        if root in seen:
+            continue
+        seen.add(root)
+        stack = [[root, 0]]
+        while stack:
+            node, offset = stack[-1]
+            if offset == len(outgoing[node]):
+                order.append(node)
+                stack.pop()
+                continue
+            nxt = outgoing[node][offset]
+            stack[-1][1] += 1
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append([nxt, 0])
+    seen.clear()
+    cycles = 0
+    for root in reversed(order):
+        if root in seen:
+            continue
+        stack, size = [root], 0
+        seen.add(root)
+        while stack:
+            node = stack.pop()
+            size += 1
+            for nxt in incoming[node]:
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        if size > 1 or root in outgoing[root]:
+            cycles += 1
+    return cycles
+
+
+def compute_metrics(data):
+    """Метрики уникальных файловых связей; формулы совпадают с четырьмя JS-копиями."""
+    files, edges, depth = data["files"], data["edges"], data.get("depth", 2)
+    if type(depth) is not int or not 1 <= depth <= 5:
+        raise ValueError("depth должен быть целым числом 1..5")
+    indices = {file["id"]: i for i, file in enumerate(files)}
+    if len(indices) != len(files):
+        raise ValueError("Повторный id файла")
+    outgoing, incoming = [dict() for _ in files], [dict() for _ in files]
+    for edge in edges:
+        src, dst = indices.get(edge["from"]), indices.get(edge["to"])
+        if src is None or dst is None:
+            continue
+        outgoing[src][dst] = None
+        incoming[dst][src] = None
+    outgoing, incoming = [list(x) for x in outgoing], [list(x) for x in incoming]
+    count = len(files)
+    pagerank = [1 / count for _ in files]
+    for _ in range(20 if count else 0):
+        dangling = sum(pagerank[i] for i in range(count) if not outgoing[i])
+        nxt = [(1 - 0.85) / count + 0.85 * dangling / count for _ in files]
+        for src in range(count):
+            if not outgoing[src]:
+                continue
+            share = 0.85 * pagerank[src] / len(outgoing[src])
+            for dst in outgoing[src]:
+                nxt[dst] += share
+        pagerank = nxt
+    fan_in_ranks = metrics_percentile_ranks([len(x) for x in incoming])
+    pagerank_ranks = metrics_percentile_ranks(pagerank)
+    per_file = []
+    for root, file in enumerate(files):
+        seen, queue, dependents = {root}, deque([(root, 0)]), 0
+        while queue:
+            node, level = queue.popleft()
+            for dependent in incoming[node]:
+                if dependent in seen:
+                    continue
+                seen.add(dependent)
+                queue.append((dependent, level + 1))
+                if level + 1 <= depth:
+                    dependents += 1
+        per_file.append({"id": file["id"], "path": file["path"], "fan_in": len(incoming[root]),
+                         "fan_out": len(outgoing[root]), "dependents": dependents, "impact": len(seen) - 1,
+                         "pagerank": pagerank[root], "percentile": {"fan_in": fan_in_ranks[root],
+                         "pagerank": pagerank_ranks[root]}, "depth": depth})
+    return {"perFile": per_file, "cycles": metrics_cycles(outgoing, incoming), "depth": depth}
+
+
+def metrics_rows(metrics, file_id=None, top=15):
+    rows = metrics["perFile"]
+    if file_id is not None:
+        return [row for row in rows if row["id"] == file_id]
+    return sorted(rows, key=lambda row: (-row["fan_in"], -row["pagerank"], row["path"]))[:top]
+
+
+def format_metrics(rows, depth=2, single=False, cycles=0, cycles_op=False, cache_path=""):
+    lines = []
+    for i, row in enumerate(rows):
+        prefix = "" if single else f"{i + 1}. "
+        fan_rank = int(row["percentile"]["fan_in"] + 0.5)
+        page_rank = int(row["percentile"]["pagerank"] + 0.5)
+        lines.append(f"{prefix}{row['path']}  fan-in {row['fan_in']} (p{fan_rank})  fan-out {row['fan_out']}"
+                     f"  dependents({depth}) {row['dependents']}  impact {row['impact']}"
+                     f"  pagerank {row['pagerank']:.4f} (p{page_rank})")
+    if not rows:
+        lines.append("Граф пуст" + (": " + cache_path if cache_path else ""))
+    if cycles:
+        lines.append(f"циклов: {cycles}" + (" (op=cycles)" if cycles_op else ""))
+    return "\n".join(lines)
+
+
 def cmd_graph(a):
     root = a.root
     if a.op == "hotspots":
         # hotspots не требует графа — git-сигналы отвечают до ensure_graph, кэш графа не трогается
         print(run_hotspots(root, a))
         return
-    if a.op in ("deps", "rdeps", "node", "path"):
+    if a.op in ("deps", "rdeps", "node", "path", "metrics"):
         a.args = [graph_query(root, q) for q in a.args]
+    if a.op == "metrics":
+        if len(a.args) > 1 or a.args and a.top is not None:
+            fail("укажите file либо top, не оба аргумента")
+        if not 1 <= a.depth <= 5:
+            fail("depth должен быть целым числом 1..5")
+        if a.top is not None and not 1 <= a.top <= 9007199254740991:
+            fail("top должен быть положительным целым числом")
     if a.op == "build":
         g = build_graph(root, a.src)
         print(f"граф построен: {len(g['nodes'])} файлов, {sum(len(n['imports']) for n in g['nodes'])} связей")
         return
     g = ensure_graph(root, a.src)
     nodes = g["nodes"]
+
+    if a.op == "metrics":
+        node = find_node(g, a.args[0], metrics=True) if a.args else None
+        metrics = compute_metrics({"files": [{"id": n["id"], "path": n["path"]} for n in nodes],
+                                   "edges": [{"from": n["id"], "to": target, "type": kind}
+                                             for n in nodes for target, kind, _ in n["imports"]], "depth": a.depth})
+        rows = metrics_rows(metrics, node["id"] if node else None, a.top if a.top is not None else 15)
+        sys.stdout.reconfigure(newline="\n")
+        print(format_metrics(rows, a.depth, bool(node), metrics["cycles"], True,
+                             str(Path(root) / CACHE_DIR / "graph.json")))
+        return
 
     if a.op == "symbol":
         if not a.args:
@@ -1894,11 +2038,11 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     g = sp.add_parser("graph", parents=[common])
-    g.add_argument("op", choices=["symbol", "deps", "rdeps", "path", "node", "cycles", "stats", "build", "hotspots"])
+    g.add_argument("op", choices=["symbol", "deps", "rdeps", "path", "node", "cycles", "stats", "build", "hotspots", "metrics"])
     g.add_argument("args", nargs="*")
-    g.add_argument("--depth", type=int, default=1)
+    g.add_argument("--depth", type=int, default=None)
+    g.add_argument("--top", type=int)
     g.add_argument("--why", action="store_true")
-    g.add_argument("--top", type=int, default=15)
     g.add_argument("--file", default="")
     g.add_argument("--since", default="")
     g.add_argument("--max-commits", type=int, default=2000)
@@ -1925,6 +2069,10 @@ def main():
     sp.add_parser("selftest", parents=[common])
 
     a = ap.parse_args()
+    if a.cmd == "graph" and a.depth is None:
+        a.depth = 2 if a.op == "metrics" else 1
+    if a.cmd == "graph" and a.op == "hotspots" and a.top is None:
+        a.top = 15
     a.root = getattr(a, "root", ".")  # SUPPRESS не кладёт дефолты в namespace — ставим сами
     a.src = getattr(a, "src", None)
     try:
