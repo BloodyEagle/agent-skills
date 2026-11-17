@@ -21,7 +21,7 @@
 
 ### token-economy-ts — TypeScript / JavaScript / Angular
 
-Обязательный навык для TypeScript, JavaScript и Angular-проектов: заменяет встроенный поиск и ручное чтение файлов. Поддерживает React, NestJS, Node.js, Express/Fastify/Koa и JS/TS-файлы Vue-проектов, ESM и CommonJS (`require`, `module.exports`); `.vue` SFC не разбираются. Angular-команды применимы только при наличии Angular.
+Обязательный навык для TypeScript, JavaScript и Angular-проектов: заменяет встроенный поиск и ручное чтение файлов. Поддерживает React, Node.js, Express/Fastify/Koa, NestJS и JS/TS-файлы Vue-проектов, ESM и CommonJS (`require`, `module.exports`); `.vue` SFC не разбираются. Angular-команды применимы только при наличии Angular.
 
 - `search` — найти текст или регулярку по проекту, с фильтром по расширениям; пакетно — `requests=`/`requests_file=`;
 - `graph symbol` / `graph selector` — где объявлен класс, пайп, селектор, `$`-переменная, миксин;
