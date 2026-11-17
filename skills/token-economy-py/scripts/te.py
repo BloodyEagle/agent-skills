@@ -4,6 +4,7 @@
 Только стандартная библиотека, Python 3.9+. Вывод — компактный текст, не JSON.
 
     te.py graph symbol NAME [NAME…] | deps FILE | rdeps FILE | path A B | node FILE | cycles | stats | build
+    te.py graph hotspots [--top N] [--file FILE] [--since 90d|YYYY-MM-DD] [--max-commits N]
     te.py outline FILE [--docs]
     te.py search QUERY [--ext .py,.yaml] [--re] [-i] [-l] [--path DIR] [--limit N]
     te.py sig dotted.name [--doc]
@@ -17,12 +18,14 @@
 import argparse
 import ast
 import json
+import math
 import os
 import re
 import stat
 import subprocess
 import sys
 from collections import deque
+from datetime import datetime, timezone
 from importlib.machinery import EXTENSION_SUFFIXES, PathFinder
 from pathlib import Path
 
@@ -655,6 +658,10 @@ def tarjan_runtime(nodes):
 
 def cmd_graph(a):
     root = a.root
+    if a.op == "hotspots":
+        # hotspots не требует графа — git-сигналы отвечают до ensure_graph, кэш графа не трогается
+        print(run_hotspots(root, a))
+        return
     if a.op in ("deps", "rdeps", "node", "path"):
         a.args = [graph_query(root, q) for q in a.args]
     if a.op == "build":
@@ -775,6 +782,353 @@ def cmd_graph(a):
                   + ", ".join(f"{k}({v})" for k, v in sorted(ext.items(), key=lambda x: -x[1])[:15]))
         return
     fail("неизвестная операция графа")
+
+
+# ---------- git-сигналы (graph hotspots) ----------
+# Порт scripts/git-signals.js из token-economy-ts (план git-hotspots): те же формулы и тот же
+# текстовый вывод, чтобы агент не переучивался между стеками. Источник идеи:
+# defendend/Claude-ast-index-search, src/commands/git_signals.rs. Только чтение git-истории:
+# граф и кэши скилла не трогаются; переименования не отслеживаются (--no-renames).
+
+GIT_SIGNALS_VERSION = 1
+GIT_SIGNALS_FILE = CACHE_DIR + "/git-signals.json"
+SIZE_READ_CAP = 5 * 1024 * 1024  # чтение ради churn/стр: крупнее размер не определяется
+MIN_LINES_FOR_RATIO = 50  # относительный churn имеет смысл для файлов от 50 строк
+BUGFIX_RE = re.compile(r"\b(fix|fixes|bug|hotfix|hotfixes|исправ|баг)\b", re.I)
+
+
+def _read_text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _git_dir(root):
+    """Каталог git-репозитория {dir, common} или None. Файловая проверка, без запуска git:
+    обычный репозиторий, worktree и submodule (у них .git — файл с «gitdir: …»)."""
+    dot = os.path.join(root, ".git")
+    if os.path.isdir(dot):
+        return {"dir": dot, "common": dot}
+    if os.path.isfile(dot):
+        m = re.search(r"^gitdir:\s*(.+)$", _read_text(dot) or "", re.M)
+        if not m:
+            return None
+        p = m.group(1).strip()
+        gdir = os.path.normpath(p if os.path.isabs(p) else os.path.join(root, p))
+        common = gdir
+        cd = _read_text(os.path.join(gdir, "commondir"))
+        if cd and cd.strip():
+            cd = cd.strip()
+            common = os.path.normpath(cd if os.path.isabs(cd) else os.path.join(gdir, cd))
+        return {"dir": gdir, "common": common}
+    return None
+
+
+def _read_head_sha(root):
+    """SHA текущего HEAD файлами, без запуска git: .git/HEAD → loose-файл ветки → packed-refs."""
+    g = _git_dir(root)
+    if not g:
+        return None
+    head = (_read_text(os.path.join(g["dir"], "HEAD")) or "").strip()
+    m = re.match(r"^ref:\s*(.+)$", head)
+    if not m:
+        return head if re.match(r"^[0-9a-f]{40}$|^[0-9a-f]{64}$", head) else None
+    ref = m.group(1).strip()
+    segments = ref.split("/")
+    for base in (g["dir"], g["common"]):  # loose-файл: worktree, затем общий каталог
+        v = _read_text(os.path.join(base, *segments))
+        if v and v.strip():
+            return v.strip()
+    for base in (g["common"], g["dir"]):  # упакованная ветка
+        packed = _read_text(os.path.join(base, "packed-refs"))
+        for line in (packed or "").split("\n"):
+            t = line.strip()
+            if not t or t.startswith("#") or t.startswith("^"):
+                continue
+            sp = t.find(" ")
+            if sp != -1 and t[sp + 1:] == ref:
+                return t[:sp]
+    return None
+
+
+def _rev_parse_head(root):
+    """Фолбэк: git rev-parse HEAD — только когда файловая раскладка не разобрана."""
+    try:
+        r = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, timeout=60)
+    except FileNotFoundError:
+        fail("git не найден в PATH")
+    if r.returncode != 0:
+        return None
+    return r.stdout.decode("utf-8", "replace").strip() or None
+
+
+def _is_shallow(root):
+    """Файл .git/shallow — то, что проверяет git rev-parse --is-shallow-repository, без спавна."""
+    g = _git_dir(root)
+    if not g:
+        return False
+    return any(os.path.isfile(os.path.join(base, "shallow")) for base in (g["dir"], g["common"]))
+
+
+def _resolve_since(raw):
+    """since: '<N>d' (дней от сегодня, по умолчанию 180) или дата YYYY-MM-DD. Дневная
+    гранулярность делает ключ кэша стабильным в течение суток."""
+    s = "180d" if raw in (None, "") else str(raw)
+    m = re.match(r"^(\d+)d$", s)
+    if m:
+        days = int(m.group(1))
+        if days < 1:
+            fail("since — число дней ≥ 1 или дата YYYY-MM-DD, получено: " + s)
+        return datetime.fromtimestamp(_now() - days * 86400, timezone.utc).strftime("%Y-%m-%d")
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return s
+    fail("since — число дней (<N>d) или дата YYYY-MM-DD, получено: " + s)
+
+
+def _now():
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _norm_rel(p):
+    s = str(p).replace("\\", "/")
+    while s.startswith("./"):
+        s = s[2:]
+    return s.rstrip("/")
+
+
+def _plural_ru(n, forms):  # [«1», «2–4», «5+»]
+    mod100, mod10 = n % 100, n % 10
+    if 11 <= mod100 <= 14:
+        return forms[2]
+    if mod10 == 1:
+        return forms[0]
+    if 2 <= mod10 <= 4:
+        return forms[1]
+    return forms[2]
+
+
+def collect_git_signals(root, since, max_commits, pathspec, head):
+    """Один проход git log --numstat: на файл — commits, churn, authors, bugfix, binary, last."""
+    args = ["git", "-C", root, "log", "--no-merges", "--no-renames", "--numstat", "--date=short",
+            "--format=%x01%H%x09%an%x09%ad%x09%s", "--since=" + since, "-n", str(max_commits)]
+    if pathspec:
+        args += ["--"] + list(pathspec)
+    try:
+        r = subprocess.run(args, capture_output=True, timeout=300)
+    except FileNotFoundError:
+        fail("git не найден в PATH")
+    out = r.stdout.decode("utf-8", "replace")
+    err = r.stderr.decode("utf-8", "replace")
+    # unborn-ветка (репозиторий без коммитов) — пустая история, а не сбой
+    if r.returncode != 0 and "does not have any commits yet" not in err.lower():
+        first = err.strip().split("\n")[0] if err.strip() else "код " + str(r.returncode)
+        fail("git log завершился с ошибкой: " + first)
+    files, cur, total = {}, None, 0
+    for raw in out.split("\n"):
+        line = raw.rstrip("\r")
+        if line.startswith("\x01"):
+            f = line[1:].split("\t")
+            cur = {"an": f[1] if len(f) > 1 else "", "ad": f[2] if len(f) > 2 else "", "s": "\t".join(f[3:])}
+            total += 1
+            continue
+        if cur is None or not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        path = "\t".join(parts[2:])
+        binary = parts[0] == "-" and parts[1] == "-"
+        e = files.setdefault(path, {"commits": 0, "churn": 0, "authors": set(), "bugfix": 0, "binary": False, "last": ""})
+        e["commits"] += 1
+        if binary:  # бинарник: коммит считается, churn не выдумывается
+            e["binary"] = True
+        else:
+            e["churn"] += int(parts[0]) + int(parts[1])
+        e["authors"].add(cur["an"])
+        if BUGFIX_RE.search(cur["s"]):
+            e["bugfix"] += 1
+        if cur["ad"] > e["last"]:
+            e["last"] = cur["ad"]
+    return {
+        "version": GIT_SIGNALS_VERSION,
+        "head": head,
+        "since": since,
+        "maxCommits": max_commits,
+        "pathspec": list(pathspec),
+        "shallow": _is_shallow(root),
+        "ceiling": total == max_commits,
+        "collectedAt": datetime.now(timezone.utc).isoformat(),
+        "commitsTotal": total,
+        "files": {p: {"commits": e["commits"], "churn": e["churn"], "authors": len(e["authors"]),
+                      "bugfix": e["bugfix"], "binary": e["binary"], "last": e["last"]} for p, e in files.items()},
+    }
+
+
+def _load_signals(root, since, max_commits, pathspec):
+    """Сбор с кэшем: валидный .token-economy/git-signals.json (head + since + max_commits +
+    pathspec + версия) отдаётся без запуска git; иначе один проход git log и запись кэша."""
+    if _git_dir(root) is None:
+        fail("не git-репозиторий (" + root + ")")
+    head = _read_head_sha(root)
+    if not head:
+        head = _rev_parse_head(root)  # фолбэк, когда файловая раскладка не разобрана
+    if not head:
+        hf = (_read_text(os.path.join(_git_dir(root)["dir"], "HEAD")) or "").strip()
+        m = re.match(r"^ref:\s*(.+)$", hf)
+        if not m:
+            fail("HEAD не определён: ни файлы .git, ни git rev-parse не помогли")
+        head = "unborn:" + m.group(1).strip()  # unborn-ветка: коммитов нет, это пустая история
+    cache = load_json(root, GIT_SIGNALS_FILE)
+    valid = (isinstance(cache, dict) and cache.get("version") == GIT_SIGNALS_VERSION
+             and cache.get("head") == head and cache.get("since") == since
+             and cache.get("maxCommits") == max_commits
+             and cache.get("pathspec") == list(pathspec)
+             and isinstance(cache.get("files"), dict)
+             and isinstance(cache.get("commitsTotal"), int))
+    if valid:
+        return cache, True
+    data = collect_git_signals(root, since, max_commits, pathspec, head)
+    try:
+        save_json(root, GIT_SIGNALS_FILE, data)
+    except OSError as e:
+        print("Предупреждение: кэш не записан (" + str(e) + ")", file=sys.stderr)
+    return data, False
+
+
+def percentile_ranks(data):
+    """Процентильные метки p50/p90/p97 по commits/churn/bugfix — внутри репозитория, не
+    абсолютные числа. Метка — старшая граница, которой значение достигло (0 метки не получает);
+    top — старшая метка файла по всем трём метрикам."""
+    paths = list(data["files"].keys())
+    metrics = ("commits", "churn", "bugfix")
+    priority = {"p97": 3, "p90": 2, "p50": 1}
+    bounds = {}
+    for m in metrics:
+        vals = sorted(data["files"][p][m] for p in paths)
+        bounds[m] = {}
+        for q in (50, 90, 97):
+            idx = max(0, min(-(-q * len(vals) // 100) - 1, len(vals) - 1)) if vals else 0
+            bounds[m]["p" + str(q)] = vals[idx] if vals else 0
+    labels, top = {}, {}
+    for p in paths:
+        labels[p], best = {}, None
+        for m in metrics:
+            v = data["files"][p][m]
+            if v <= 0:
+                labels[p][m] = None
+                continue
+            if v >= bounds[m]["p97"]:
+                mark = "p97"
+            elif v >= bounds[m]["p90"]:
+                mark = "p90"
+            elif v >= bounds[m]["p50"]:
+                mark = "p50"
+            else:
+                mark = None
+            labels[p][m] = mark
+            if mark and (best is None or priority[mark] > priority[best]):
+                best = mark
+        top[p] = best
+    return {"labels": labels, "top": top}
+
+
+def bugfix_ratio(entry):
+    """Доля багфиксов в коммитах файла, %; Math.round-паритет: floor(x + 0.5)."""
+    return math.floor(100 * entry["bugfix"] / entry["commits"] + 0.5) if entry["commits"] else 0
+
+
+def _file_lines(root, rel):
+    """Текущее число строк файла (чтение с потолком 5 МБ; крупнее или файл удалён — None)."""
+    try:
+        if os.stat(os.path.join(root, rel)).st_size > SIZE_READ_CAP:
+            return None
+        s = Path(os.path.join(root, rel)).read_bytes().decode("utf-8", "replace")
+    except OSError:
+        return None
+    if not s:
+        return 0
+    return s.count("\n") + (0 if s.endswith("\n") else 1)
+
+
+def _per_line(root, entry, rel):
+    """churn/стр: None для бинарников, файлов < 50 строк и файлов без определённого размера."""
+    if entry["binary"]:
+        return None
+    lines = _file_lines(root, rel)
+    if lines is None or lines < MIN_LINES_FOR_RATIO:
+        return None
+    return entry["churn"] / lines
+
+
+def _fmt2(x):
+    # toFixed(2)-паритет: у JS из двух возможных n выбирается большее → половина округляется вверх
+    return "{:.2f}".format(math.floor(x * 100 + 0.5) / 100)
+
+
+def _cells(root, entry, rel, labels=None):
+    per = _per_line(root, entry, rel)
+    labels = labels or {}
+    return [c for c in [
+        "коммитов " + str(entry["commits"]) + ((" (" + labels["commits"] + ")") if labels.get("commits") else ""),
+        "churn " + str(entry["churn"]) + ((" (" + labels["churn"] + ")") if labels.get("churn") else ""),
+        "авторов " + str(entry["authors"]),
+        "багфиксов " + str(entry["bugfix"]) + " (" + str(bugfix_ratio(entry)) + "%"
+            + ((", " + labels["bugfix"]) if labels.get("bugfix") else "") + ")",
+        ("churn/стр " + _fmt2(per)) if per is not None else None,
+    ] if c is not None]
+
+
+def _format_top(data, ranks, root, top_n):
+    files = list(data["files"].keys())
+    header = ("git-сигналы: " + str(data["commitsTotal"]) + " "
+              + _plural_ru(data["commitsTotal"], ("коммит", "коммита", "коммитов"))
+              + ", " + str(len(files)) + " " + _plural_ru(len(files), ("файл", "файла", "файлов"))
+              + ", since " + data["since"])
+    files.sort(key=lambda p: (-data["files"][p]["churn"], -data["files"][p]["commits"], p))
+    shown = files[:max(1, top_n)]
+    width = min(max([len(p) for p in shown] or [0]), 48)
+    lines = [header]
+    for i, p in enumerate(shown):
+        cells = _cells(root, data["files"][p], p)  # в top пер-меточные метки не показываются
+        if ranks["top"].get(p):
+            cells.append(ranks["top"][p])
+        lines.append(str(i + 1) + ". " + p.ljust(width) + "  " + "  ".join(cells))
+    return "\n".join(lines)
+
+
+def _format_file(data, ranks, rel, root):
+    entry = data["files"].get(rel)
+    if not entry:
+        return None
+    cells = _cells(root, entry, rel, ranks["labels"].get(rel))
+    cells.append("последний " + (entry["last"] or "—"))
+    return rel + "  " + "  ".join(cells)
+
+
+def run_hotspots(root, a):
+    """Точка вызова graph hotspots: аргументы argparse (--top/--file/--since/--max-commits)."""
+    if a.top < 1:
+        fail("top — целое ≥ 1, получено: " + str(a.top))
+    if a.max_commits < 1:
+        fail("max_commits — целое ≥ 1, получено: " + str(a.max_commits))
+    since = _resolve_since(a.since)
+    data, _ = _load_signals(root, since, a.max_commits, [])
+    ranks = percentile_ranks(data)
+    warn = []
+    if data.get("shallow"):
+        warn.append("ВНИМАНИЕ: shallow-клон, история неполная")
+    if data.get("ceiling"):
+        warn.append("просмотрено " + str(data["maxCommits"]) + " коммитов (потолок), история могла быть обрезана")
+    if not data["commitsTotal"]:
+        return "\n".join(warn + ["коммитов за период нет"])
+    if a.file:
+        rel = _norm_rel(a.file)
+        line = _format_file(data, ranks, rel, root)
+        if not line:
+            return "\n".join(warn + ["нет данных: " + rel + " не менялся за период (since " + since + ")"])
+        return "\n".join(warn + [line])
+    return "\n".join(warn + [_format_top(data, ranks, root, a.top)])
 
 
 # ---------- info (паспорт проекта одним вызовом) ----------
@@ -1540,10 +1894,14 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     g = sp.add_parser("graph", parents=[common])
-    g.add_argument("op", choices=["symbol", "deps", "rdeps", "path", "node", "cycles", "stats", "build"])
+    g.add_argument("op", choices=["symbol", "deps", "rdeps", "path", "node", "cycles", "stats", "build", "hotspots"])
     g.add_argument("args", nargs="*")
     g.add_argument("--depth", type=int, default=1)
     g.add_argument("--why", action="store_true")
+    g.add_argument("--top", type=int, default=15)
+    g.add_argument("--file", default="")
+    g.add_argument("--since", default="")
+    g.add_argument("--max-commits", type=int, default=2000)
 
     o = sp.add_parser("outline", parents=[common])
     o.add_argument("file")
