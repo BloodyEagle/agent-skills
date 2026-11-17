@@ -11,6 +11,7 @@ const { makeCtx, ensureIndex, buildIndex, docPath, classifyFor, CACHE_DIR } = re
 const { classify, pcreToRegExp, resolveInclude } = require('./lib/bitrix');
 const { parsePhp, parseLang, parseUrlRewrite, parseComponentParams, locateBody, lex, matchBrackets } = require('./lib/php');
 const { detectModx } = require('./lib/detect');
+const { computeMetrics, parseMetricsArgs, metricsRows, formatMetrics } = require('./lib/metrics');
 const {
   composerFramework, composerNamespace, structureVersion, modelTable, routeUriToRegExp,
 } = require('./lib/laravel');
@@ -90,7 +91,7 @@ function findNode(idx, q, allowList) {
   if (r) return r;
   r = pick(nodes.filter((n) => n.p.toLowerCase().includes(lq)));
   if (r) return r;
-  fail('не найдено в индексе: ' + q + coreHint(q));
+  fail('не найдено в индексе: ' + q + coreHint(q) + (args.op === 'metrics' ? ' (op=stats: список файлов графа)' : ''));
 }
 
 function bfs(idx, start, depth, reverse) {
@@ -380,6 +381,16 @@ const ops = {
     const r = runHotspots(ctx.root, args, hooks);
     out(r.text);
     if (r.exit) process.exit(r.exit);
+  },
+
+  metrics() {
+    const options = parseMetricsArgs(args);
+    const idx = ensureIndex(ctx);
+    const n = options.file === null ? null : findNode(idx, options.file);
+    const metrics = computeMetrics({files: idx.nodes.map(n => ({id: n.id, path: n.p})),
+      edges: idx.nodes.flatMap(n => n.edges.map(([to, type]) => ({from: n.id, to, type}))), depth: options.depth});
+    out(formatMetrics(metricsRows(metrics, n ? {id: n.id} : {top: options.top}),
+      {depth: options.depth, single: !!n, cycles: metrics.cycles, cachePath: path.join(ctx.root, CACHE_DIR, 'index.json')}));
   },
 
   path() {
