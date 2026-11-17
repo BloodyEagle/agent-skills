@@ -12,6 +12,7 @@ const path = require('path');
 const os = require('os');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const { computeMetrics, parseMetricsArgs, metricsRows, formatMetrics } = require('./lib/metrics');
 
 const CACHE_VERSION = 2;
 const CACHE_DIR = '.kt-cache';
@@ -2142,6 +2143,28 @@ function opNode(data, p, out) {
   out.push(L.join('\n'));
 }
 
+function opMetrics(data, p, out) {
+  let options;
+  try { options = parseMetricsArgs(p); } catch (e) { die(e.message); }
+  const paths = [...new Set([
+    ...data.files.map(f => f.rel),
+    ...data.xml.manifests.map(x => x.rel),
+    ...data.xml.layouts.map(x => x.rel),
+    ...data.xml.navs.map(x => x.rel),
+    ...data.xml.values.map(x => x.rel)
+  ])];
+  let id;
+  if (options.file !== null) {
+    id = resolveFileArg(data, options.file);
+    if (!id) die(options.file + ' не найден в графе (op=stats: список файлов графа)');
+  }
+  const metrics = computeMetrics({files: paths.map(rel => ({id: rel, path: rel})),
+    edges: data.edges, depth: options.depth});
+  const rows = metricsRows(metrics, id === undefined ? {top: options.top} : {id});
+  out.push(formatMetrics(rows, {depth: options.depth, single: id !== undefined,
+    cycles: metrics.cycles, cachePath: path.join(data.root, CACHE_DIR, 'index.json')}));
+}
+
 function opStats(data, p, out) {
   const L = [];
   const ktCount = data.files.filter(f => f.cls === 'kt').length;
@@ -3428,7 +3451,7 @@ function opHotspots(root, p) {
 
 const OPS = {
   info: opInfo, search: opSearch, symbol: opSymbol, outline: opOutline,
-  deps: opDeps, rdeps: opRdeps, path: opPath, node: opNode, stats: opStats,
+  deps: opDeps, rdeps: opRdeps, path: opPath, node: opNode, stats: opStats, metrics: opMetrics,
   impls: opImpls, manifest: opManifest, sig: opSig,
   room: opRoom, di: opDi, nav: opNav, res: opRes, api: opApi,
   read: opRead, patch: opPatch, create: opCreate,
