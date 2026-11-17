@@ -1,7 +1,7 @@
 ---
 name: token-economy-java
 version: 1.0.4
-description: Экономия токенов в проектах на Java 17+ и Spring Boot 3+ — поиск определений, статический граф связей (наследование, эвристики внедрения зависимостей, использование), оглавление класса, реализации интерфейса, HTTP-эндпоинты, бины, конфигурация с маскированием секретов, JPA-поля и репозитории, каталог таблиц и фрагментов миграций, слушатели событий и очередей, сигнатуры классов библиотек из jar без декомпиляции. Все команды — PowerShell. Правила стека — references/java.md.
+description: Экономия токенов в проектах на Java 17+ и Spring Boot 3+ — поиск определений, статический граф связей (наследование, эвристики внедрения зависимостей, использование), оглавление класса, реализации интерфейса, HTTP-эндпоинты, бины, конфигурация с маскированием секретов, JPA-поля и репозитории, каталог таблиц и фрагментов миграций, слушатели событий и очередей, сигнатуры классов библиотек из jar без декомпиляции, git-сигналы файлов (hotspots: коммиты, churn, багфиксы, авторы, процентили). Все команды — PowerShell. Правила стека — references/java.md.
 ---
 
 # Skill: token-economy-java
@@ -18,7 +18,7 @@ description: Экономия токенов в проектах на Java 17+ �
     "properties": {
       "op": {
         "type": "string",
-        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | impls | beans | endpoints | config | entities | table | listeners | sig | read | patch | create | build | selftest"
+        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | impls | beans | endpoints | config | entities | table | listeners | sig | read | patch | create | build | hotspots | selftest"
       },
       "payload": {
         "type": "object",
@@ -80,6 +80,8 @@ deps / rdeps / path / node / stats — граф связей между файл
 
 impls — наследники и реализации в индексируемых файлах (с глубиной `depth=3`, диапазон 1–6), до 60 результатов с ролью (service, repository…) и пометкой abstract. Принимает `name` или `file`; наличие роли не подтверждает попадание в Spring-контекст.
 
+hotspots — «где болит» по git-истории, только чтение истории, индекс Java не строится (`.jv-cache` не трогается). По каждому файлу, менявшемуся за период: `коммитов`, `churn` (сумма добавленных и удалённых строк; бинарники — коммит считается, churn нет), `авторов`, `багфиксов` (subject по `/\b(fix|fixes|bug|hotfix|hotfixes|исправ|баг)\b/i`; `\b` в JS — ASCII-граница, кириллические ветки на практике не срабатывают) и `churn/стр` (только файлы от 50 текущих строк; размер — текущее число строк файла, чтение с потолком 5 МБ). Процентили `p50/p90/p97` считаются внутри репозитория: метка `pNN` — «значение достигло NN-процентильной границы по этой метке»; в таблице top у файла печатается старшая из его меток, в `file=` — метка каждой метрики. Аргументы: `top` (по умолчанию 15), `file=ПУТЬ` (один файл: персональные метки и дата последнего касания), `since` (`<N>d` или `YYYY-MM-DD`, по умолчанию 180d), `max_commits` (потолок прохода, по умолчанию 2000, упор отмечается «история могла быть обрезана»). Сбор — один проход `git log --no-merges --no-renames`: переименования не отслеживаются (rename приходит как удаление + добавление), merge-коммиты не считаются. shallow-клон помечается «история неполная»; пустая история — «коммитов за период нет» (exit 0); каталог без git — «Ошибка: не git-репозиторий» (exit 1). Кэш — `.git-signals.json` в корне проекта; HEAD читается файлами `.git`, поэтому валидный кэш отдаётся даже без git в PATH.
+
 ### Spring
 
 beans — стереотипные классы (`@Service`, `@Component`, `@Repository`, `@Controller`, `@Configuration`, `@ConfigurationProperties`, `@FeignClient`…), репозитории Spring Data и `@Bean`-методы с типом результата, условиями (`@Profile`, `@Primary`, `@ConditionalOn…`) и внедряемыми зависимостями. Фильтр — `query`.
@@ -131,6 +133,8 @@ symbol / outline / rdeps / impls:
     node "<SCRIPTS_DIR>\jv.js" op=outline file=UserController
     node "<SCRIPTS_DIR>\jv.js" op=rdeps file=UserService depth=2
     node "<SCRIPTS_DIR>\jv.js" op=impls name=UserService
+    node "<SCRIPTS_DIR>\jv.js" op=hotspots top=10
+    node "<SCRIPTS_DIR>\jv.js" op=hotspots file=src/main/java/com/acme/UserService.java
 
 search (для ресурсов — `ext`):
 

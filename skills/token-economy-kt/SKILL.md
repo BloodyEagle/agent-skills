@@ -1,7 +1,7 @@
 ---
 name: token-economy-kt
 version: 1.0.4
-description: Экономия токенов в Kotlin/Android-проектах (Jetpack Compose и XML Views, Java interop) — поиск определений, статический граф связей (наследование, эвристики Hilt/Dagger, использование, вызовы Compose-функций, ViewBinding), оглавление класса и функций, реализации интерфейса, исходный манифест (компоненты, разрешения, intent-фильтры, deep link, exported-предупреждения), Room (сущности, таблицы, SQL-методы DAO), каталог DI (модули, @Provides/@Binds, привязки типов и потребители), навигация Compose/nav-xml, строковые ресурсы по локалям и отсутствующие переводы, Retrofit-endpoint'ы, анализ Gradle-конфигурации без запуска сборки (модули, SDK, version catalog), layout-файлы, id, строки, сигнатуры классов из jar и classes.jar внутри aar без декомпиляции. Все команды — PowerShell. Правила стека — references/kotlin.md.
+description: Экономия токенов в Kotlin/Android-проектах (Jetpack Compose и XML Views, Java interop) — поиск определений, статический граф связей (наследование, эвристики Hilt/Dagger, использование, вызовы Compose-функций, ViewBinding), оглавление класса и функций, реализации интерфейса, исходный манифест (компоненты, разрешения, intent-фильтры, deep link, exported-предупреждения), Room (сущности, таблицы, SQL-методы DAO), каталог DI (модули, @Provides/@Binds, привязки типов и потребители), навигация Compose/nav-xml, строковые ресурсы по локалям и отсутствующие переводы, Retrofit-endpoint'ы, анализ Gradle-конфигурации без запуска сборки (модули, SDK, version catalog), layout-файлы, id, строки, сигнатуры классов из jar и classes.jar внутри aar без декомпиляции, git-сигналы файлов (hotspots: коммиты, churn, багфиксы, авторы, процентили). Все команды — PowerShell. Правила стека — references/kotlin.md.
 ---
 # Skill: token-economy-kt
 Правила стека — `references/kotlin.md` в этом же каталоге скилла: прочитай перед первой командой сессии. Путь относительный от каталога скилла, а не от корня агента.
@@ -15,7 +15,7 @@ description: Экономия токенов в Kotlin/Android-проектах 
 "properties": {
 "op": {
 "type": "string",
-"description": "info | search | symbol | deps | rdeps | path | node | stats | outline | impls | manifest | room | di | nav | res | api | sig | read | patch | create | selftest"
+"description": "info | search | symbol | deps | rdeps | path | node | stats | outline | impls | manifest | room | di | nav | res | api | sig | read | patch | create | hotspots | selftest"
 },
 "payload": {
 "type": "object",
@@ -63,6 +63,8 @@ deps / rdeps / path / node / stats — граф связей между файл
 | binding | использование binding-класса layout-файла (ViewBinding) |
 Граф файловый, только для типов/функций проекта; разрешение пакетов, alias и перегрузок для `uses`/`calls` не моделируется. `deps`/`rdeps` принимают `file` либо `name`, показывают только прямых соседей (до 40 каждого вида), `depth` для них не используется. `path` — направленная кратчайшая цепочка (`a`/`b` либо `from`/`to`, `undirected=true` для обеих сторон). `node` показывает счётчики и до 10 входящих рёбер; `stats` — счётчики и топ-10. Внутрифайловые рёбра скрыты; no-match не доказывает отсутствия runtime-связи.
 impls — наследники и реализации типа (`name` или `file` как имя класса, `depth=3` по умолчанию), с ролью и пометкой abstract; сопоставление супертипов по имени, не анализ компилятора.
+### Git-сигналы
+hotspots — «где болит» по git-истории, только чтение истории, индекс Kotlin не строится (`.kt-cache` не трогается). По каждому файлу, менявшемуся за период: `коммитов`, `churn` (сумма добавленных и удалённых строк; бинарники — коммит считается, churn нет), `авторов`, `багфиксов` (subject по `/\b(fix|fixes|bug|hotfix|hotfixes|исправ|баг)\b/i`; `\b` в JS — ASCII-граница, кириллические ветки на практике не срабатывают) и `churn/стр` (только файлы от 50 текущих строк; размер — текущее число строк файла, чтение с потолком 5 МБ). Процентили `p50/p90/p97` считаются внутри репозитория: метка `pNN` — «значение достигло NN-процентильной границы по этой метке»; в таблице top у файла печатается старшая из его меток. Аргументы: `top` (по умолчанию 15), `file=ПУТЬ` (один файл: персональные метки и дата последнего касания), `since` (`<N>d` или `YYYY-MM-DD`, по умолчанию 180d), `max_commits` (потолок прохода, по умолчанию 2000, упор отмечается «история могла быть обрезана»). Сбор — один проход `git log --no-merges --no-renames`: переименования не отслеживаются (rename приходит как удаление + добавление), merge-коммиты не считаются. shallow-клон помечается «история неполная»; пустая история — «коммитов за период нет» (exit 0); каталог без git — «Ошибка: не git-репозиторий» (exit 1). Кэш — `.git-signals.json` в корне проекта; HEAD читается файлами `.git`, поэтому валидный кэш отдаётся даже без git в PATH.
 ### Android
 manifest — манифест по модулям: application (label, theme, allowBackup, класс), компоненты с резолвом в классы проекта (`файл:строка`), intent-фильтры (actions, categories, deep link `scheme://host`), exported (явный или вычисленный по intent-filter), provider authorities, `uses-permission`/`uses-feature`, предупреждения об exported без permission. Фильтры: `kind`, `query`, `module`. Фильтры `kind`/`query` применяются к компонентам, не к global permissions/application; namespace требуется явно из конфигурации модуля. Анализируется исходный XML, не merged manifest; неявный exported — эвристика по intent-filter, а не проверка Android API-level.
 room — база Room без чтения исходников: все `@Entity` (таблицы), `@Dao` и `@Database` (сущности, версия, DAO-методы). `table=имя` — сущность с колонками (PK из primary-конструктора), ForeignKey/индексы и все DAO-методы, трогающие таблицу (SQL `@Query` склеивается из конкатенации строк; `@Insert`/`@Update`/`@Delete`/`@Upsert` сопоставляются по типу параметра, включая `List<Entity>`). `cls=Имя` — методы DAO с SQL и списком таблиц.
@@ -122,6 +124,8 @@ Android:
     node "<SCRIPTS_DIR>\kt.js" op=node file=UserDao
     node "<SCRIPTS_DIR>\kt.js" op=path a=MainActivity b=UserDao undirected=true
     node "<SCRIPTS_DIR>\kt.js" op=stats
+    node "<SCRIPTS_DIR>\kt.js" op=hotspots top=10
+    node "<SCRIPTS_DIR>\kt.js" op=hotspots file=app/src/main/java/com/acme/Foo.kt
     node "<SCRIPTS_DIR>\kt.js" op=sig name=androidx.room.RoomDatabase
     node "<SCRIPTS_DIR>\kt.js" op=sig name=retrofit2.Retrofit jar=retrofit
 

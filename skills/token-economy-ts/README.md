@@ -18,12 +18,13 @@ node --test tests/token-economy-ts/react-component.test.js
 node --test tests/token-economy-ts/ref-corpus.test.js
 node --test tests/token-economy-ts/ref-read.test.js
 node --test tests/token-economy-ts/edit-docs.test.js
+node --test tests/token-economy-ts/hotspots.test.js
 ```
 
 Весь набор один раз в конце:
 
 ```text
-node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/search.test.js tests/token-economy-ts/ranges.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/react-detect.test.js tests/token-economy-ts/react-component.test.js tests/token-economy-ts/ref-corpus.test.js tests/token-economy-ts/ref-read.test.js tests/token-economy-ts/edit-docs.test.js
+node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/search.test.js tests/token-economy-ts/ranges.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/react-detect.test.js tests/token-economy-ts/react-component.test.js tests/token-economy-ts/ref-corpus.test.js tests/token-economy-ts/ref-read.test.js tests/token-economy-ts/edit-docs.test.js tests/token-economy-ts/hotspots.test.js
 ```
 
 Тесты создают и удаляют собственные временные проекты; `edit_symbol` в режиме auto может загрузить уже установленный TypeScript (в том числе найденный от каталога скрипта). `npm install` не нужен. В существующих suites проверяются также сигнатуры (`symbols.test.js`), realpath/junction confinement, root exports, missing-dependency fallback, Unicode, Windows-регистр, фантомы из комментариев/шаблонов, JSON completeness и две цепочки по 6200 файлов (линейная и замкнутая).
@@ -32,6 +33,13 @@ node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.
 
 ```text
 node skills/token-economy-ts/scripts/graph-tool.js op=selftest
+```
+
+Git-сигналы «где болит» (таблица top или один файл):
+
+```text
+node skills/token-economy-ts/scripts/graph-tool.js op=hotspots top=10
+node skills/token-economy-ts/scripts/graph-tool.js op=hotspots file=src/merge.ts since=90d
 ```
 
 Тип проекта определяется автоматически при `graph op=info` (`projectType`: `angular` / `react` / `nest` / `node` / `ts` — по angular.json, `@angular/core`, `react` (>= 16), `@nestjs/*`, серверным пакетам в package.json). Универсальные правила — в SKILL.md; Angular-специфика (селекторы, пайпы, generate) вынесена в references/angular.md, React-специфика (использования компонентов в JSX через `op=component`, хуки, стили-импорты) — в references/react.md; читай профиль своего `projectType`, а перед `op=component` — React-профиль даже при другом типе: применимость команды определяется отдельным React-гейтом.

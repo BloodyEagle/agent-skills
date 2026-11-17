@@ -1,7 +1,7 @@
 ---
 name: token-economy-php
 version: 1.2.3
-description: Экономия токенов в любых PHP-проектах. Универсальный режим (CMS не определена) — поиск определений, граф классов и функций, оглавления, безопасное чтение и правка файлов в cp1251. Режим 1С-Битрикс (старое API до D7 и D7) — компоненты, события, языковые сообщения, схема таблиц, маршруты. Режим Laravel 8–13 — маршруты, модели Eloquent, привязки контейнера, Blade, команды и расписание. Режим MODX (Revolution/Evolution) — файловые элементы, теги шаблонов. Все команды — PowerShell. Правила стека — references/php.md.
+description: Экономия токенов в любых PHP-проектах. Универсальный режим (CMS не определена) — поиск определений, граф классов и функций, оглавления, безопасное чтение и правка файлов в cp1251. Режим 1С-Битрикс (старое API до D7 и D7) — компоненты, события, языковые сообщения, схема таблиц, маршруты. Режим Laravel 8–13 — маршруты, модели Eloquent, привязки контейнера, Blade, команды и расписание. Режим MODX (Revolution/Evolution) — файловые элементы, теги шаблонов. Общие операции во всех режимах — git-сигналы файлов (hotspots: коммиты, churn, багфиксы, авторы, процентили). Все команды — PowerShell. Правила стека — references/php.md.
 ---
 
 # Skill: token-economy-php
@@ -18,7 +18,7 @@ description: Экономия токенов в любых PHP-проектах.
     "properties": {
       "op": {
         "type": "string",
-        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | routes | model | container | blade | console | element | tpl | read | patch | patch_symbol | create | build | selftest"
+        "description": "info | search | symbol | deps | rdeps | path | node | stats | outline | component | events | lang | route | table | routes | model | container | blade | console | element | tpl | read | patch | patch_symbol | create | build | hotspots | selftest"
       },
       "payload": {
         "type": "object",
@@ -73,6 +73,8 @@ deps / rdeps / path / node / stats — граф связей. `deps`/`rdeps`: `d
 | template / lang (Blade) | `view('name')`, `@extends`, `__('group.key')` → шаблоны и локали | Laravel |
 | snippet / chunk / include | теги `[[!snippet]]`/`[[$chunk]]`, `runSnippet`/`getChunk`, Fenom `file:` → файловые элементы | MODX |
 
+hotspots — «где болит» по git-истории во всех режимах, только чтение истории, индекс PHP не строится (`.bx-cache` не трогается). По каждому файлу, менявшемуся за период: `коммитов`, `churn` (сумма добавленных и удалённых строк; бинарники — коммит считается, churn нет), `авторов`, `багфиксов` (subject по `/\b(fix|fixes|bug|hotfix|hotfixes|исправ|баг)\b/i`; `\b` в JS — ASCII-граница, кириллические ветки на практике не срабатывают) и `churn/стр` (только файлы от 50 текущих строк; размер — текущее число строк файла, чтение с потолком 5 МБ). Процентили `p50/p90/p97` считаются внутри репозитория: метка `pNN` — «значение достигло NN-процентильной границы по этой метке»; в таблице top у файла печатается старшая из его меток, в `file=` — метка каждой метрики. Аргументы: `top` (по умолчанию 15), `file=ПУТЬ` (один файл: персональные метки и дата последнего касания), `since` (`<N>d` или `YYYY-MM-DD`, по умолчанию 180d), `max_commits` (потолок прохода, по умолчанию 2000, упор отмечается «история могла быть обрезана»). Сбор — один проход `git log --no-merges --no-renames`: переименования не отслеживаются (rename приходит как удаление + добавление), merge-коммиты не считаются. В режиме Битрикса `bitrix/modules/**` и `upload/**` не считаются — вендор и пользовательские файлы, не код проекта. shallow-клон помечается «история неполная»; пустая история — «коммитов за период нет» (exit 0); каталог без git — «Ошибка: не git-репозиторий» (exit 1). Кэш — `.git-signals.json` в корне проекта; HEAD читается файлами `.git`, поэтому валидный кэш отдаётся даже без git в PATH.
+
 ### Изменение
 
 patch — точная замена фрагмента с сохранением кодировки (UTF-8 / cp1251 / UTF-16LE/BE с BOM), BOM и перевода строк (CRLF / LF). Ровно одно вхождение (`"all":true` — все). Символ, который нельзя записать в cp1251, отменяет запись целиком; некорректный UTF-16 отклоняется.
@@ -121,6 +123,11 @@ path / node / stats:
 
     node "<SCRIPTS_DIR>\bx.js" op=path from=index.php to=App\Core\Launcher
     node "<SCRIPTS_DIR>\bx.js" op=node file=src/Services/Billing.php offset=50
+
+hotspots (git-сигналы «где болит»):
+
+    node "<SCRIPTS_DIR>\bx.js" op=hotspots top=10
+    node "<SCRIPTS_DIR>\bx.js" op=hotspots file=src/Services/Billing.php
 
 outline:
 
