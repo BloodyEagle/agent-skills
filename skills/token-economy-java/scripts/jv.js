@@ -8,7 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
 const { posix, safePath, listFiles, readText, encodeText, writeAtomic } = require('./lib/fsx');
-const { makeCtx, ensureIndex, buildIndex, loadJson } = require('./lib/index');
+const { makeCtx, ensureIndex, buildIndex, loadJson, CACHE_DIR } = require('./lib/index');
+const { computeMetrics, parseMetricsArgs, metricsRows, formatMetrics } = require('./lib/metrics');
 const { buildInfo } = require('./lib/build');
 const { parseYaml, parseProperties, show, norm, isConfigFile, redactLines } = require('./lib/config');
 const S = require('./lib/spring');
@@ -43,7 +44,7 @@ function safeAbs(rel) {
 }
 
 // ---------- поиск узла ----------
-function findNode(idx, q) {
+function findNode(idx, q, missingHint = '') {
   const raw = String(q || '').trim();
   if (!raw) fail('не указан файл или класс');
   const lq = posix(raw).toLowerCase();
@@ -66,7 +67,7 @@ function findNode(idx, q) {
   if (r) return r;
   r = pick(nodes.filter((n) => n.p.toLowerCase().includes(lq)));
   if (r) return r;
-  fail('не найдено в индексе: ' + raw);
+  fail('не найдено в индексе: ' + raw + missingHint);
 }
 
 function bfs(idx, start, depth, reverse, only) {
@@ -253,6 +254,20 @@ const ops = {
     out(r.text);
     if (r.exit) process.exit(r.exit);
   },
+
+  metrics() {
+    const options = parseMetricsArgs(args);
+    const idx = ensureIndex(ctx);
+    const node = options.file === null ? null : findNode(idx,
+      posix(String(options.file)).replace(/^\.\//, ''), ' (op=stats: список файлов графа)');
+    const metrics = computeMetrics({files: idx.nodes.map(n => ({id: n.id, path: n.p})),
+      edges: idx.nodes.flatMap(n => n.edges.map(([to, type]) => ({from: n.id, to, type}))),
+      depth: options.depth});
+    const rows = metricsRows(metrics, node ? {id: node.id} : {top: options.top});
+    out(formatMetrics(rows, {depth: options.depth, single: node !== null,
+      cycles: metrics.cycles, cachePath: path.join(ctx.root, CACHE_DIR, 'index.json')}));
+  },
+
   path() {
     if (!args.from || !args.to) fail('укажите from и to');
     const idx = ensureIndex(ctx);
