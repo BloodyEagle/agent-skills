@@ -21,6 +21,7 @@ const {parseSymbols, sourceCodeMask, isArrowExpression} = require('./lib/symbols
 const {entityRanges} = require('./lib/ranges');
 const {parseRefLocator, SUPPORTED_READ_KINDS} = require('./lib/refs');
 const {maskCode} = require('./lib/mask');
+const {runHotspots} = require('./git-signals');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
@@ -2110,10 +2111,18 @@ try {
 }
 
 const op = args.op;
-if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | component | path | cycles | stats | read');
-if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'component', 'path', 'cycles', 'stats', 'read', 'selftest'].includes(op))
+if (!op) fail('Укажите op: info | build | node | deps | rdeps | symbol | selector | component | path | cycles | stats | read | hotspots');
+if (!['info', 'build', 'node', 'deps', 'rdeps', 'symbol', 'selector', 'component', 'path', 'cycles', 'stats', 'read', 'hotspots', 'selftest'].includes(op))
     fail('Неизвестный op: ' + op);
 if (args.format && args.format !== 'table') fail('format поддерживает только table');
+
+// hotspots не требует графа — git-сигналы отвечают до ensureGraph, граф и его кэш не трогаются.
+// Вывод текстовый, не JSON: читаемая таблица (формат — в git-signals.js и SKILL.md).
+if (op === 'hotspots') {
+    const r = runHotspots(cwd, args);
+    console.log(r.text);
+    process.exit(r.exit);
+}
 
 // read не требует графа — отвечает до ensureGraph
 if (op === 'read') {
