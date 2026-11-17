@@ -17,7 +17,9 @@ const phpFile = path.join(path.dirname(bx), 'lib/php.js');
 
 function project(t, files = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bx-audit-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // Windows: антивирус/индексатор может держать хендл на свежем .bx-cache —
+  // ENOTEMPTY без ретраев. Повтор не ослабляет ассерты, только удаление.
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   for (const [rel, data] of Object.entries(files)) {
     const file = path.join(root, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
