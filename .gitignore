@@ -16,3 +16,4 @@ graph-deps.json
 .env
 .idea/
 .megamemory/
+tasks/
