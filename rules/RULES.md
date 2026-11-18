@@ -14,7 +14,7 @@
 
 | Стек | Скилл | Правила стека (в каталоге скилла) |
 |---|---|---|
-| TypeScript / JavaScript / Angular / React | token-economy-ts | references/typescript.md; профильные references/angular.md / references/react.md — после определения типа или перед профильной операцией |
+| TypeScript / JavaScript / Angular / React | token-economy-ts | references/typescript.md + references/angular.md + references/react.md |
 | PHP / 1С-Битрикс / Laravel / MODX | token-economy-php | references/php.md |
 | Java / Spring Boot | token-economy-java | references/java.md |
 | Python | token-economy-py | references/python.md |
