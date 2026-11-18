@@ -161,6 +161,16 @@ function readText(abs) {
 function encodeText(text, enc, bom) {
   enc = String(enc).toLowerCase().replace(/-/g, '');
   if (enc === 'utf16le' || enc === 'utf16be') {
+    for (let i = 0; i < text.length; i++) {
+      const unit = text.charCodeAt(i);
+      if (unit >= 0xD800 && unit <= 0xDBFF) {
+        const next = text.charCodeAt(i + 1);
+        if (!(next >= 0xDC00 && next <= 0xDFFF)) throw new Error('некорректный UTF-16: одиночный high surrogate в позиции ' + i);
+        i++;
+      } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+        throw new Error('некорректный UTF-16: одиночный low surrogate в позиции ' + i);
+      }
+    }
     const body = Buffer.from(text, 'utf16le');
     if (enc === 'utf16be') body.swap16();
     return bom ? Buffer.concat([Buffer.from(enc === 'utf16be' ? [0xFE, 0xFF] : [0xFF, 0xFE]), body]) : body;

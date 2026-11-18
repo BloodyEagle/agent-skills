@@ -6,8 +6,13 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const {buildSignalsCacheSuite} = require('./hotspots-suite');
 
 const SKILLS = ['token-economy-ts', 'token-economy-kt', 'token-economy-java', 'token-economy-php'];
+
+for (const skill of SKILLS) {
+    buildSignalsCacheSuite(skill, path.resolve(__dirname, '..', 'skills', skill, 'scripts', 'git-signals.js'));
+}
 
 test('hotspots: четыре JS-копии git-signals.js совпадают байт в байт (sha256)', () => {
     const digests = SKILLS.map((skill) => {

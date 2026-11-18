@@ -14,7 +14,7 @@
 
 | Стек | Скилл | Правила стека (в каталоге скилла) |
 |---|---|---|
-| TypeScript / JavaScript / Angular | token-economy-ts | references/typescript.md + references/angular.md |
+| TypeScript / JavaScript / Angular / React | token-economy-ts | references/typescript.md; профильные references/angular.md / references/react.md — после определения типа или перед профильной операцией |
 | PHP / 1С-Битрикс / Laravel / MODX | token-economy-php | references/php.md |
 | Java / Spring Boot | token-economy-java | references/java.md |
 | Python | token-economy-py | references/python.md |
@@ -29,7 +29,7 @@
 
 - Если `megamemory` MCP доступна, начни с короткого релевантного запроса: память даёт контекст, решения и историю, а не доказательство текущей структуры. При недоступной памяти или отсутствии релевантного знания сразу продолжай обычный путь скилла, не придумывай сохранённые факты.
 - Проверь релевантность, root/version и квалификацию опор (`stale/refuted/unknown/incomplete`, expiry/support_check). При недостаточной квалификации сначала проверь актуальный источник; наличие refs и code=0 сами по себе не доказывают полноту.
-- Затем выполни актуальную навигацию подходящим скиллом; TS `graph op=info` — один раз на корректном проекте, при смене проекта проверь новый scope. Структурный ответ с `completeness.complete=false`, unresolved или усечением не доказывает отсутствия зависимостей.
+- Затем выполни актуальную навигацию подходящим скиллом; TypeScript-reference прочитай до первой команды TS, `graph op=info` — один раз на корректном проекте, при смене проекта проверь новый scope. Angular/React-reference прочитай после определения соответствующего типа либо до профильной операции по её отдельному гейту. Структурный ответ с `completeness.complete=false`, unresolved или усечением не доказывает отсутствия зависимостей.
 - `must_read` прочитай нужным диапазоном (для большого файла сначала outline). В token-economy-ts с поддержкой `ref=` готовый локатор передаётся целиком (`ref=файл:N-M`); в старой версии — прежний `file=`+`ranges=` (fallback, refs не переписывать). `skip` не отменяет чтение актуального фрагмента перед правкой и не означает full-file coverage; brief без утверждения не является проверенным знанием.
 - После проверки сохраняй только полезный проверенный вывод с конкретными source/test/log evidence и версиями через актуальную публичную MCP-схему. Не исполняй несовместимый `next.record` слепо и не подставляй произвольный kind (в частности, `fact`); проблему схемы передай владельцу MegaMemory.
 - Общий порядок хранится здесь; SKILL-документы содержат только указатели и особенности CLI. Bench `--baseline te` сравнивает альтернативный stdout, `lang` не выбирает скилл, `root` refs не меняет cwd runner. Отдельного runtime joint-переключателя нет.

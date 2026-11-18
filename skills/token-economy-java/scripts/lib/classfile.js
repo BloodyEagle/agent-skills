@@ -465,7 +465,7 @@ function describe(cf, opts) {
     const src = f.sig !== undefined ? f.sig : f.desc, r = readType(src, 0);
     if (r.pos !== src.length || r.kind === 'V' || (f.sig !== undefined && !['L', 'T', '['].includes(r.kind))) signatureError(r.pos, 'неверный тип поля или лишние данные');
     const t = r.text;
-    lines.push('  ' + (f.acc & 0x0008 ? 'static ' : '') + (f.acc & 0x0010 ? 'final ' : '') + t + ' ' + f.name);
+    lines.push('  ' + (f.dep ? '@Deprecated ' : '') + (f.acc & 0x0008 ? 'static ' : '') + (f.acc & 0x0010 ? 'final ' : '') + t + ' ' + f.name);
   }
   for (const m of cf.methods) {
     if (!want(m.acc) || (m.acc & 0x1000) || (m.acc & 0x0040) || m.name === '<clinit>') continue;

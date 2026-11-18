@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const {SOURCE_EXT, walk} = require('./lib/files');
+const {readRequestsFile} = require('./lib/requests-file');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin → env.
@@ -238,13 +239,8 @@ function runSearchBatch() {
         }
     }
     if (args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
-        const rf = String(args.requests_file);
-        const rfAbs = path.resolve(cwd, rf);
-        const rfRel = path.relative(cwd, rfAbs);
-        if (rfRel === '..' || rfRel.startsWith('..' + path.sep) || path.isAbsolute(rfRel))
-            fail('requests_file вне рабочей директории запрещён: ' + rf);
         try {
-            requests = JSON.parse(fs.readFileSync(fs.realpathSync(rfAbs), 'utf8'));
+            requests = readRequestsFile(String(args.requests_file), cwd);
         } catch (e) {
             fail('Не удалось прочитать requests_file: ' + e.message);
         }

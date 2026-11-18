@@ -37,10 +37,12 @@ function fits(text) {
     return Buffer.byteLength(text) + 1 <= MAX_BYTES && text.split('\n').length <= MAX_LINES;
 }
 
-function histogram(values) {
+function histogram(values, omitted = 0, omittedRequests = 0) {
     const entries = Object.entries(values);
-    return entries.slice(0, 12).map(([name, count]) => `${clip(name, 35)}=${count}`).join(', ')
-        + (entries.length > 12 ? `; ещё ${entries.length - 12} групп` : '');
+    const shortened = entries.some(([name]) => clip(name, 35) !== name);
+    return entries.map(([name, count], index) => `${shortened ? `#${index + 1} ` : ''}${clip(name, 35)}=${count}`).join(', ')
+        + (shortened ? '; ключи сокращены, номера различают группы' : '')
+        + (omitted ? `; ещё ${omitted} групп (${omittedRequests} запросов)` : '');
 }
 
 function formatInfo(result) {
@@ -48,16 +50,17 @@ function formatInfo(result) {
     const time = result.time;
     return [
         `Запросов: ${result.requests}; страниц: ${result.pages}`,
-        `Размеры тел: ${formatBytes(bytes.uncompressed)} несжатых; ${boundedBytes(bytes.transferred_known, bytes.transferred_is_lower_bound, bytes.transferred_unknown_count, ['записи', 'записей'], 'передано')}; ${boundedBytes(bytes.compression, bytes.unknownCompression > 0, bytes.unknownCompression, ['пары', 'пар'], bytes.unknownCompression ? 'разницы размеров' : 'экономии')}`,
+        `Размеры тел: ${formatBytes(bytes.uncompressed)} несжатых; ${boundedBytes(bytes.transferred_known, bytes.transferred_is_lower_bound, bytes.transferred_unknown_count, ['записи', 'записей'], 'передано')}; ${compressionBytes(bytes.compression, bytes.unknownCompression)}`,
         `Неизвестные размеры: несжатые=${bytes.unknownUncompressed}; оценка по bodySize=${bytes.estimatedUncompressed}`,
         `Время: p50=${formatTime(time.p50)}, p95=${formatTime(time.p95)}, p99=${formatTime(time.p99)}, max=${formatTime(time.max)}`,
         `Сумма длительностей: ${formatTime(time.total)}; интервал записи: ${formatTime(time.span)}${time.spanIncomplete ? ' (нижняя оценка)' : ''}; неизвестно=${time.unknown}`,
-        `Статусы: ${histogram(result.statuses) || '(нет)'}`,
-        `Методы: ${histogram(result.methods) || '(нет)'}`,
+        `Статусы: ${histogram(result.statuses, result.omittedStatuses, result.omittedStatusRequests) || '(нет)'}`,
+        `Методы: ${histogram(result.methods, result.omittedMethods, result.omittedMethodRequests) || '(нет)'}`,
         `Домены: ${result.domains.map(row => `${clip(row.domain, 50)} (${row.count})`).join(', ') || '(нет)'}`,
         `MIME: ${result.contentTypes.map(row => `${clip(row.type, 45)} ${aggregateBytes(row.uncompressed, row.unknownUncompressed)}`).join(', ') || '(нет)'}`,
         ...(result.omittedDomains || result.omittedContentTypes
-            ? [`... ещё доменов ${result.omittedDomains}, MIME ${result.omittedContentTypes}; --limit N`] : [])
+            ? [`... ещё доменов ${result.omittedDomains}, MIME ${result.omittedContentTypes}; --limit N`] : []),
+        ...(result.truncated ? ['... truncated: true; поля или группы сокращены.'] : [])
     ].join('\n');
 }
 
@@ -70,6 +73,12 @@ function boundedBytes(known, lower, unknownCount, forms, label) {
     if (!lower) return amount;
     const word = unknownCount % 10 === 1 && unknownCount % 100 !== 11 ? forms[0] : forms[1];
     return `${amount} (неизвестно для ${unknownCount} ${word})`;
+}
+
+function compressionBytes(known, unknownCount) {
+    if (!unknownCount) return `${formatBytes(known)} экономии`;
+    const word = unknownCount % 10 === 1 && unknownCount % 100 !== 11 ? 'пары' : 'пар';
+    return `известная часть разницы размеров: ${formatBytes(known)} (неизвестно для ${unknownCount} ${word})`;
 }
 
 function entryRow(row) {
@@ -219,11 +228,28 @@ function noteRemoval(array, remove, result) {
     }
 }
 
+function omitHistogram(result, key, remove) {
+    const keys = Object.keys(result[key]).slice(-remove);
+    const omitted = key === 'statuses' ? 'omittedStatuses' : 'omittedMethods';
+    const requests = key === 'statuses' ? 'omittedStatusRequests' : 'omittedMethodRequests';
+    result[omitted] = (result[omitted] || 0) + keys.length;
+    result[requests] = (result[requests] || 0) + keys.reduce((sum, name) => sum + result[key][name], 0);
+    for (const name of keys) delete result[key][name];
+    result.truncated = true;
+}
+
 function formatResult(original, options = {}) {
     const isHelp = Boolean(original) && original.command === 'help' && typeof original.message === 'string';
     const state = { truncated: false, root: original, isHelp };
     const result = boundedCopy(original, state);
     if (state.truncated) result.truncated = true;
+    if (result.command === 'info' && !options.json) {
+        for (const key of ['statuses', 'methods']) {
+            const names = Object.keys(result[key]);
+            if (names.length > 12) omitHistogram(result, key, names.length - 12);
+            if (Object.keys(result[key]).some(name => clip(name, 35) !== name)) result.truncated = true;
+        }
+    }
     const render = () => options.json ? JSON.stringify(result, null, options.pretty ? 2 : undefined) : renderText(result);
     const arraySizes = new WeakMap();
     const sizeOf = value => {
@@ -249,14 +275,11 @@ function formatResult(original, options = {}) {
             text = render();
             continue;
         }
-        const mapKey = options.json && ['statuses', 'methods'].filter(key => result[key] && Object.keys(result[key]).length)
+        const mapKey = ['statuses', 'methods'].filter(key => result[key] && Object.keys(result[key]).length)
             .sort((a, b) => JSON.stringify(result[b]).length - JSON.stringify(result[a]).length)[0];
         if (mapKey) {
-            const keys = Object.keys(result[mapKey]);
-            const remove = Math.max(1, Math.floor(keys.length / 2));
-            for (let i = keys.length - remove; i < keys.length; i++) delete result[mapKey][keys[i]];
-            const omitted = mapKey === 'statuses' ? 'omittedStatuses' : 'omittedMethods';
-            result[omitted] = (result[omitted] || 0) + remove;
+            const remove = Math.max(1, Math.floor(Object.keys(result[mapKey]).length / 2));
+            omitHistogram(result, mapKey, remove);
             text = render();
             continue;
         }

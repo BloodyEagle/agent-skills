@@ -35,6 +35,13 @@ function cli(root, args) {
   });
 }
 
+function payloadCli(root, payload, argv = []) {
+  fs.writeFileSync(path.join(root, 'payload.json'), JSON.stringify(payload));
+  return spawnSync(process.execPath, ['--max-old-space-size=64', bx, 'root=' + root, '@payload.json', ...argv], {
+    cwd: root, encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024,
+  });
+}
+
 function success(result) {
   assert.ifError(result.error);
   assert.equal(result.status, 0, (result.stdout + result.stderr).slice(0, 1200));
@@ -318,7 +325,71 @@ for (const be of [false, true]) {
     const root = project(t, { 'broken.php': Buffer.concat([utf16('', be), Buffer.from([0x41])]) });
     assert.throws(() => fsx.readText(path.join(root, 'broken.php')), /UTF-16|utf16|encoded data/i);
   });
+  test('F04: ' + enc + ' проверяет новые пары во всех путях записи из JSON', (t) => {
+    const source = '<?php\r\nfunction greeting() { return "old"; }\r\n';
+    const root = project(t, { 'greeting.php': utf16(source, be) });
+    const file = path.join(root, 'greeting.php');
+    const before = fs.readFileSync(file);
+    for (const lone of ['\uD800', '\uDC00']) {
+      for (const payload of [
+        { op: 'patch', file: 'greeting.php', old: 'old', new: lone },
+        { op: 'patch_symbol', file: 'greeting.php', symbol: 'greeting', body: 'return "' + lone + '";', dry: false },
+        { op: 'patch_symbol', file: 'greeting.php', symbol: 'greeting', body: 'return "' + lone + '";' },
+        { op: 'create', file: 'new/invalid.php', text: lone, enc },
+      ]) {
+        const result = payloadCli(root, payload);
+        assert.ifError(result.error);
+        assert.equal(result.status, 1, result.stdout + result.stderr);
+        assert.match(result.stdout, /некорректный UTF-16/);
+        assert.deepEqual(fs.readFileSync(file), before);
+        assert.equal(fs.existsSync(path.join(root, 'new')), false, 'create отклонён до mkdir/tmp');
+        assert.equal(fs.readdirSync(root).some((name) => name.endsWith('.bxtmp')), false);
+      }
+    }
+  });
+  test('F04: ' + enc + ' принимает новую non-BMP пару в patch/create/patch_symbol', (t) => {
+    const source = '<?php\r\nfunction greeting() { return "old"; }\r\n';
+    const root = project(t, { 'greeting.php': utf16(source, be) });
+    const file = path.join(root, 'greeting.php');
+    success(payloadCli(root, { op: 'patch', file: 'greeting.php', old: 'old', new: '😀' }));
+    assert.deepEqual(fs.readFileSync(file), utf16(source.replace('old', '😀'), be));
+    success(payloadCli(root, { op: 'patch_symbol', file: 'greeting.php', symbol: 'greeting', body: 'return "🚀";', dry: false }));
+    const expected = source.replace('old', '🚀');
+    assert.deepEqual(fs.readFileSync(file), utf16(expected, be));
+    assert.equal(fsx.readText(file).text, expected);
+    success(payloadCli(root, { op: 'create', file: 'created.php', text: expected, enc, eol: 'crlf' }));
+    assert.deepEqual(fs.readFileSync(path.join(root, 'created.php')), utf16(expected, be));
+    assert.equal(fsx.readText(path.join(root, 'created.php')).text, expected);
+  });
 }
+
+test('F04: encodeText отклоняет непарные UTF-16 units с BOM и без него', () => {
+  for (const enc of ['utf16le', 'utf16be', 'utf-16le', 'utf-16be']) {
+    for (const bom of [false, true]) {
+      for (const text of ['\uD800', '\uDC00', 'a\uD800b', '\uD800\uD800\uDC00', '\uDC00\uD800']) {
+        assert.throws(() => fsx.encodeText(text, enc, bom), /некорректный UTF-16/);
+      }
+      assert.doesNotThrow(() => fsx.encodeText('a😀b', enc, bom));
+    }
+  }
+});
+
+test('F12: PHP snippets — 120 символов содержимого плюс маркеры/номер строки', (t) => {
+  const line = 'a'.repeat(100) + 'TOKEN' + 'b'.repeat(100);
+  const root = project(t, { 'sample.php': line });
+  const output = success(cli(root, { op: 'search', query: 'TOKEN' }));
+  const hit = output.split('\n').find((value) => value.startsWith('  1: '));
+  assert.equal(hit, '  1: …' + line.slice(60, 180) + '…');
+  assert.equal(hit.slice('  1: '.length).length, 122);
+});
+
+test('F12: PHP docs закрепляют лимит содержимого и отдельно маркеры', () => {
+  for (const name of ['SKILL.md', 'README.md']) {
+    const doc = fs.readFileSync(path.resolve(__dirname, '../../skills/token-economy-php', name), 'utf8');
+    assert.match(doc, /120 символов содержимого[^\n]*маркеры `…`/);
+    assert.match(doc, /префикс номера строки[^\n]*не входит/);
+  }
+});
 
 test('P3: route не выдумывает путь отсутствующего или namespaced view', (t) => {
   const root = project(t, laravelFiles);

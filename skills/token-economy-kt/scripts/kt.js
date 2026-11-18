@@ -15,6 +15,7 @@ const crypto = require('crypto');
 const { computeMetrics, parseMetricsArgs, metricsRows, formatMetrics } = require('./lib/metrics');
 
 const CACHE_VERSION = 2;
+const CACHE_PARSER_REVISION = 'xml-res-nav-catalog-1';
 const CACHE_DIR = '.kt-cache';
 const SKIP_DIRS = new Set(['.git', '.gradle', 'build', 'out', '.idea', '.kotlin', '.kilo', 'node_modules', CACHE_DIR, '.jv-cache']);
 const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.jar', '.aar', '.class', '.zip', '.apk', '.aab', '.so', '.ttf', '.otf', '.bin', '.jks', '.keystore', '.prof', '.wav', '.mp3', '.mp4', '.webm']);
@@ -311,8 +312,36 @@ function parseWrapperProps(text) {
 
 function xmlAttrs(s) {
   const out = {};
-  for (const m of s.matchAll(/([\w:.-]+)\s*=\s*"([^"]*)"/g)) out[m[1]] = m[2];
+  for (const m of s.matchAll(/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) out[m[1]] = m[2] === undefined ? m[3] : m[2];
   return out;
+}
+
+function xmlElements(text) {
+  text = text.replace(/<!--[\s\S]*?(?:-->|$)/g, comment => comment.replace(/[^\r\n]/g, ' '));
+  const elements = [];
+  const stack = [];
+  // Кавычки защищают > в атрибутах, CDATA/PI не создают вложенных тегов.
+  const re = /<!\[CDATA\[[\s\S]*?(?:\]\]>|$)|<\?[\s\S]*?(?:\?>|$)|<![^>]*>|<(\/?)([\w:.-]+)\b((?:[^<>"']|"[^"]*"|'[^']*')*)>/g;
+  let m;
+  while ((m = re.exec(text))) {
+    if (!m[2]) continue;
+    if (m[1]) {
+      const current = stack[stack.length - 1];
+      if (current && current.tag === m[2]) {
+        current.contentEnd = m.index;
+        stack.pop();
+      }
+      continue;
+    }
+    const selfClosing = /\/\s*$/.test(m[3]);
+    const element = {
+      tag: m[2], attrs: xmlAttrs(m[3]), parent: stack[stack.length - 1] || null,
+      contentStart: re.lastIndex, contentEnd: selfClosing ? re.lastIndex : null
+    };
+    elements.push(element);
+    if (!selfClosing) stack.push(element);
+  }
+  return { text, elements };
 }
 
 function parseManifestXml(text) {
@@ -384,16 +413,20 @@ function unescapeRes(s) {
 
 function parseValuesXml(text) {
   const out = { strings: [], plurals: [], arrays: [], dims: [], strMap: {} };
-  for (const m of text.matchAll(/<string\s+name="([\w.\-]+)"([^>]*)>([\s\S]*?)<\/string>/g)) {
-    out.strings.push(m[1]);
-    out.strMap[m[1]] = {
-      value: unescapeRes(m[3]),
-      translatable: !/translatable\s*=\s*"false"/.test(m[2] || '')
-    };
+  const xml = xmlElements(text);
+  for (const element of xml.elements) {
+    const name = element.attrs.name;
+    if (!name || !/^[\w.\-]+$/.test(name)) continue;
+    if (element.tag === 'string' && element.contentEnd !== null) {
+      out.strings.push(name);
+      out.strMap[name] = {
+        value: unescapeRes(xml.text.slice(element.contentStart, element.contentEnd)),
+        translatable: element.attrs.translatable !== 'false'
+      };
+    } else if (element.tag === 'plurals') out.plurals.push(name);
+    else if (element.tag === 'integer-array' || element.tag === 'string-array') out.arrays.push(name);
+    else if (element.tag === 'dimen') out.dims.push(name);
   }
-  for (const m of text.matchAll(/<plurals\s+name="([\w.\-]+)"/g)) out.plurals.push(m[1]);
-  for (const m of text.matchAll(/<(integer|string)-array\s+name="([\w.\-]+)"/g)) out.arrays.push(m[3]);
-  for (const m of text.matchAll(/<dimen\s+name="([\w.\-]+)"/g)) out.dims.push(m[1]);
   return out;
 }
 
@@ -404,35 +437,39 @@ function localeOfValuesRel(rel) {
 
 // локаль-квалификатор (en, en-rGB, b+es), а не конфигурация (night, land, w600dp)
 function isLocaleQualifier(q) {
+  if (q === 'car') return false; // Android UI mode, несмотря на три буквы.
   return /^(?:[a-z]{2,3}(?:-r(?:[A-Z]{2}|\d{3}))?|b\+[a-z]{2,3}(?:\+[A-Za-z0-9]{2,8})*)$/.test(q);
 }
 
 function parseNavXml(text) {
-  const rootM = /<navigation\b([^>]*)>/.exec(text);
-  const rootAttrs = rootM ? xmlAttrs(rootM[1]) : {};
+  const xml = xmlElements(text);
+  const root = xml.elements.find(e => e.tag === 'navigation' && !e.parent);
   const destinations = [];
-  const destMatches = [...text.matchAll(/<(fragment|activity|custom)\b([^>]*?)(\/?)>/g)];
-  for (let i = 0; i < destMatches.length; i++) {
-    const m = destMatches[i];
-    const a = xmlAttrs(m[2]);
+  const owners = new Map();
+  const globalActions = [];
+  const deepLinks = [];
+  for (const element of xml.elements) {
+    if (element === root || !['navigation', 'fragment', 'activity', 'custom'].includes(element.tag)) continue;
+    const a = element.attrs;
     const dest = {
-      kind: m[1], id: a['android:id'] ? a['android:id'].replace(/^@\+?id\//, '') : null,
+      kind: element.tag, id: a['android:id'] ? a['android:id'].replace(/^@\+?id\//, '') : null,
       name: a['android:name'] || null, label: a['android:label'] || null, actions: []
     };
-    if (m[3] !== '/') {
-      // действия объявлены внутри тега назначения
-      const start = m.index + m[0].length;
-      const end = i + 1 < destMatches.length ? destMatches[i + 1].index : text.length;
-      for (const am of text.slice(start, end).matchAll(/<action\b([^>]*?)\/?>/g)) {
-        const aa = xmlAttrs(am[1]);
-        const dest2 = (aa['app:destination'] || '').replace(/^@\+?id\//, '');
-        if (dest2) dest.actions.push({ id: (aa['android:id'] || '').replace(/^@\+?id\//, ''), dest: dest2 });
-      }
-    }
     destinations.push(dest);
+    owners.set(element, dest);
   }
-  const deepLinks = [...text.matchAll(/<deepLink\b([^>]*?)\/>/g)].map(x => xmlAttrs(x[1]));
-  return { start: rootAttrs['app:startDestination'] || null, destinations, deepLinks };
+  for (const element of xml.elements) {
+    if (element.tag === 'deepLink') deepLinks.push(element.attrs);
+    if (element.tag !== 'action') continue;
+    const a = element.attrs;
+    const target = (a['app:destination'] || '').replace(/^@\+?id\//, '');
+    if (!target) continue;
+    const action = { id: (a['android:id'] || '').replace(/^@\+?id\//, ''), dest: target };
+    const owner = owners.get(element.parent);
+    if (owner) owner.actions.push(action);
+    else if (root && element.parent === root) globalActions.push(action);
+  }
+  return { start: root ? root.attrs['app:startDestination'] || null : null, destinations, globalActions, deepLinks };
 }
 
 function layoutBindingClass(layoutName) {
@@ -1237,7 +1274,7 @@ function buildIndex(root, fileList) {
       const base = path.posix.basename(rel);
       if (base.startsWith('settings.')) { settingsText = rd.text; settingsRel = rel; }
       else gradleTexts.push({ rel, text: rd.text });
-    } else if (cls === 'toml') tomlText = rd.text;
+    } else if (cls === 'toml' && rel === 'gradle/libs.versions.toml') tomlText = rd.text;
     else if (cls === 'props') {
       if (rel.endsWith('gradle-wrapper.properties')) wrapperText = rd.text;
     } else if (cls === 'kt' || cls === 'java') {
@@ -1581,7 +1618,7 @@ function loadIndex(root) {
   if (cachePath) {
     try {
       const j = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-      if (j.version === CACHE_VERSION && JSON.stringify(j.meta) === JSON.stringify(meta) &&
+      if (j.version === CACHE_VERSION && j.parserRevision === CACHE_PARSER_REVISION && JSON.stringify(j.meta) === JSON.stringify(meta) &&
           j.data && Array.isArray(j.data.files) && Array.isArray(j.data.filesMeta) &&
           Array.isArray(j.data.classes) && Array.isArray(j.data.edges) && j.data.xml) {
         j.data.root = root;
@@ -1592,7 +1629,7 @@ function loadIndex(root) {
   const data = buildIndex(root, fileList);
   if (cachePath) {
     try {
-      fs.writeFileSync(safeInside(root, path.join(CACHE_DIR, 'index.json')), JSON.stringify({ version: CACHE_VERSION, meta, data }));
+      fs.writeFileSync(safeInside(root, path.join(CACHE_DIR, 'index.json')), JSON.stringify({ version: CACHE_VERSION, parserRevision: CACHE_PARSER_REVISION, meta, data }));
     } catch (e) { process.stderr.write('Предупреждение: не удалось сохранить кэш.\n'); }
   }
   return data;
@@ -2546,8 +2583,11 @@ function opNav(data, p, out) {
     for (const n of navs) {
       for (const d of n.destinations || []) {
         for (const a of d.actions || []) {
-          if (a.dest === routeArg) L.push(`    ${n.rel}: action ${a.id || '?'} -> ${routeArg}`);
+          if (a.dest === routeArg) L.push(`    ${n.rel}: action ${a.id || '?'} -> ${routeArg} (from=${d.id || '?'})`);
         }
+      }
+      for (const a of n.globalActions || []) {
+        if (a.dest === routeArg) L.push(`    ${n.rel}: global action ${a.id || '?'} -> ${routeArg}`);
       }
     }
     out.push(L.join('\n'));
@@ -2565,6 +2605,7 @@ function opNav(data, p, out) {
       L.push(`  ${d.kind} ${d.id || '?'} -> ${d.name || '?'}${d.label ? ' «' + d.label + '»' : ''}`);
       for (const a of d.actions) L.push(`    action ${a.id || '?'} -> ${a.dest}`);
     }
+    for (const a of n.globalActions || []) L.push(`  global action ${a.id || '?'} -> ${a.dest}`);
     for (const dl of n.deepLinks || []) {
       const uri = dl['app:uri'] || dl['android:uri'];
       if (uri) L.push(`  deepLink: ${uri}${dl['android:autoVerify'] === 'true' ? ' (autoVerify)' : ''}`);
@@ -2596,8 +2637,10 @@ function opNav(data, p, out) {
 function opRes(data, p, out) {
   const L = [];
   const valuesFiles = data.xml.values || [];
+  const missing = pbool(p, 'missing', false) && !p.name;
+  const keyFiles = missing ? valuesFiles.filter(v => !v.locale || v.locale === 'default' || isLocaleQualifier(v.locale)) : valuesFiles;
   const byKey = new Map();
-  for (const vf of valuesFiles) {
+  for (const vf of keyFiles) {
     for (const [key, info] of Object.entries(vf.strMap || {})) {
       if (!byKey.has(key)) byKey.set(key, {});
       byKey.get(key)[vf.locale || 'default'] = info;
@@ -2631,8 +2674,8 @@ function opRes(data, p, out) {
     return;
   }
 
-  if (pbool(p, 'missing', false)) {
-    const locales = [...new Set(valuesFiles.map(v => v.locale || 'default').filter(x => x !== 'default' && isLocaleQualifier(x)))];
+  if (missing) {
+    const locales = [...new Set(keyFiles.map(v => v.locale || 'default').filter(x => x !== 'default'))];
     if (!locales.length) { out.push('Локалей со строками нет — проверять missing нечего.'); return; }
     L.push('Отсутствующие переводы (ключ есть в default, нет в локали):');
     let any = false;

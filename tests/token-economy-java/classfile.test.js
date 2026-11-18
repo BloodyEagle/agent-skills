@@ -70,6 +70,35 @@ test('valid generic class, nested types, method bounds, wildcards and arrays ret
   assert.deepEqual(CF.describe(CF.parseClass(classFile({ signature: '<T:>Ljava/lang/Object;' })), {}), ['abstract class Box<T>']);
 });
 
+test('sig: Deprecated field retains marker and static/final order independently of methods', (t) => {
+  const p = project(t);
+  const bytes = classFile({
+    name: 'fixture/ApiPaths',
+    fields: [
+      {name: 'USERS', descriptor: 'Ljava/lang/String;', access: 0x0019, deprecated: true},
+      {name: 'CURRENT', descriptor: 'Ljava/lang/String;', access: 0x0019},
+      {name: 'values', descriptor: 'Ljava/util/List;', signature: 'Ljava/util/List<Ljava/lang/String;>;', deprecated: true}
+    ],
+    methods: [{name: 'get', descriptor: '()Ljava/lang/String;'}]
+  });
+  const cf = CF.parseClass(bytes);
+  assert.equal(cf.fields[0].dep, true);
+  assert.deepEqual(CF.describe(cf, {}), [
+    'abstract class ApiPaths',
+    '  @Deprecated static final String USERS',
+    '  static final String CURRENT',
+    '  @Deprecated List<String> values',
+    '  abstract String get()'
+  ]);
+  p.write('target/classes/fixture/ApiPaths.class', bytes);
+  const r = p.run('op=sig', 'name=fixture.ApiPaths#USERS');
+  assert.equal(r.error, undefined);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /fixture\.ApiPaths/);
+  assert.match(r.stdout, /^  @Deprecated static final String USERS$/m);
+  assert.doesNotMatch(r.stdout, /CURRENT|values|String get/);
+});
+
 test('classfile: every truncated byte prefix reports a bounded class-file error', (t) => {
   const p = project(t);
   const file = p.write('Box.class', classFile({ signature: '<T:Ljava/lang/Object;>Ljava/lang/Object;', fields: [{ name: 'value', descriptor: 'Ljava/lang/Object;', signature: 'TT;' }], methods: [{ name: 'get', descriptor: '()Ljava/lang/Object;', signature: '()TT;', exceptions: ['java/io/IOException'], parameters: [], deprecated: true }] }));

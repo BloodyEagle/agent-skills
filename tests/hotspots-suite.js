@@ -1,6 +1,6 @@
 // Общий набор hotspots-сценариев для JS-скиллов (kt/java/php) и py-порта.
-// Модуль git-signals.js у JS-скиллов общий байт в байт (проверяет tests/hotspots-copies.test.js),
-// здесь проверяется клей: разбор аргументов диспетчером, root=, вывод, кэш в корне проекта.
+// Модуль git-signals.js у JS-скиллов общий байт в байт (проверяет tests/hotspots-copies.test.js).
+// buildSignalsCacheSuite запускается там для каждой копии; buildHotspotsSuite проверяет CLI-клей.
 // Сценарии — пункты 1–11 плана git-hotspots через CLI конкретного скилла.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -60,6 +60,7 @@ function envWithoutGit(root) {
     const env = isolatedEnv(root);
     delete env.PATH;
     delete env.Path;
+    env.PATH = ''; // без PATH execvp на POSIX использует системный default; пустой PATH исключает git
     return env;
 }
 
@@ -232,4 +233,210 @@ function buildHotspotsSuite(label, spawn, {cacheFile = '.git-signals.json', bitr
     }
 }
 
-module.exports = {buildHotspotsSuite, git, gitRepo, write, commitAll, lines, isolatedEnv, envWithoutGit, GIT_IDENTITY};
+function linkOrSkip(t, target, alias, type) {
+    try {
+        fs.symlinkSync(target, alias, type);
+        return true;
+    } catch (e) {
+        if (!['EPERM', 'EACCES', 'ENOTSUP', 'ENOSYS'].includes(e.code)) throw e;
+        t.skip('ОС не разрешает symlink (' + e.code + '): ' + e.message);
+        return false;
+    }
+}
+
+/** Общие F03-регрессии непосредственно для каждой JS-копии, не только адаптеров. */
+function buildSignalsCacheSuite(label, moduleFile) {
+    const signals = require(moduleFile);
+    const opts = {since: '2000-01-01', maxCommits: 2000, pathspec: []};
+    const withoutGit = (root, options = opts) => spawnSync(process.execPath, ['-e',
+        'const s = require(process.argv[1]); console.log(JSON.stringify(s.loadSignals(process.argv[2], JSON.parse(process.argv[3]))));',
+        moduleFile, root, JSON.stringify(options)], {
+        cwd: root, env: {...envWithoutGit(root), NODE_OPTIONS: ''}, encoding: 'utf8',
+        timeout: 15000, windowsHide: true,
+    });
+    const repo = (run) => gitRepo(root => {
+        // Последующие коммиты не должны захватить cache/tmp самого теста.
+        fs.writeFileSync(path.join(root, '.git', 'info', 'exclude'), signals.CACHE_FILE + '*\n');
+        write(root, {'src/source.ts': lines(60), 'src/other.ts': lines(50)});
+        commitAll(root, 'feat: cache fixture');
+        return run(root);
+    });
+    const tmpFiles = (root) => fs.readdirSync(root).filter(name => name.startsWith(signals.CACHE_FILE + '.') && name.endsWith('.tmp'));
+
+    test(label + ' cache safety: normal publish and warm-hit without git preserve bytes', () => repo(root => {
+        const untouched = ['graph-deps.json', '.graph-deps-cache.json', '.jv-cache/index.json', '.kt-cache/index.json', '.bx-cache/index.json'];
+        write(root, Object.fromEntries(untouched.map(file => [file, 'index sentinel: ' + file])));
+        const first = signals.loadSignals(root, opts);
+        assert.equal(first.fromCache, false);
+        const file = path.join(root, signals.CACHE_FILE), bytes = fs.readFileSync(file);
+        assert.ok(fs.lstatSync(file).isFile());
+        const warm = withoutGit(root);
+        assert.ifError(warm.error);
+        assert.equal(warm.status, 0, warm.stdout + warm.stderr);
+        assert.deepEqual(JSON.parse(warm.stdout), {data: first.data, fromCache: true});
+        assert.deepEqual(fs.readFileSync(file), bytes);
+        for (const name of untouched) assert.equal(fs.readFileSync(path.join(root, name), 'utf8'), 'index sentinel: ' + name);
+        assert.deepEqual(tmpFiles(root), []);
+    }));
+
+    for (const kind of ['internal', 'external', 'dangling']) {
+        test(label + ' cache safety: reject ' + kind + ' endpoint symlink for read and publish', t => repo(root => {
+            const initial = signals.loadSignals(root, opts).data;
+            const file = path.join(root, signals.CACHE_FILE);
+            const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'te-cache-outside-'));
+            try {
+                const target = kind === 'external' ? path.join(outside, 'cache.json') : path.join(root, kind === 'dangling' ? 'missing.json' : 'src/source.ts');
+                const bytes = Buffer.from(JSON.stringify(initial)); // валидная опора не должна стать warm-hit через ссылку
+                if (kind !== 'dangling') fs.writeFileSync(target, bytes);
+                const source = fs.readFileSync(path.join(root, 'src/source.ts'));
+                const other = fs.readFileSync(path.join(root, 'src/other.ts'));
+                fs.unlinkSync(file);
+                if (!linkOrSkip(t, target, file, 'file')) return;
+                const link = fs.readlinkSync(file);
+                assert.equal(signals.readSignalsCache(root), null);
+                const noGit = withoutGit(root);
+                assert.ifError(noGit.error);
+                assert.notEqual(noGit.status, 0, 'ссылочный кэш не должен отвечать без git');
+                assert.match(noGit.stderr, /git не найден в PATH/);
+                assert.throws(() => signals.publishSignalsCache(root, initial), /обычным файлом, не ссылкой/);
+                const fresh = signals.loadSignals(root, opts);
+                assert.equal(fresh.fromCache, false); // история доступна, запись best-effort отклоняется
+                assert.equal(fs.readlinkSync(file), link);
+                assert.deepEqual(fs.readFileSync(path.join(root, 'src/source.ts')), source);
+                assert.deepEqual(fs.readFileSync(path.join(root, 'src/other.ts')), other);
+                if (kind === 'dangling') assert.equal(fs.existsSync(target), false);
+                else assert.deepEqual(fs.readFileSync(target), bytes);
+                assert.deepEqual(tmpFiles(root), []);
+            } finally {
+                fs.rmSync(outside, {recursive: true, force: true});
+            }
+        }));
+    }
+
+    test(label + ' cache safety: directory endpoint rejected, no descendant changes', () => repo(root => {
+        const file = path.join(root, signals.CACHE_FILE);
+        fs.mkdirSync(file);
+        fs.writeFileSync(path.join(file, 'keep'), 'unchanged');
+        assert.equal(signals.readSignalsCache(root), null);
+        assert.throws(() => signals.publishSignalsCache(root, {}), /обычным файлом/);
+        assert.equal(fs.readFileSync(path.join(file, 'keep'), 'utf8'), 'unchanged');
+        assert.deepEqual(tmpFiles(root), []);
+    }));
+
+    test(label + ' cache safety: root junction/symlink uses canonical directory and warm-hit', t => repo(root => {
+        const aliases = fs.mkdtempSync(path.join(os.tmpdir(), 'te-cache-alias-'));
+        const alias = path.join(aliases, 'root');
+        try {
+            if (!linkOrSkip(t, root, alias, process.platform === 'win32' ? 'junction' : 'dir')) return;
+            const first = signals.loadSignals(alias, opts);
+            assert.equal(first.fromCache, false);
+            assert.deepEqual(signals.readSignalsCache(root), first.data);
+            const warm = withoutGit(alias);
+            assert.ifError(warm.error);
+            assert.equal(warm.status, 0, warm.stdout + warm.stderr);
+            assert.equal(JSON.parse(warm.stdout).fromCache, true);
+            assert.deepEqual(tmpFiles(root), []);
+        } finally {
+            if (fs.existsSync(alias)) fs.unlinkSync(alias);
+            fs.rmSync(aliases, {recursive: true, force: true});
+        }
+    }));
+
+    test(label + ' cache safety: HEAD/since/maxCommits/pathspec still invalidate cache', () => repo(root => {
+        const first = signals.loadSignals(root, opts).data;
+        for (const changed of [{...opts, since: '2100-01-01'}, {...opts, maxCommits: 1}, {...opts, pathspec: ['src/source.ts']}]) {
+            signals.publishSignalsCache(root, first);
+            const miss = withoutGit(root, changed);
+            assert.ifError(miss.error);
+            assert.notEqual(miss.status, 0, 'изменённый ключ не может быть warm-hit');
+            const collected = signals.loadSignals(root, changed);
+            assert.equal(collected.fromCache, false);
+            assert.equal(collected.data.since, changed.since);
+            assert.equal(collected.data.maxCommits, changed.maxCommits);
+            assert.deepEqual(collected.data.pathspec, changed.pathspec);
+            if (changed.since === '2100-01-01') assert.equal(collected.data.commitsTotal, 0);
+            if (changed.maxCommits === 1) assert.equal(collected.data.ceiling, true);
+            if (changed.pathspec.length) assert.deepEqual(Object.keys(collected.data.files), ['src/source.ts']);
+        }
+        signals.publishSignalsCache(root, first);
+        write(root, {'src/source.ts': lines(61)});
+        commitAll(root, 'fix: changed HEAD');
+        const miss = withoutGit(root);
+        assert.ifError(miss.error);
+        assert.notEqual(miss.status, 0);
+        const next = signals.loadSignals(root, opts);
+        assert.equal(next.fromCache, false);
+        assert.notEqual(next.data.head, first.head);
+    }));
+
+    for (const operation of ['openSync', 'writeFileSync', 'renameSync']) {
+        test(label + ' cache safety: ' + operation + ' failure preserves old cache and source, cleans own tmp', () => repo(root => {
+            const data = signals.loadSignals(root, opts).data;
+            const file = path.join(root, signals.CACHE_FILE), before = fs.readFileSync(file);
+            const source = fs.readFileSync(path.join(root, 'src/source.ts'));
+            const decoy = path.join(root, signals.CACHE_FILE + '.unrelated.tmp');
+            fs.writeFileSync(decoy, 'not ours');
+            const original = fs[operation];
+            fs[operation] = function (...args) {
+                const writingTmp = operation === 'openSync' ? args[1] === 'wx' : operation === 'writeFileSync' ? typeof args[0] === 'number' : path.basename(args[1]) === signals.CACHE_FILE;
+                if (writingTmp) {
+                    if (operation === 'writeFileSync') original.call(fs, args[0], '{partial', 'utf8');
+                    throw Object.assign(new Error('injected ' + operation + ' failure'), {code: 'EACCES'});
+                }
+                return original.apply(fs, args);
+            };
+            try {
+                assert.throws(() => signals.publishSignalsCache(root, {...data, collectedAt: 'changed'}), /injected/);
+            } finally {
+                fs[operation] = original;
+            }
+            assert.deepEqual(fs.readFileSync(file), before);
+            assert.deepEqual(fs.readFileSync(path.join(root, 'src/source.ts')), source);
+            assert.equal(fs.readFileSync(decoy, 'utf8'), 'not ours');
+            assert.deepEqual(tmpFiles(root), [path.basename(decoy)]);
+        }));
+    }
+
+    test(label + ' cache safety: pre-existing fixed tmp symlink is never opened or removed', t => repo(root => {
+        const sourceFile = path.join(root, 'src/source.ts'), source = fs.readFileSync(sourceFile);
+        const fixedTmp = path.join(root, signals.CACHE_FILE + '.tmp');
+        if (!linkOrSkip(t, sourceFile, fixedTmp, 'file')) return;
+        const link = fs.readlinkSync(fixedTmp);
+        const data = signals.loadSignals(root, opts);
+        assert.equal(data.fromCache, false);
+        assert.deepEqual(fs.readFileSync(sourceFile), source);
+        assert.equal(fs.readlinkSync(fixedTmp), link);
+        assert.deepEqual(tmpFiles(root), [path.basename(fixedTmp)]);
+        assert.deepEqual(signals.readSignalsCache(root), data.data);
+    }));
+
+    test(label + ' cache safety: unique tmp collision retries exclusively and leaves collided path alone', () => repo(root => {
+        const data = signals.loadSignals(root, opts).data;
+        const original = fs.openSync, names = [];
+        let collision;
+        fs.openSync = function (file, flags, ...rest) {
+            if (flags === 'wx') {
+                names.push(file);
+                if (!collision) {
+                    collision = file;
+                    const fd = original.call(fs, file, 'wx', 0o600);
+                    fs.writeFileSync(fd, 'not ours');
+                    fs.closeSync(fd);
+                }
+            }
+            return original.call(fs, file, flags, ...rest);
+        };
+        try {
+            signals.publishSignalsCache(root, data);
+        } finally {
+            fs.openSync = original;
+        }
+        assert.equal(names.length, 2);
+        assert.notEqual(names[0], names[1]);
+        assert.equal(fs.readFileSync(collision, 'utf8'), 'not ours');
+        assert.deepEqual(tmpFiles(root), [path.basename(collision)]);
+        assert.deepEqual(signals.readSignalsCache(root), data);
+    }));
+}
+
+module.exports = {buildHotspotsSuite, buildSignalsCacheSuite, git, gitRepo, write, commitAll, lines, isolatedEnv, envWithoutGit, GIT_IDENTITY};

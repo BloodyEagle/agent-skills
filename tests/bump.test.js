@@ -14,6 +14,52 @@ function fixture(version) {
     return root;
 }
 
+test('bump: quoted decoded description ровно 1024 code points допускается с BOM/CRLF', (t) => {
+    const root = fixture('1.0.0');
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const file = path.join(root, 'skills', 'skill-a', 'SKILL.md');
+    const text = '\uFEFF---\r\nname: skill-a\r\ndescription: "' + '\\U0001F600'.repeat(1024)
+        + '"\r\nversion: 1.0.0\r\n---\r\n# Demo\r\n';
+    fs.writeFileSync(file, text);
+    writeManifest(root);
+    assertCode(run(root, ['bump', 'skill-a', 'patch']), 0, 'bump decoded boundary');
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), text.replace('version: 1.0.0', 'version: 1.0.1'));
+    assertCode(run(root, ['verify']), 0, 'verify decoded boundary');
+});
+
+test('bump: переполнение patch/minor/major отвергается без изменения metadata', (t) => {
+    const max = Number.MAX_SAFE_INTEGER;
+    for (const [level, version] of [['patch', `1.2.${max}`], ['minor', `1.${max}.2`], ['major', `${max}.1.2`]]) {
+        const root = fixture(version);
+        t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+        const src = path.join(root, 'skills', 'skill-a');
+        const files = [path.join(src, 'VERSION'), path.join(src, 'SKILL.md'), path.join(root, 'skills', 'manifest.json')];
+        const before = files.map((file) => fs.readFileSync(file));
+        const r = run(root, ['bump', 'skill-a', level]);
+        assertCode(r, 1, 'bump overflow');
+        assert.match(r.stderr, /переполнение safe-integer/);
+        files.forEach((file, index) => assert.deepStrictEqual(fs.readFileSync(file), before[index]));
+        assert.deepStrictEqual(fs.readdirSync(src).sort(), ['SKILL.md', 'VERSION', 'scripts']);
+    }
+});
+
+test('bump: safe-integer граница разрешена, reset нижних компонентов не переполняется', (t) => {
+    const max = Number.MAX_SAFE_INTEGER;
+    for (const [level, version, expected] of [
+        ['patch', `1.2.${max - 1}`, `1.2.${max}`],
+        ['minor', `1.${max - 1}.${max}`, `1.${max}.0`],
+        ['major', `${max - 1}.${max}.${max}`, `${max}.0.0`],
+    ]) {
+        const root = fixture(version);
+        t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+        const r = run(root, ['bump', 'skill-a', level]);
+        assertCode(r, 0, 'bump safe boundary');
+        assert.strictEqual(readManifest(root).skills[0].version, expected);
+        assert.strictEqual(fs.readFileSync(path.join(root, 'skills', 'skill-a', 'VERSION'), 'utf8'), expected + '\n');
+        assertCode(run(root, ['verify']), 0, 'verify boundary');
+    }
+});
+
 test('bump patch: 1.2.3 → 1.2.4 и манифест обновлён', () => {
     const root = fixture('1.2.3');
     const r = run(root, ['bump', 'skill-a', 'patch']);

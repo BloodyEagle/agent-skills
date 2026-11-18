@@ -53,6 +53,43 @@ const blk = () => {
 export enum E { A, B }
 `}, {empty: true}));
 
+test('symbol: все перегрузки и реализация в нескольких файлах сохраняют порядок и spans', () => project(root => {
+    const result = json(root, 'graph-tool', {op: 'symbol', name: 'pick', root: '.'});
+    assert.deepEqual(result.definedIn, [
+        {file: 'a.ts', kind: 'function', line: 1, startLine: 1, endLine: 1},
+        {file: 'a.ts', kind: 'function', line: 2, startLine: 2, endLine: 2},
+        {file: 'a.ts', kind: 'function', line: 3, startLine: 3, endLine: 5, bodyStartLine: 3, bodyEndLine: 5},
+        {file: 'b.ts', kind: 'function', line: 1, startLine: 1, endLine: 1},
+        {file: 'b.ts', kind: 'function', line: 2, startLine: 2, endLine: 2, bodyStartLine: 2, bodyEndLine: 2}
+    ]);
+    assert.deepEqual(json(root, 'graph-tool', {op: 'symbol', name: 'missing', root: '.'}), {name: 'missing', definedIn: []});
+    assert.deepEqual(json(root, 'graph-tool', {op: 'symbol', name: 'alias', root: '.'}).definedIn,
+        [{file: 'exports.ts', kind: 'file'}]);
+}, {
+    'a.ts': 'export function pick(x: string): string;\nexport function pick(x: number): number;\nexport function pick(x: string | number) {\n    return x;\n}\n',
+    'b.ts': 'export function pick(x: boolean): boolean;\nexport function pick(x: boolean) { return x; }\n',
+    'exports.ts': "export {pick as alias} from './a';\n"
+}, {empty: true}));
+
+test('symbol: member overloads сохраняют owner/spans и не теряются за прежним cap 30', () => project(root => {
+    const one = json(root, 'graph-tool', {op: 'symbol', name: 'pick', in: 'One', root: '.'});
+    assert.deepEqual(one.definedIn, [
+        {file: 'a.ts', kind: 'method', owner: 'One', line: 2, startLine: 2, endLine: 2},
+        {file: 'a.ts', kind: 'method', owner: 'One', line: 3, startLine: 3, endLine: 3},
+        {file: 'a.ts', kind: 'method', owner: 'One', line: 4, startLine: 4, endLine: 4, bodyStartLine: 4, bodyEndLine: 4}
+    ]);
+    const all = json(root, 'graph-tool', {op: 'symbol', name: 'pick', root: '.'});
+    assert.equal(all.definedIn.length, 4);
+    assert.equal(all.definedIn[3].owner, 'Two');
+    const many = json(root, 'graph-tool', {op: 'symbol', name: 'read', in: 'Many', root: '.'});
+    assert.equal(many.definedIn.length, 32);
+    assert.deepEqual(many.definedIn.map(e => e.line), Array.from({length: 32}, (_, i) => i + 2));
+}, {
+    'a.ts': 'export class One {\n    pick(x: string): string;\n    pick(x: number): number;\n    pick(x: string | number) { return x; }\n}\n',
+    'b.ts': 'export interface Two {\n    pick(x: boolean): boolean;\n}\n',
+    'many.ts': 'export interface Many {\n' + Array.from({length: 32}, (_, i) => '    read(x: ' + i + '): number;').join('\n') + '\n}\n'
+}, {empty: true}));
+
 test('диапазоны: generics с телом-объектом, conditional type, union с телом', () => project(root => {
     const node = json(root, 'graph-tool', {op: 'node', file: 'g.ts', root: '.'});
     const byName = {};
@@ -229,6 +266,64 @@ test('batch graph: несколько запросов, partial errors, ambiguou
     assert.ok(r.results[2].error);
     assert.equal(r.results[3].blocks[0].lines[0], 'export const hub = 1;');
 }, {'ambiguous.ts': 'export const ambiguous = 1;\n', 'ambiguous.js': 'export const ambiguous = 2;\n', 'hub.ts': 'export const hub = 1;\n'}, {empty: true}));
+
+test('batch structural errors: scope/completeness и index сохраняются в compact round-trip', () => project(root => {
+    const requests = [
+        {op: 'deps', file: 'missing.ts', root: '.', specs: true},
+        {op: 'rdeps', root: '.', specs: true},
+        {op: 'path', from: 'hub.ts', to: 'missing.ts', root: '.', specs: true},
+        {op: 'node', file: 'hub.ts', root: '.', specs: true}
+    ];
+    const singleErrors = requests.slice(0, 3).map(p => {
+        const result = cli(root, 'graph-tool', p);
+        assert.equal(result.status, 1);
+        return JSON.parse(result.stdout);
+    });
+    const plain = json(root, 'graph-tool', {requests: JSON.stringify(requests)});
+    const compact = json(root, 'graph-tool', {requests: JSON.stringify(requests), compact: '1'});
+    assert.equal(plain.failed, 3);
+    assert.equal(compact.failed, 3);
+    for (let i = 0; i < 3; i++) {
+        assert.deepEqual(plain.results[i], {index: i, ...singleErrors[i]});
+        assert.deepEqual(compact.results[i], plain.results[i]);
+        assert.deepEqual(plain.results[i].scope, {root, scanRoot: '.', specs: true});
+        assert.deepEqual(plain.results[i].completeness, {complete: false, reasons: ['request-error']});
+    }
+    const decodedNode = {...compact.results[3], scope: compact.results[3].scope || compact.scope,
+        completeness: compact.results[3].completeness || compact.completeness};
+    decodedNode.file = compact.paths[decodedNode.file];
+    assert.deepEqual(decodedNode, plain.results[3]);
+}, {'hub.ts': 'export const hub = 1;\n'}, {empty: true}));
+
+test('batch scope errors: внешний root и пустая scope-группа не теряют квалификацию', () => project(root => {
+    const fs = require('fs');
+    const path = require('path');
+    fs.mkdirSync(path.join(root, 'empty'));
+    for (const scanRoot of ['../outside', 'empty']) {
+        const requests = [
+            {op: 'deps', file: 'hub.ts', root: scanRoot, specs: true},
+            {op: 'rdeps', file: 'hub.ts', root: scanRoot, specs: true},
+            {op: 'path', from: 'hub.ts', to: 'hub.ts', root: scanRoot, specs: true},
+            {op: 'metrics', root: scanRoot, specs: true},
+            {op: 'symbol', name: 'hub', root: '.'}
+        ];
+        const plain = json(root, 'graph-tool', {requests: JSON.stringify(requests)});
+        const compact = json(root, 'graph-tool', {requests: JSON.stringify(requests), compact: '1'});
+        assert.equal(plain.failed, 4);
+        for (let i = 0; i < 4; i++) {
+            const result = plain.results[i];
+            assert.equal(result.index, i);
+            assert.ok(result.error);
+            assert.deepEqual(result.scope, {root, scanRoot, specs: true});
+            assert.deepEqual(result.completeness, {complete: false, reasons: ['request-error']});
+            assert.deepEqual(compact.results[i], result);
+        }
+        assert.equal(plain.results[4].definedIn.length, 1);
+        const all = cli(root, 'graph-tool', {requests: JSON.stringify(requests.slice(0, 4)), compact: '1'});
+        assert.equal(all.status, 1);
+        assert.equal(JSON.parse(all.stdout).failed, 4);
+    }
+}, {'hub.ts': 'export const hub = 1;\n'}, {empty: true}));
 
 test('batch graph: одинаковый scope — одна группа; путь с запятой валиден', () => project(root => {
     const r = json(root, 'graph-tool', {requests: JSON.stringify([

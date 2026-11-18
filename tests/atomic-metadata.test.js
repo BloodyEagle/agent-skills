@@ -18,6 +18,27 @@ function fixture(t) {
     return {root, src};
 }
 
+test('bump: невалидное description отклоняется до подготовки tmp и rename', (t) => {
+    const {root, src} = fixture(t);
+    const text = '---\nname: demo\ndescription: "\\q"\nversion: 1.0.0\n---\n';
+    fs.writeFileSync(path.join(src, 'SKILL.md'), text);
+    const files = [path.join(src, 'VERSION'), path.join(src, 'SKILL.md'), path.join(root, 'skills', 'manifest.json')];
+    const before = files.map((file) => fs.readFileSync(file));
+    const hook = path.join(root, 'no-metadata-writes.cjs');
+    fs.writeFileSync(hook, `const fs = require('node:fs');
+fs.writeFileSync = () => { throw new Error('unexpected metadata write'); };
+fs.renameSync = () => { throw new Error('unexpected metadata rename'); };
+`);
+    const r = spawnSync(process.execPath, ['--require', hook, cli, '--root', root, 'bump', 'demo', 'patch'],
+        {encoding: 'utf8', timeout: 10000});
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /description: неподдерживаемый YAML/);
+    assert.doesNotMatch(r.stderr, /unexpected metadata/);
+    files.forEach((file, index) => assert.deepEqual(fs.readFileSync(file), before[index]));
+    assert.deepEqual(fs.readdirSync(src).sort(), ['SKILL.md', 'VERSION', 'scripts']);
+    assert.deepEqual(fs.readdirSync(path.join(root, 'skills')).sort(), ['demo', 'manifest.json']);
+});
+
 test('bump: неудачный rename манифеста откатывает VERSION и SKILL.md', (t) => {
     const {root, src} = fixture(t);
     const files = [path.join(src, 'VERSION'), path.join(src, 'SKILL.md'), path.join(root, 'skills', 'manifest.json')];

@@ -54,6 +54,50 @@ test('audit: <UserCard в строке и комментарии не индек
     'src/real.tsx': "import {Ghost} from './masked';\n\nexport function Real() {\n    return <Ghost />;\n}\n"
 }, {empty: true}));
 
+test('component: .ts assertions/generics не являются JSX, TSX/JSX/JS tags сохраняются', () => project(root => {
+    const ghost = json(root, 'graph-tool', {op: 'component', name: 'Ghost'});
+    assert.deepEqual(ghost.usedIn, [
+        {file: 'src/legacy.cjs', line: 1},
+        {file: 'src/legacy.js', line: 1},
+        {file: 'src/legacy.mjs', line: 1},
+        {file: 'src/real.jsx', line: 1},
+        {file: 'src/real.tsx', line: 1},
+        {file: 'src/template.tsx', line: 2}
+    ]);
+    assert.equal(ghost.usedTotal, 6);
+    for (const name of ['AssertOnly', 'GenericOnly']) {
+        const result = json(root, 'graph-tool', {op: 'component', name});
+        assert.equal(result.found, false);
+        assert.equal(result.usedTotal, 0);
+        assert.deepEqual(result.usedIn, []);
+    }
+}, {
+    'package.json': REACT_PKG,
+    'src/assert.ts': 'const x = <Ghost>value;\nconst y = <AssertOnly>value;\nconst f = <GenericOnly extends object>(value: GenericOnly) => value;\n',
+    'src/legacy.js': 'export const view = <Ghost />;\n',
+    'src/legacy.mjs': 'export const view = <Ghost />;\n',
+    'src/legacy.cjs': 'const view = <Ghost />;\n',
+    'src/real.jsx': 'export const view = <Ghost />;\n',
+    'src/real.tsx': 'export const view = <Ghost />;\n',
+    'src/template.tsx': 'const text = `<Ghost />`;\nconst expr = `${<Ghost />}`;\n// <Ghost />\n/* <Ghost /> */\nconst id = <T,>(x: T) => x;\n'
+}, {empty: true}));
+
+test('component: legacy v10 jsxUsages из .ts инвалидируется без изменения mtime/size', () => project(root => {
+    const source = path.join(root, 'src/assert.ts');
+    const stat = fs.statSync(source);
+    const legacy = {__v: 10, 'src/assert.ts': {mtime: stat.mtimeMs, size: stat.size, data: {
+        entities: [], exports: [], specifiers: [], reexportAll: false, loc: 2,
+        jsxUsages: [{name: 'Ghost', line: 1}]
+    }}};
+    fs.writeFileSync(path.join(root, '.graph-deps-cache.json'), JSON.stringify(legacy));
+    const result = json(root, 'graph-tool', {op: 'component', name: 'Ghost'});
+    assert.equal(result.found, false);
+    assert.equal(result.usedTotal, 0);
+    assert.deepEqual(result.usedIn, []);
+    assert.equal(fs.statSync(source).mtimeMs, stat.mtimeMs);
+    assert.equal(fs.statSync(source).size, stat.size);
+}, {'package.json': REACT_PKG, 'src/assert.ts': 'const value = <Ghost>input;\n'}, {empty: true}));
+
 test('использование в собственном файле попадает в usedIn', () => project(root => {
     const r = json(root, 'graph-tool', {op: 'component', name: 'Row'});
     assert.equal(r.definedIn.length, 1);

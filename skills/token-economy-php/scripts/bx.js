@@ -20,19 +20,32 @@ try { process.stdout.setDefaultEncoding('utf8'); } catch (e) { /* ignore */ }
 
 // ---------- аргументы ----------
 const args = {};
+const argvArgs = {};
+const payloadFiles = [];
 for (const a of process.argv.slice(2)) {
   const i = a.indexOf('=');
-  if (a.startsWith('@')) { // @путь/payload.json — параметры из файла (UTF-8): удобно для кириллицы и многострочных правок
-    try { Object.assign(args, JSON.parse(fs.readFileSync(a.slice(1), 'utf8').replace(/^\uFEFF/, ''))); } catch (e) { fail('не удалось прочитать ' + a.slice(1) + ': ' + e.message); }
-  } else if (i > 0) args[a.slice(0, i)] = a.slice(i + 1);
-  else if (!args.op) args.op = a;
+  if (a.startsWith('@')) payloadFiles.push(a.slice(1));
+  else if (i > 0) argvArgs[a.slice(0, i)] = a.slice(i + 1);
+  else if (!argvArgs.op) argvArgs.op = a;
 }
+// Граница известна до чтения JSON: root из файлового payload не разрешает сам себя.
+const payloadRoot = path.resolve(argvArgs.root || '.');
+for (const file of payloadFiles) {
+  try {
+    const abs = safePath(payloadRoot, file);
+    if (!fs.statSync(abs).isFile()) throw new Error('payload должен быть обычным файлом');
+    Object.assign(args, JSON.parse(fs.readFileSync(abs, 'utf8').replace(/^\uFEFF/, '')));
+  } catch (e) { fail('не удалось прочитать ' + file + ': ' + e.message); }
+}
+Object.assign(args, argvArgs);
 if (!args.op && process.stdin.isTTY !== true) {
   try {
     const raw = fs.readFileSync(0, 'utf8').replace(/^\uFEFF/, '').trim();
     if (raw) Object.assign(args, JSON.parse(raw));
   } catch (e) { fail('не удалось разобрать JSON из stdin: ' + e.message); }
 }
+Object.assign(args, argvArgs); // Явные argv приоритетнее JSON независимо от позиции.
+if (payloadFiles.length) args.root = payloadRoot;
 const truthy = (v) => v === true || v === 'true' || v === '1' || v === 'Y';
 const ctx = makeCtx({ root: args.root, core: truthy(args.core) });
 
@@ -374,10 +387,10 @@ const ops = {
   rdeps() { relations(true); },
 
   // git-сигналы без индекса: сбор и кэш в scripts/git-signals.js (общая копия JS-скиллов).
-  // В Битриксе вендор и пользовательские файлы кодом проекта не считаются.
+  // В Битриксе модули поставщика и upload исключаются относительно найденного корня сайта.
   hotspots() {
     const { runHotspots } = require('./git-signals');
-    const hooks = ctx.mode === 'bitrix' ? { pathspec: [':(exclude)bitrix/modules', ':(exclude)upload'] } : {};
+    const hooks = ctx.mode === 'bitrix' ? { pathspec: ['bitrix/modules', 'upload'].map((dir) => ':(exclude)' + ctx.prefix + dir) } : {};
     const r = runHotspots(ctx.root, args, hooks);
     out(r.text);
     if (r.exit) process.exit(r.exit);

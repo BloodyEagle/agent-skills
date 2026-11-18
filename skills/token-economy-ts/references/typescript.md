@@ -8,7 +8,9 @@
 
 ## Навигация и чтение
 
-- Где определён селектор, пайп, `$переменная` или миксин — `graph` (op: `selector`).
+- Перед первой командой прочитай `references/typescript.md`, затем один раз вызови `graph op=info` в корне текущего проекта. После определения типа прочитай `references/angular.md` при `projectType=angular` или `references/react.md` при `projectType=react`. Перед `selector`/`generate` прочитай Angular-профиль, перед `component` — React-профиль независимо от projectType: эти команды имеют отдельные гейты.
+- Где определён Angular-селектор компонента или директивы — `graph` (op: `selector`).
+- Где определён пайп по имени, `$переменная`, миксин или другой стилевой символ — `graph` (op: `symbol`).
 - `search` для html и стилей вызывай с `ext` (`.html`, `.scss`, `.less`, `.css`).
 - Размер исходного файла (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`) заранее — `graph` (op: `node`, поле `loc`). Файл от 300 строк не читай целиком: сначала outline, затем Read(offset, limit).
 - В JS-проектах React/Node.js/Express/Vue используй тот же скилл; `require` и `module.exports` поддерживаются графом. `selector`, `generate` и `scaffold` без Angular неприменимы.

@@ -14,6 +14,75 @@ function fixture() {
     return root;
 }
 
+test('verify: decoded Unicode description 900/901/1024/1025, BOM и CRLF', (t) => {
+    const root = fixture();
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const skillFile = path.join(root, 'skills', 'skill-a', 'SKILL.md');
+    for (const char of ['я', '😀']) {
+        for (const length of [900, 901, 1024, 1025]) {
+            for (const style of ['plain', 'single', 'double', 'literal', 'folded', 'escape']) {
+                const text = char.repeat(length);
+                const scalar = style === 'plain' ? text : style === 'single' ? "'" + text + "'"
+                    : style === 'double' ? '"' + text + '"' : style === 'escape' ? '"' + (char === 'я' ? '\\u044F' : '\\U0001F600').repeat(length) + '"'
+                        : (style === 'literal' ? '|-' : '>-') + '\r\n  ' + text;
+                fs.writeFileSync(skillFile, '\uFEFF---\r\nname: skill-a\r\ndescription: ' + scalar + '\r\nversion: 1.0.0\r\n---\r\n');
+                writeManifest(root);
+                const r = run(root, ['verify']);
+                assert.strictEqual(r.code, length > 1024 ? 1 : 0, style + ' ' + length + '\n' + r.stderr);
+                if (length === 900) assert.doesNotMatch(r.stdout, /Предупреждения:/);
+                else if (length <= 1024) assert.match(r.stdout, new RegExp(`description ${length} Unicode code points`));
+                else assert.match(r.stderr, /description 1025 Unicode code points > 1024/);
+                assert.doesNotMatch(r.stdout + r.stderr, /не загрузят скилл/);
+            }
+        }
+    }
+});
+
+test('verify: folding/chomping и escapes учитываются после декодирования', (t) => {
+    const root = fixture();
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const skillFile = path.join(root, 'skills', 'skill-a', 'SKILL.md');
+    for (const [scalar, expected, length] of [
+        ['|\n  ' + 'я'.repeat(1023), 0, 1024],
+        ['|\n  ' + 'я'.repeat(1024), 1, 1025],
+        ['|+\n  ' + 'я'.repeat(1023) + '\n', 1, 1025],
+        ['>-\n  ' + 'я'.repeat(511) + '\n  ' + 'я'.repeat(512), 0, 1024],
+        ['>-\n  ' + 'я'.repeat(511) + '\n\n\n  ' + 'я'.repeat(512), 1, 1025],
+        ['"' + 'я'.repeat(1022) + "''" + '"', 0, 1024],
+        ["'" + 'я'.repeat(1023) + "''" + "'", 0, 1024],
+    ]) {
+        fs.writeFileSync(skillFile, '---\nname: skill-a\ndescription: ' + scalar + '\nversion: 1.0.0\n---\n');
+        writeManifest(root);
+        const r = run(root, ['verify']);
+        assert.strictEqual(r.code, expected, r.stderr);
+        assert.match(r.stdout + r.stderr, new RegExp(`description ${length} Unicode code points`));
+    }
+});
+
+test('verify: missing/empty/unsupported description и canonical version диагностируются', (t) => {
+    const root = fixture();
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+    const skillFile = path.join(root, 'skills', 'skill-a', 'SKILL.md');
+    for (const [field, diagnostic] of [
+        ['', /нет description/], ['description: ', /description пустое/], ["description: ''", /description пустое/],
+        ['description: "   "', /description пустое/], ['description: |\n', /description пустое/],
+        ['description: null', /description: неподдерживаемый YAML/], ['description: "\\q"', /description: неподдерживаемый YAML/],
+        ['description: >2\n  text', /description: неподдерживаемый YAML/],
+        ['description: text\ndescription: other', /description: неподдерживаемый YAML/],
+    ]) {
+        fs.writeFileSync(skillFile, '---\nname: skill-a\n' + field + '\nversion: 1.0.0\n---\n');
+        writeManifest(root);
+        const r = run(root, ['verify']);
+        assert.strictEqual(r.code, 1, r.stdout);
+        assert.match(r.stderr, diagnostic);
+    }
+    fs.writeFileSync(skillFile, '---\nname: skill-a\ndescription: text\nversion: 01.0.0\n---\n');
+    writeManifest(root);
+    const r = run(root, ['verify']);
+    assert.strictEqual(r.code, 1, r.stdout);
+    assert.match(r.stderr, /version: нужна каноническая числовая тройка/);
+});
+
 test('verify: зелёный на согласованной фикстуре', () => {
     const root = fixture();
     const r = run(root, ['verify']);

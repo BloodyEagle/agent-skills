@@ -2,7 +2,11 @@
 // pathPrefix, context, batch search; декодеры восстанавливают legacy-ответ побайтно.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {project, json, cli} = require('./helpers');
+const {project, json, cli, scripts} = require('./helpers');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const {spawnSync} = require('child_process');
 
 const legacyMatches = (root, args) => json(root, 'code-searcher', args);
 
@@ -143,3 +147,152 @@ test('batch search: requests_file читается из проекта', () => p
     assert.equal(r.total, 2);
     assert.deepEqual(decodeRuns(r.results[1]), r.results[0].matches);
 }, {'src/a1.ts': 'const alpha = 1;\n'}, {empty: true}));
+
+const requestClis = [
+    {script: 'code-searcher', good: {query: 'alpha'}, bad: {}},
+    {script: 'symbol-index', good: {file: 'src/a.ts'}, bad: {file: 'src/missing.ts'}},
+    {script: 'sig-reader', good: {name: './types.d.ts#Alpha'}, bad: {name: 'missing-pkg#X'}},
+    {script: 'graph-tool', good: {op: 'symbol', name: 'alpha'}, bad: {op: 'deps', file: 'src/missing.ts'}}
+];
+const requestFiles = {
+    'src/a.ts': 'export const alpha = 1;\n',
+    'types.d.ts': 'export declare class Alpha {}\n'
+};
+
+// helpers.cli намеренно отвергает fixture-ссылки; для confinement-кейсов нужен сырой
+// subprocess, а неизменность JSON/source проверяется отдельно, без обхода ссылок.
+function requestCli(root, script, file) {
+    const result = spawnSync(process.execPath, [path.join(scripts, script + '.js'), 'requests_file=' + file], {
+        cwd: root, encoding: 'utf8', timeout: 8000, windowsHide: true,
+        env: {...process.env, NODE_OPTIONS: '', HOME: root, USERPROFILE: root}
+    });
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    return {...result, payload: JSON.parse(result.stdout)};
+}
+
+function requestLink(t, target, link, directory = false) {
+    try {
+        fs.symlinkSync(target, link, directory && process.platform === 'win32' ? 'junction' : directory ? 'dir' : 'file');
+        return true;
+    } catch (e) {
+        if (!['EPERM', 'EACCES', 'ENOSYS'].includes(e.code)) throw e;
+        t.skip('Создание ссылки недоступно: ' + e.code);
+        return false;
+    }
+}
+
+test('requests_file reader: ошибка доступа сохраняется и JSON не читается', t => project(root => {
+    const {readRequestsFile} = require('../../skills/token-economy-ts/scripts/lib/requests-file');
+    const denied = Object.assign(new Error('Access denied'), {code: 'EACCES'});
+    fs.writeFileSync(path.join(root, 'reqs.json'), JSON.stringify([{query: 'alpha'}]));
+    const open = t.mock.method(fs, 'openSync', () => { throw denied; });
+    try {
+        assert.throws(() => readRequestsFile('reqs.json', root), error => error === denied);
+        assert.equal(open.mock.callCount(), 1);
+    } finally {
+        open.mock.restore();
+    }
+}, requestFiles, {empty: true}));
+
+for (const {script, good, bad} of requestClis) {
+    test(script + ': requests_file regular JSON сохраняет partial/all-failed exit и index', () => project(root => {
+        fs.writeFileSync(path.join(root, 'reqs.json'), JSON.stringify([good, bad]));
+        for (const file of ['reqs.json', path.join(root, 'reqs.json')]) {
+            const result = requestCli(root, script, file);
+            assert.equal(result.status, 0);
+            assert.equal(result.payload.failed, 1);
+            assert.deepEqual(result.payload.results.map(r => r.index), [0, 1]);
+            assert.ok(result.payload.results[1].error);
+        }
+        fs.writeFileSync(path.join(root, 'reqs.json'), JSON.stringify([bad]));
+        const all = requestCli(root, script, 'reqs.json');
+        assert.equal(all.status, 1);
+        assert.equal(all.payload.failed, 1);
+    }, requestFiles, {empty: true}));
+
+    test(script + ': requests_file directory/missing/traversal отклоняются до batch', () => project(root => {
+        fs.mkdirSync(path.join(root, 'reqdir'));
+        for (const file of ['reqdir', 'missing.json', '../outside.json', root + '-outside/reqs.json']) {
+            const result = requestCli(root, script, file);
+            assert.equal(result.status, 1, file);
+            assert.ok(result.payload.error, file);
+            assert.equal(result.payload.batch, undefined);
+        }
+        assert.match(requestCli(root, script, 'reqdir').payload.error, /обычным файлом/);
+        fs.writeFileSync(path.join(root, 'invalid.json'), '{invalid');
+        assert.match(requestCli(root, script, 'invalid.json').payload.error, /requests_file/);
+    }, requestFiles, {empty: true}));
+
+    test(script + ': requests_file internal directory alias допустим', t => project(root => {
+        fs.mkdirSync(path.join(root, 'data'));
+        const bytes = JSON.stringify([good]);
+        fs.writeFileSync(path.join(root, 'data/reqs.json'), bytes);
+        if (!requestLink(t, path.join(root, 'data'), path.join(root, 'alias'), true)) return;
+        const result = requestCli(root, script, 'alias/reqs.json');
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        assert.equal(result.payload.failed, 0);
+        assert.equal(fs.readFileSync(path.join(root, 'data/reqs.json'), 'utf8'), bytes);
+    }, requestFiles, {empty: true}));
+
+    test(script + ': requests_file internal file alias допустим', t => project(root => {
+        fs.writeFileSync(path.join(root, 'reqs.json'), JSON.stringify([good]));
+        if (!requestLink(t, path.join(root, 'reqs.json'), path.join(root, 'alias.json'))) return;
+        const result = requestCli(root, script, 'alias.json');
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        assert.equal(result.payload.failed, 0);
+    }, requestFiles, {empty: true}));
+
+    test(script + ': requests_file root-junction сохраняет реальную cwd границу', t => project(root => {
+        const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'te-request-root-'));
+        try {
+            fs.writeFileSync(path.join(root, 'reqs.json'), JSON.stringify([good]));
+            fs.mkdirSync(path.join(root, 'data'));
+            fs.writeFileSync(path.join(root, 'data/reqs.json'), JSON.stringify([good]));
+            const alias = path.join(sandbox, 'root-alias');
+            if (!requestLink(t, root, alias, true)) return;
+            if (!requestLink(t, path.join(root, 'data'), path.join(root, 'internal-alias'), true)) return;
+            for (const file of ['reqs.json', 'internal-alias/reqs.json']) {
+                const result = requestCli(alias, script, file);
+                assert.equal(result.status, 0, result.stdout + result.stderr);
+                assert.equal(result.payload.failed, 0);
+            }
+        } finally {
+            fs.rmSync(sandbox, {recursive: true, force: true});
+        }
+    }, requestFiles, {empty: true}));
+
+    for (const directory of [true, false]) {
+        test(script + ': requests_file external ' + (directory ? 'junction' : 'file-symlink') + ' не читается', t => project(root => {
+            const outside = fs.mkdtempSync(root + '-outside-');
+            const bytes = JSON.stringify([good]);
+            try {
+                fs.writeFileSync(path.join(outside, 'reqs.json'), bytes);
+                for (const file of [path.join(outside, 'reqs.json'), path.relative(root, path.join(outside, 'reqs.json'))]) {
+                    const direct = requestCli(root, script, file);
+                    assert.equal(direct.status, 1);
+                    assert.match(direct.payload.error, /requests_file вне рабочей директории/);
+                    assert.equal(direct.payload.batch, undefined);
+                }
+                const link = path.join(root, directory ? 'external' : 'external.json');
+                if (!requestLink(t, directory ? outside : path.join(outside, 'reqs.json'), link, directory)) return;
+                const result = requestCli(root, script, directory ? 'external/reqs.json' : 'external.json');
+                assert.equal(result.status, 1);
+                assert.match(result.payload.error, /realpath вне рабочей директории/);
+                assert.equal(result.payload.batch, undefined);
+                assert.equal(fs.readFileSync(path.join(outside, 'reqs.json'), 'utf8'), bytes);
+                assert.equal(fs.readFileSync(path.join(root, 'src/a.ts'), 'utf8'), requestFiles['src/a.ts']);
+            } finally {
+                fs.rmSync(outside, {recursive: true, force: true});
+            }
+        }, requestFiles, {empty: true}));
+    }
+
+    test(script + ': requests_file dangling link даёт явную ошибку', t => project(root => {
+        if (!requestLink(t, path.join(root, 'missing.json'), path.join(root, 'dangling.json'))) return;
+        const result = requestCli(root, script, 'dangling.json');
+        assert.equal(result.status, 1);
+        assert.match(result.payload.error, /Не удалось прочитать requests_file/);
+        assert.equal(result.payload.batch, undefined);
+    }, requestFiles, {empty: true}));
+}

@@ -8,6 +8,9 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { getSizes, createStats, addEntry, finishStats } = require('../../skills/token-economy-har/lib/stats');
 const { parseArgs } = require('../../skills/token-economy-har/har');
+const { formatResult } = require('../../skills/token-economy-har/lib/format');
+const { compactResult } = require('../../skills/token-economy-har/lib/compact');
+const { decodeCompact } = require('./compact-oracle');
 
 const CLI = path.join(__dirname, '..', '..', 'skills', 'token-economy-har', 'har.js');
 const fixture = name => path.join(__dirname, 'fixtures', `${name}.har`);
@@ -55,6 +58,97 @@ test('info: записи, страницы, честные суммы и про�
     assert.ok(Buffer.byteLength(cli(['info', '-f', fixture('mixed')]).stdout) <= 2048);
 });
 
+test('info: длинные методы с общим префиксом не сливаются в JSON/text/compact', () => {
+    for (const length of [33, 96]) {
+        const prefix = 'X'.repeat(length);
+        const methods = [`${prefix}A`, `${prefix}B`];
+        const entries = [methods[0], methods[0], methods[0], methods[1]].map(method => ({
+            startedDateTime: '2026-11-18T00:00:00Z', time: 1,
+            request: { method, url: 'https://x.test/' },
+            response: { status: 200, bodySize: 0, content: { size: 0, mimeType: 'text/plain' } }
+        }));
+        const aggregate = createStats();
+        for (const entry of entries) addEntry(aggregate, entry);
+        assert.deepEqual([...aggregate.methods], [[methods[0], 3], [methods[1], 1]]);
+        withDocument({ log: { entries } }, file => {
+            for (const flags of [[], ['--stream']]) {
+                const args = ['info', '-f', file, ...flags];
+                const result = json(args);
+                assert.equal(result.requests, 4);
+                assert.deepEqual(result.methods, { [methods[0]]: 3, [methods[1]]: 1 });
+                assert.equal(result.omittedMethods || 0, 0);
+                assert.equal(result.omittedMethodRequests || 0, 0);
+                assert.equal(result.truncated, false);
+                assert.deepEqual(decodeCompact(json([...args, '--compact'])), result);
+                const text = cli(args).stdout;
+                assert.match(text, /Запросов: 4/);
+                if (length > 35) {
+                    assert.ok(text.includes(`#1 ${'X'.repeat(32)}...=3`));
+                    assert.ok(text.includes(`#2 ${'X'.repeat(32)}...=1`));
+                    assert.match(text, /ключи сокращены, номера различают группы/);
+                    assert.match(text, /truncated: true/);
+                } else {
+                    assert.ok(text.includes(`${methods[0]}=3`));
+                    assert.ok(text.includes(`${methods[1]}=1`));
+                    assert.doesNotMatch(text, /truncated: true/);
+                }
+            }
+        });
+    }
+});
+
+test('info: бюджет не сокращает JSON-ключи, опущенные методы сохраняют счётчики', () => {
+    const prefix = 'X'.repeat(4096);
+    const aggregate = createStats();
+    for (const method of [`${prefix}A`, `${prefix}A`, `${prefix}B`]) {
+        addEntry(aggregate, {
+            startedDateTime: '2026-11-18T00:00:00Z', time: 1,
+            request: { method, url: 'https://x.test/' },
+            response: { status: 200, bodySize: 0, content: { size: 0, mimeType: 'text/plain' } }
+        });
+    }
+    const original = finishStats(aggregate);
+    const output = formatResult(original, { json: true });
+    const result = JSON.parse(output);
+    assert.equal(result.requests, 3);
+    assert.equal(result.truncated, true);
+    assert.equal(Object.keys(result.methods).length, 1);
+    for (const [method, count] of Object.entries(result.methods)) assert.equal(count, original.methods[method]);
+    assert.equal(Object.keys(result.methods).length + result.omittedMethods, 2);
+    assert.equal(Object.values(result.methods).reduce((sum, count) => sum + count, 0) + result.omittedMethodRequests, 3);
+    assert.ok(Buffer.byteLength(output) + 1 <= 8192);
+    assert.deepEqual(decodeCompact(JSON.parse(compactResult(result, output))), result);
+    assert.equal(Object.keys(original.methods).length, 2);
+    const text = formatResult(original);
+    assert.ok(text.includes(`#1 ${'X'.repeat(32)}...=2`));
+    assert.ok(text.includes(`#2 ${'X'.repeat(32)}...=1`));
+    assert.match(text, /truncated: true/);
+});
+
+test('info: текстовый лимит методов учитывает опущенные группы и запросы', () => {
+    const aggregate = createStats();
+    for (let index = 0; index < 15; index++) {
+        for (let count = 0; count <= index; count++) {
+            addEntry(aggregate, {
+                startedDateTime: '2026-11-18T00:00:00Z', time: 1,
+                request: { method: `M${String(index).padStart(2, '0')}`, url: 'https://x.test/' },
+                response: { status: 200, bodySize: 0, content: { size: 0, mimeType: 'text/plain' } }
+            });
+        }
+    }
+    const original = finishStats(aggregate);
+    const jsonResult = JSON.parse(formatResult(original, { json: true }));
+    assert.equal(Object.keys(jsonResult.methods).length, 15);
+    assert.equal(jsonResult.requests, 120);
+    assert.equal(jsonResult.truncated, false);
+    assert.deepEqual(decodeCompact(JSON.parse(compactResult(jsonResult))), jsonResult);
+    const text = formatResult(original);
+    assert.match(text, /ещё 3 групп \(42 запросов\)/);
+    assert.match(text, /truncated: true/);
+    assert.ok(text.includes('M11=12'));
+    assert.ok(!text.includes('M12=13'));
+});
+
 test('info: передача и разница размеров считаются только по известным bodySize', () => {
     for (const flags of [[], ['--stream']]) {
         const result = json(['info', '-f', fixture('partial-transfer'), ...flags]);
@@ -71,7 +165,7 @@ test('info: передача и разница размеров считаютс
         assert.equal(result.time.p95, 40);
         const text = cli(['info', '-f', fixture('partial-transfer'), ...flags]).stdout;
         assert.match(text, /не менее 61 B передано \(неизвестно для 2 записей\)/);
-        assert.match(text, /не менее 339 B разницы размеров \(неизвестно для 2 пар\)/);
+        assert.match(text, /известная часть разницы размеров: 339 B \(неизвестно для 2 пар\)/);
         assert.doesNotMatch(text, /339 B экономии/);
     }
     const aggregate = createStats();
@@ -80,6 +174,45 @@ test('info: передача и разница размеров считаютс
     assert.equal(complete.transferred_known, 20);
     assert.equal(complete.transferred_unknown_count, 0);
     assert.equal(complete.transferred_is_lower_bound, false);
+});
+
+test('info: отрицательная compression сохраняется, неизвестные пары не дают нижнюю границу', () => {
+    for (const unknown of [false, true]) {
+        const entries = [{
+            startedDateTime: '2026-11-18T00:00:00Z', time: 1,
+            request: { method: 'GET', url: 'https://x.test/' },
+            response: { status: 200, bodySize: 150, content: { size: 100, mimeType: 'text/plain' } }
+        }];
+        if (unknown) entries.push({
+            ...entries[0], response: { status: 200, bodySize: -1, content: { size: 100, compression: -25, mimeType: 'text/plain' } }
+        });
+        assert.equal(getSizes(entries[0]).compression, -50);
+        if (unknown) assert.equal(getSizes(entries[1]).compression, -25);
+        withDocument({ log: { entries } }, file => {
+            for (const flags of [[], ['--stream']]) {
+                const args = ['info', '-f', file, ...flags];
+                const result = json(args);
+                assert.equal(result.bytes.compression, -50);
+                assert.equal(result.bytes.unknownCompression, Number(unknown));
+                assert.equal(result.bytes.transferred_known, 150);
+                assert.equal(result.bytes.transferred_unknown_count, Number(unknown));
+                assert.equal(result.bytes.transferred_is_lower_bound, unknown);
+                assert.equal(result.truncated, false);
+                assert.deepEqual(decodeCompact(json([...args, '--compact'])), result);
+                const text = cli(args).stdout;
+                if (unknown) {
+                    assert.match(text, /известная часть разницы размеров: -50 B \(неизвестно для 1 пары\)/);
+                    assert.match(text, /не менее 150 B передано \(неизвестно для 1 записи\)/);
+                    assert.doesNotMatch(text, /не менее -50 B/);
+                    assert.doesNotMatch(text, /-50 B экономии/);
+                } else {
+                    assert.match(text, /-50 B экономии/);
+                    assert.match(text, /150 B передано/);
+                    assert.doesNotMatch(text, /известная часть|не менее/);
+                }
+            }
+        });
+    }
 });
 
 test('неизвестные размеры и времена не превращаются в известные нули', () => {

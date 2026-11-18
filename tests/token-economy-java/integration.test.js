@@ -73,6 +73,34 @@ test('index integration: symbols, injection, implementations and affected tests'
   assert.doesNotMatch(p.query('op=symbol', 'name=Generated'), /target\/Generated\.java/);
 });
 
+test('symbol: explicit owner/member is case-independent while member spelling and FQCN stay distinct', (t) => {
+  const p = fixture(t);
+  p.write('src/main/java/demo/OtherPaths.java', 'package demo;\npublic class OtherPaths { public static final String USERS = "/other"; }\n');
+  p.write('src/main/java/demo/lowercase.java', 'package demo;\npublic class lowercase { public static final String USERS = "/lower"; public void MixedCase() {} }\n');
+  // Java допускает lowercase nested-тип: FQCN имеет приоритет над ApiPaths.lowercase-методом.
+  p.write('src/main/java/demo/ApiPaths.java', 'package demo;\npublic class ApiPaths { public static final String USERS = "/api/users"; public void lowercase() {} public static class lowercase {} }\n');
+  for (const name of ['ApiPaths#USERS', 'demo.ApiPaths#USERS', 'apipaths#USERS', 'ApiPaths::USERS']) {
+    const found = p.query('op=symbol', 'name=' + name);
+    assert.match(found, /ApiPaths#USERS\s+field\s+src\/main\/java\/demo\/ApiPaths\.java:/);
+    assert.doesNotMatch(found, /OtherPaths|lowercase#USERS/);
+  }
+  assert.match(p.query('op=symbol', 'name=lowercase#USERS'), /lowercase#USERS\s+field/);
+  assert.match(p.query('op=symbol', 'name=lowercase#MixedCase'), /lowercase#MixedCase\s+method/);
+  assert.match(p.query('op=symbol', 'name=UserController#get'), /UserController#get\s+method/);
+  assert.match(p.query('op=symbol', 'name=demo.UserController.get'), /UserController#get\s+method/);
+  const fqn = p.query('op=symbol', 'name=demo.ApiPaths');
+  assert.match(fqn, /demo\.ApiPaths\s+class/);
+  assert.doesNotMatch(fqn, /#USERS/);
+  const lowercaseType = p.query('op=symbol', 'name=demo.ApiPaths.lowercase');
+  assert.match(lowercaseType, /demo\.ApiPaths\.lowercase\s+class/);
+  assert.doesNotMatch(lowercaseType, /ApiPaths#lowercase/);
+  const unqualified = p.query('op=symbol', 'name=USERS');
+  assert.match(unqualified, /ApiPaths#USERS/);
+  assert.match(unqualified, /OtherPaths#USERS/);
+  assert.match(p.query('op=symbol', 'name=ApiPaths#users'), /не найдено/);
+  assert.match(p.query('op=symbol', 'name=lowercase#mixedcase'), /не найдено/);
+});
+
 test('Spring integration: endpoints, constants, security, beans and configuration usages', (t) => {
   const p = fixture(t);
   const endpoints = p.query('op=endpoints', 'query=/api/users');

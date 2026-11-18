@@ -206,7 +206,7 @@ function addEntry(stats, entry) {
     }
     const status = knownSize(entry.response?.status);
     const statusKey = status === null ? 'unknown' : String(status);
-    const method = typeof entry.request?.method === 'string' ? entry.request.method.slice(0, 32) : '?';
+    const method = typeof entry.request?.method === 'string' ? entry.request.method : '?';
     stats.statuses.set(statusKey, (stats.statuses.get(statusKey) || 0) + 1);
     stats.methods.set(method, (stats.methods.get(method) || 0) + 1);
     const mime = getMime(entry);

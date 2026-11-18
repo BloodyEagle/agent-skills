@@ -30,6 +30,62 @@ function linkDir(t, target, link) {
     return true;
 }
 
+test('install: неверные metadata не создают назначение и сохраняют прежнюю установку', (t) => {
+    const {root, inst, src} = fixture(t);
+    assertCode(run(root, ['install', 'demo', '--to', inst]), 0, 'initial install');
+    const metaFile = path.join(inst, 'demo', '.installed.json');
+    const metaBefore = fs.readFileSync(metaFile);
+    const installedSkill = fs.readFileSync(path.join(inst, 'demo', 'SKILL.md'));
+    const skillFile = path.join(src, 'SKILL.md');
+    const original = fs.readFileSync(skillFile, 'utf8');
+    const fresh = path.join(root, 'fresh-install');
+    for (const invalid of [
+        {description: 'null'}, {description: '"\\q"'}, {description: '"' + '😀'.repeat(1025) + '"'},
+        {description: "''"}, {version: '01.0.0'}, {version: '1.0.9007199254740992'}, {frontVersion: '1.0.1'},
+    ]) {
+        fs.writeFileSync(path.join(src, 'VERSION'), (invalid.version || '1.0.0') + '\n');
+        fs.writeFileSync(skillFile, original.replace('description: тестовый скилл', 'description: ' + (invalid.description ?? 'текст'))
+            .replace('version: 1.0.0', 'version: ' + (invalid.frontVersion || '1.0.0')));
+        for (const to of [fresh, inst]) {
+            const r = run(root, ['install', 'demo', '--to', to]);
+            assertCode(r, 1, 'install metadata refusal');
+            assert.match(r.stderr, /description|VERSION|расходятся/);
+            assert.equal(fs.existsSync(fresh), false);
+            assert.deepEqual(fs.readFileSync(metaFile), metaBefore);
+            assert.deepEqual(fs.readFileSync(path.join(inst, 'demo', 'SKILL.md')), installedSkill);
+            assert.deepEqual(fs.readdirSync(inst), ['demo']);
+        }
+    }
+});
+
+test('install: metadata испорченного stage проверяются до .installed.json и замены назначения', (t) => {
+    const {root, inst} = fixture(t);
+    assertCode(run(root, ['install', 'demo', '--to', inst]), 0, 'initial install');
+    const metaFile = path.join(inst, 'demo', '.installed.json');
+    const before = fs.readFileSync(metaFile);
+    const hook = path.join(root, 'copy-bad-metadata.cjs');
+    fs.writeFileSync(hook, `const fs = require('node:fs');
+const path = require('node:path');
+const copy = fs.cpSync;
+fs.cpSync = (src, dest, options) => {
+    copy(src, dest, options);
+    fs.writeFileSync(path.join(dest, 'SKILL.md'), '---\\nname: demo\\ndescription: null\\nversion: 1.0.0\\n---\\n');
+};
+const write = fs.writeFileSync;
+fs.writeFileSync = (file, ...args) => {
+    if (path.basename(file) === '.installed.json') throw new Error('unexpected installed metadata write');
+    return write(file, ...args);
+};
+`);
+    const r = spawnSync(process.execPath, ['--require', hook, cli, '--root', root, 'install', 'demo', '--to', inst],
+        {encoding: 'utf8', timeout: 10000});
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /description: неподдерживаемый YAML/);
+    assert.doesNotMatch(r.stderr, /unexpected installed metadata write/);
+    assert.deepEqual(fs.readFileSync(metaFile), before);
+    assert.deepEqual(fs.readdirSync(inst), ['demo']);
+});
+
 test('install: повторная установка удаляет исчезнувшие файлы источника', (t) => {
     const {root, inst, src} = fixture(t);
     const obsolete = path.join(src, 'scripts', 'obsolete.js');

@@ -15,6 +15,63 @@ function fixture(t) {
     return {root, src, manifest};
 }
 
+test('bump: ошибки decoded metadata сохраняют все три файла и не оставляют tmp', (t) => {
+    const {root, src, manifest} = fixture(t);
+    const versionFile = path.join(src, 'VERSION');
+    const skillFile = path.join(src, 'SKILL.md');
+    const files = [versionFile, skillFile, path.join(root, 'skills', 'manifest.json')];
+    const original = fs.readFileSync(skillFile, 'utf8');
+    const cases = [
+        {skill: original.replace('description: тестовый скилл\n', '')},
+        ...['', "''", '"   "', 'null', '"' + '😀'.repeat(1025) + '"', '|2\n  text', '"\\q"'].map((value) =>
+            ({skill: original.replace('description: тестовый скилл', 'description: ' + value)})),
+        ...['01.0.0', '1.0.0-alpha', '1.0.0+build', '9007199254740992.0.0'].map((version) => ({version})),
+        ...['01.0.0', '"1.0.0"', '1.0.1', '1.0.0\nversion: 1.0.0'].map((version) =>
+            ({skill: original.replace('version: 1.0.0', 'version: ' + version)})),
+        {manifestVersion: '1.00.0'}, {manifestVersion: '1.0.9007199254740992'}, {manifestVersion: 1},
+    ];
+    for (const invalid of cases) {
+        fs.writeFileSync(versionFile, (invalid.version || '1.0.0') + '\n');
+        fs.writeFileSync(skillFile, invalid.skill || original);
+        writeManifestObj(root, {...manifest, skills: [{...manifest.skills[0], version: invalid.manifestVersion ?? '1.0.0'}]});
+        const before = files.map((file) => fs.readFileSync(file));
+        const r = run(root, ['bump', 'demo', 'patch']);
+        assertCode(r, 1, 'bump metadata refusal');
+        assert.match(r.stderr, /description|VERSION|version|расходятся/);
+        files.forEach((file, index) => assert.deepEqual(fs.readFileSync(file), before[index]));
+        assert.deepEqual(fs.readdirSync(src).sort(), ['SKILL.md', 'VERSION', 'scripts']);
+        assert.deepEqual(fs.readdirSync(path.join(root, 'skills')).sort(), ['demo', 'manifest.json']);
+    }
+});
+
+test('manifest: невалидный metadata второго скилла не публикует частичный манифест', (t) => {
+    const {root, manifest} = fixture(t);
+    const second = makeSkill(root, 'z-demo');
+    fs.writeFileSync(path.join(second, 'SKILL.md'), '---\nname: z-demo\ndescription: &anchor text\nversion: 1.0.0\n---\n');
+    const manifestFile = path.join(root, 'skills', 'manifest.json');
+    const before = fs.readFileSync(manifestFile);
+    const r = run(root, ['manifest']);
+    assertCode(r, 1, 'manifest refusal');
+    assert.match(r.stderr, /description: неподдерживаемый YAML/);
+    assert.deepEqual(fs.readFileSync(manifestFile), before);
+    assert.deepEqual(readManifest(root), manifest);
+    assert.deepEqual(fs.readdirSync(path.join(root, 'skills')).sort(), ['demo', 'manifest.json', 'z-demo']);
+});
+
+test('check: неканонический version в .installed.json имеет статус битой метки', (t) => {
+    const {root} = fixture(t);
+    const inst = path.join(root, 'installed');
+    assertCode(run(root, ['install', 'demo', '--to', inst]), 0, 'install');
+    const metaFile = path.join(inst, 'demo', '.installed.json');
+    const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+    for (const version of ['01.0.0', '1.0.0-alpha', '1.0.0+build', '9007199254740992.0.0', '1.0.0\n', 1]) {
+        fs.writeFileSync(metaFile, JSON.stringify({...meta, version}));
+        const r = run(root, ['check', '--dir', inst, '--json']);
+        assertCode(r, 0, 'check');
+        assert.equal(JSON.parse(r.stdout)[0].status, 'неизвестно (битый .installed.json)');
+    }
+});
+
 test('bump: битый манифест не меняет VERSION и SKILL.md', (t) => {
     const {root, src} = fixture(t);
     const version = fs.readFileSync(path.join(src, 'VERSION'));

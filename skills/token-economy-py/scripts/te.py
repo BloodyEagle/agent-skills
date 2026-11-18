@@ -24,6 +24,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from collections import deque
 from datetime import datetime, timezone
 from importlib.machinery import EXTENSION_SUFFIXES, PathFinder
@@ -368,27 +369,81 @@ def parse_file(path):
     return {"imports": sc.imports, "ents": collect_entities(tree), "main": has_main_guard(tree), "loc": loc, "err": None}
 
 
+# ---------- кэш: source aliases здесь недопустимы ----------
+
+def _cache_entry(path, directory=False):
+    try:
+        st = path.lstat()  # dangling links тоже существуют как endpoints
+    except FileNotFoundError:
+        return None
+    reparse = getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if stat.S_ISLNK(st.st_mode) or reparse:
+        raise ValueError("ссылка в пути кэша: " + str(path))
+    expected = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected(st.st_mode) or (not directory and st.st_nlink != 1):
+        raise ValueError("небезопасный endpoint кэша: " + str(path))
+    return st
+
+
+def cache_path(root, rel, create=False):
+    """Только прямой файл в реальном .token-economy; root alias разрешён, cache aliases — нет."""
+    relative = Path(rel)
+    if (relative.is_absolute() or relative.drive or len(relative.parts) != 2
+            or relative.parts[0] != CACHE_DIR or relative.parts[1] == ".."):
+        raise ValueError("путь вне каталога кэша: " + str(rel))
+    base = Path(root).resolve(strict=True)
+    directory = base / CACHE_DIR
+    if _cache_entry(directory, directory=True) is None and create:
+        directory.mkdir(exist_ok=True)
+        _cache_entry(directory, directory=True)
+    # Не канонизируем endpoint: иначе внутренняя ссылка может превратиться в исходник.
+    if directory.resolve() != directory:
+        raise ValueError("нереальный каталог кэша: " + str(directory))
+    endpoint = directory / relative.name
+    _cache_entry(endpoint)
+    _cache_entry(directory / ".gitignore")
+    return endpoint
+
+
+def _publish_cache(root, rel, text):
+    """Полная запись в собственный эксклюзивный tmp, затем replace без удаления старого файла."""
+    endpoint = cache_path(root, rel, create=True)
+    fd, tmp = tempfile.mkstemp(prefix="." + endpoint.name + ".", suffix=".tmp", dir=str(endpoint.parent))
+    try:
+        stream = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        fd = None  # дескриптор принадлежит stream; tmp не открывается повторно по имени
+        with stream:
+            stream.write(text)
+        if cache_path(root, rel) != endpoint:
+            raise ValueError("каталог кэша изменился до публикации")
+        os.replace(tmp, endpoint)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(tmp)  # только имя, полученное нашим mkstemp; фиксированные *.tmp не трогаем
+        except FileNotFoundError:
+            pass
+
+
 # ---------- построение графа ----------
 
 def load_json(root, rel):
-    p = safe_path(root, rel)
+    p = cache_path(root, rel)
     try:
         with p.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except (OSError, ValueError):
         return None
 
 
 def save_json(root, rel, obj):
-    p = safe_path(root, rel)
-    gi = safe_path(root, str(Path(rel).parent / ".gitignore"))
-    tmp = safe_path(root, rel + ".tmp")
-    p.parent.mkdir(parents=True, exist_ok=True)
-    if not gi.exists():
-        gi.write_text("*\n", encoding="utf-8")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
-    os.replace(tmp, p)
+    text = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    p = cache_path(root, rel, create=True)
+    gi_rel = join(CACHE_DIR, ".gitignore")
+    if _cache_entry(p.parent / ".gitignore") is None:
+        _publish_cache(root, gi_rel, "*\n")
+    _publish_cache(root, rel, text)
 
 
 def source_roots(root, extra):

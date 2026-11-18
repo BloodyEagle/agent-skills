@@ -363,6 +363,207 @@ test('Groovy include без скобок обнаруживает заявлен
   for (const name of [':app', ':core', ':feature:login']) assert.ok(output.includes(name), output);
 });
 
+test('строки сохраняются при любом порядке атрибутов и обоих видах кавычек', (t) => {
+  const p = project(t);
+  p.write('app/src/main/res/values/strings.xml', `<resources>
+  <!-- <string name="ghost">Ghost</string> -->
+  <string translatable="false" name="before_double">До &amp; после</string>
+  <string name="after_double" translatable="false">Double</string>
+  <string translatable='false' name='before_single'>Single</string>
+  <string name='after_single' translatable='false'>Single after</string>
+  <string tools:note="name='fake' > translatable='false'" translatable='true'
+      name="visible">Привет <!-- скрыто -->мир</string>
+  <string name="normal">Normal</string>
+</resources>`);
+  for (const key of ['before_double', 'after_double', 'before_single', 'after_single']) {
+    assert.match(ok(p.run({ op: 'res', name: key })), /translatable=false/, key);
+    assert.match(ok(p.run({ op: 'symbol', name: key })), /string.*strings\.xml/, key);
+  }
+  assert.match(ok(p.run({ op: 'res', name: 'before_double' })), /До & после/);
+  const visible = ok(p.run({ op: 'res', name: 'visible' }));
+  assert.match(visible, /Привет мир/);
+  assert.doesNotMatch(visible, /translatable=false|скрыто/);
+  assert.doesNotMatch(ok(p.run({ op: 'res', name: 'normal' })), /translatable=false/);
+  assert.match(ok(p.run({ op: 'res' })), /ключей 6/);
+  for (const key of ['ghost', 'fake']) {
+    assert.match(ok(p.run({ op: 'symbol', name: key })), /Не найдено/);
+    rejected(p.run({ op: 'res', name: key }), /строка не найдена/);
+  }
+});
+
+test('missing строит все разделы только из default и настоящих локалей', (t) => {
+  const p = project(t);
+  p.write('app/src/main/res/values/strings.xml', `<resources>
+    <string name="title">Title</string>
+    <string name="missing_key">Missing</string>
+    <string name="qualified_translation">Default remains translatable</string>
+    <string translatable='false' name='not_translated'>Ignored</string>
+  </resources>`);
+  for (const locale of ['en', 'en-rGB', 'b+es']) {
+    p.write(`app/src/main/res/values-${locale}/strings.xml`, `<resources>
+      <string name="title">Title</string>
+      <string name="locale_only">Locale</string>
+    </resources>`);
+  }
+  const qualifiers = ['night', 'land', 'w600dp', 'en-night', 'en-rGB-land', 'b+es-night', 'car'];
+  for (const [i, qualifier] of qualifiers.entries()) {
+    p.write(`app/src/main/res/values-${qualifier}/strings.xml`, `<resources>
+      <string name="qualified_only_${i}">Config</string>
+      <string name="missing_key">Not a locale translation</string>
+      <string translatable="false" name="qualified_translation">Config</string>
+      <string name="locale_only">Config is not an extra locale</string>
+    </resources>`);
+  }
+  const output = ok(p.run({ op: 'res', missing: 1 }));
+  const missingLocales = /missing_key — нет в: ([^\n]+)/.exec(output);
+  const extraLocales = /locale_only \(есть только в: ([^)]+)\)/.exec(output);
+  const qualifiedLocales = /qualified_translation — нет в: ([^\n]+)/.exec(output);
+  assert.ok(missingLocales, output);
+  assert.ok(extraLocales, output);
+  assert.ok(qualifiedLocales, output);
+  assert.deepEqual(missingLocales[1].split(', ').sort(), ['b+es', 'en', 'en-rGB']);
+  assert.deepEqual(extraLocales[1].split(', ').sort(), ['b+es', 'en', 'en-rGB']);
+  assert.deepEqual(qualifiedLocales[1].split(', ').sort(), ['b+es', 'en', 'en-rGB']);
+  assert.doesNotMatch(output, /qualified_only_|night|land|w600dp|\bcar\b|not_translated/);
+  // Обзор и name= продолжают показывать конфигурационные ресурсы.
+  assert.match(ok(p.run({ op: 'res' })), /values-night/);
+  assert.match(ok(p.run({ op: 'res', name: 'qualified_only_0', missing: 1 })), /night: Config/);
+});
+
+test('missing без настоящих локалей не включает конфигурационные ключи', (t) => {
+  const p = project(t);
+  p.write('app/src/main/res/values/strings.xml', '<resources><string name="title">Title</string></resources>');
+  for (const qualifier of ['night', 'land', 'en-night', 'car']) {
+    p.write(`app/src/main/res/values-${qualifier}/strings.xml`, '<resources><string name="qualified_only">Config</string></resources>');
+  }
+  assert.match(ok(p.run({ op: 'res', missing: 1 })), /^Локалей со строками нет — проверять missing нечего\./);
+});
+
+test('info выбирает только корневой gradle/libs.versions.toml среди TOML до и после него', (t) => {
+  const p = project(t);
+  p.write('aa-before.toml', '[versions]\nagp = "before"\nkotlin = "before"\n');
+  const catalog = p.write('gradle/libs.versions.toml', '[versions]\nagp = "8.8.1"\nkotlin = "2.1.10"\nroom = "2.7.0"\n');
+  p.write('zz-after.toml', '[versions]\nagp = "after"\nkotlin = "after"\n');
+  p.write('libs.versions.toml', '[versions]\nkotlin = "wrong-root"\n');
+  p.write('app/gradle/libs.versions.toml', '[versions]\nkotlin = "nested"\n');
+  p.write('gradle/other.versions.toml', '[versions]\nkotlin = "custom"\n');
+  const output = ok(p.run({ op: 'info' }));
+  assert.match(output, /Версии: AGP 8\.8\.1 \| Kotlin 2\.1\.10 \| Room 2\.7\.0/);
+  assert.doesNotMatch(output, /before|after|wrong-root|nested|custom/);
+  // Тёплый индекс не подменяет источник посторонним TOML; удаление catalog убирает версии.
+  p.write('zz-after.toml', '[versions]\nkotlin = "changed"\n');
+  assert.match(ok(p.run({ op: 'info' })), /Kotlin 2\.1\.10/);
+  fs.unlinkSync(catalog);
+  assert.doesNotMatch(ok(p.run({ op: 'info' })), /Версии:|Kotlin changed|Kotlin nested|Kotlin custom/);
+});
+
+test('nav отделяет root global actions от закрытых и self-closing destinations', (t) => {
+  const p = project(t);
+  p.write('app/src/main/res/navigation/main.xml', `<navigation app:startDestination='@id/home'>
+    <fragment android:id='@+id/home' android:name='sample.Home' android:label='Home > Next'>
+      <action app:destination='@id/next' android:id='@+id/local_next'>
+        <argument android:name='count' android:defaultValue='1'/>
+      </action>
+    </fragment>
+    <action android:id='@+id/global_between' app:destination='@id/next'/>
+    <fragment android:id='@+id/empty' android:name='sample.Empty'/>
+    <action android:id='@+id/global_after_empty' app:destination='@id/next'/>
+    <fragment android:id='@+id/next' android:name='sample.Next'>
+      <action android:id='@+id/local_home' app:destination='@id/home'/>
+    </fragment>
+    <action android:id='@+id/global_last' app:destination='@id/home'/>
+  </navigation>`);
+  const output = ok(p.run({ op: 'nav' }));
+  assert.match(output, /\(start=@id\/home\)/);
+  assert.match(output, /fragment home -> sample\.Home «Home > Next»\n    action local_next -> next/);
+  assert.match(output, /fragment empty -> sample\.Empty\n  fragment next/);
+  assert.match(output, /fragment next -> sample\.Next\n    action local_home -> home/);
+  for (const key of ['global_between', 'global_after_empty', 'global_last']) {
+    assert.match(output, new RegExp(`^  global action ${key} -> `, 'm'));
+    assert.doesNotMatch(output, new RegExp(`^    action ${key} -> `, 'm'));
+  }
+  const next = ok(p.run({ op: 'nav', route: 'next' }));
+  assert.match(next, /action local_next -> next \(from=home\)/);
+  assert.match(next, /global action global_between -> next/);
+  assert.match(next, /global action global_after_empty -> next/);
+  assert.doesNotMatch(next, /global_last|local_home/);
+  assert.match(ok(p.run({ op: 'nav', route: 'home' })), /global action global_last -> home/);
+});
+
+test('nav сохраняет владельцев вложенных navigation и destinations до и после детей', (t) => {
+  const p = project(t);
+  p.write('app/src/main/res/navigation/nested.xml', `<navigation app:startDestination="@id/section">
+    <navigation android:id="@+id/section" app:startDestination="@id/child">
+      <action android:id="@+id/section_before" app:destination="@id/outside"/>
+      <custom android:id="@+id/parent" android:name="sample.Parent">
+        <action android:id="@+id/parent_before" app:destination="@id/outside"/>
+        <custom android:id="@+id/child" android:name="sample.Child">
+          <action android:id="@+id/child_action" app:destination="@id/outside"/>
+        </custom>
+        <action android:id="@+id/parent_after" app:destination="@id/outside"/>
+      </custom>
+      <action android:id="@+id/section_after" app:destination="@id/outside"/>
+    </navigation>
+    <action android:id="@+id/root_global" app:destination="@id/outside"/>
+    <activity android:id="@+id/outside" android:name="sample.Outside"/>
+  </navigation>`);
+  const output = ok(p.run({ op: 'nav' }));
+  assert.match(output, /navigation section -> \?\n    action section_before -> outside\n    action section_after -> outside/);
+  assert.match(output, /custom parent -> sample\.Parent\n    action parent_before -> outside\n    action parent_after -> outside/);
+  assert.match(output, /custom child -> sample\.Child\n    action child_action -> outside/);
+  assert.match(output, /^  global action root_global -> outside$/m);
+  assert.doesNotMatch(output, /global action (section_|parent_|child_)/);
+  const route = ok(p.run({ op: 'nav', route: 'outside' }));
+  for (const [key, owner] of [['section_before', 'section'], ['section_after', 'section'], ['parent_before', 'parent'], ['parent_after', 'parent'], ['child_action', 'child']]) {
+    assert.ok(route.includes(`action ${key} -> outside (from=${owner})`), route);
+  }
+  assert.match(route, /global action root_global -> outside/);
+  assert.match(ok(p.run({ op: 'nav', route: 'section' })), /объявлен: nav-dest/);
+});
+
+test('nav игнорирует XML-комментарии и не размывает границы action/deepLink', (t) => {
+  const p = project(t);
+  p.write('app/src/main/res/navigation/comments.xml', `<navigation app:startDestination="@id/real">
+    <!-- <fragment android:id="@+id/ghost"><action android:id="@id/fake" app:destination="@id/real"/></fragment> -->
+    <fragment android:id="@+id/real" android:name="sample.Real">
+      <!-- </fragment><action android:id="@id/comment_global" app:destination="@id/real"/> -->
+      <action android:id="@id/local" app:destination="@id/real"/>
+      <deepLink app:uri="https://example.test/real?next=>"/>
+      <![CDATA[<action android:id="@id/cdata_fake" app:destination="@id/real"/>]]>
+    </fragment>
+    <!-- <deepLink app:uri="https://fake.test"/> -->
+    <action android:id="@id/global" app:destination="@id/real"></action>
+  </navigation>`);
+  const output = ok(p.run({ op: 'nav' }));
+  assert.match(output, /fragment real -> sample\.Real\n    action local -> real/);
+  assert.match(output, /^  global action global -> real$/m);
+  assert.match(output, /deepLink: https:\/\/example\.test\/real\?next=>/);
+  assert.doesNotMatch(output, /ghost|fake|comment_global/);
+  const route = ok(p.run({ op: 'nav', route: 'real' }));
+  assert.match(route, /action local -> real \(from=real\)/);
+  assert.match(route, /global action global -> real/);
+  assert.doesNotMatch(route, /ghost|fake|comment_global/);
+});
+
+test('кэш с прежней parser revision пересобирает XML/resources/catalog без изменения исходников', (t) => {
+  const p = project(t);
+  p.write('app/src/main/res/values/strings.xml', '<resources><string translatable="false" name="fresh">Fresh</string></resources>');
+  p.write('app/src/main/res/navigation/main.xml', '<navigation><fragment android:id="@id/home"/><action android:id="@id/global" app:destination="@id/home"/></navigation>');
+  p.write('gradle/libs.versions.toml', '[versions]\nkotlin = "2.1.10"\n');
+  ok(p.run({ op: 'info' }));
+  const cache = path.join(p.root, '.kt-cache/index.json');
+  const legacy = JSON.parse(fs.readFileSync(cache, 'utf8'));
+  delete legacy.parserRevision;
+  legacy.data.xml.values[0].strMap = {};
+  legacy.data.xml.navs[0].globalActions = [];
+  legacy.data.gradle.toml.versions.kotlin = 'stale';
+  fs.writeFileSync(cache, JSON.stringify(legacy));
+  assert.match(ok(p.run({ op: 'res', name: 'fresh' })), /Fresh \(translatable=false\)/);
+  assert.match(ok(p.run({ op: 'nav' })), /global action global -> home/);
+  assert.match(ok(p.run({ op: 'info' })), /Kotlin 2\.1\.10/);
+  assert.doesNotMatch(ok(p.run({ op: 'info' })), /Kotlin stale/);
+});
+
 test('BCP47 локали участвуют в missing, конфигурационные values исключены', (t) => {
   const p = project(t);
   p.write('app/src/main/res/values/strings.xml', '<resources><string name="title">Title</string><string name="missing_key">Missing</string></resources>');

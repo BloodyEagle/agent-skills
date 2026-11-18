@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const {spawnSync} = require('child_process');
+const {randomBytes} = require('crypto');
 
 const CACHE_FILE = '.git-signals.json';
 const CACHE_VERSION = 1;
@@ -224,6 +225,77 @@ function collectGitSignals(root, opts) {
     };
 }
 
+function cacheEndpoint(root) {
+    // Корневой symlink/junction допустим: работаем в его реальном каталоге, не через alias.
+    const dir = fs.realpathSync(root);
+    if (!fs.statSync(dir).isDirectory()) throw new SigError('корень кэша не каталог');
+    return {dir, file: path.join(dir, CACHE_FILE)};
+}
+
+function cacheFileStat(file) {
+    let st;
+    try {
+        st = fs.lstatSync(file);
+    } catch (e) {
+        if (e.code === 'ENOENT') return null;
+        throw e;
+    }
+    // lstat, не stat: даже внутренняя или dangling-ссылка кэша недопустима.
+    if (st.isSymbolicLink() || !st.isFile()) throw new SigError('кэш должен быть обычным файлом, не ссылкой: ' + file);
+    return st;
+}
+
+function readSignalsCache(root) {
+    let fd;
+    try {
+        const {file} = cacheEndpoint(root);
+        const before = cacheFileStat(file);
+        if (!before) return null;
+        fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+        const opened = fs.fstatSync(fd);
+        if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) return null;
+        return JSON.parse(fs.readFileSync(fd, 'utf8'));
+    } catch (e) {
+        return null; // отсутствующий, небезопасный, недоступный или повреждённый кэш — miss
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+    }
+}
+
+function publishSignalsCache(root, data) {
+    const {dir, file} = cacheEndpoint(root);
+    cacheFileStat(file); // отказ до создания tmp, в том числе для dangling-ссылки
+    let tmp, fd, owned = false;
+    try {
+        for (let attempt = 0; attempt < 8; attempt++) {
+            tmp = path.join(dir, CACHE_FILE + '.' + process.pid + '.' + randomBytes(12).toString('hex') + '.tmp');
+            try {
+                fd = fs.openSync(tmp, 'wx', 0o600);
+                owned = true;
+                break;
+            } catch (e) {
+                if (e.code !== 'EEXIST') throw e;
+            }
+        }
+        if (!owned) throw new SigError('не удалось создать уникальный tmp кэша');
+        fs.writeFileSync(fd, JSON.stringify(data), 'utf8');
+        fs.closeSync(fd);
+        fd = undefined;
+        cacheFileStat(file); // повторная проверка endpoint перед публикацией
+        fs.renameSync(tmp, file); // без открытия конечного пути и без unlink-fallback
+        owned = false;
+    } finally {
+        try {
+            if (fd !== undefined) fs.closeSync(fd);
+        } finally {
+            if (owned) {
+                try { fs.unlinkSync(tmp); } catch (e) { /* очищаем только собственный tmp */ }
+            }
+        }
+    }
+}
+
+// Проверки не являются crash-safe транзакцией и не изолируют от враждебной подмены предков.
 /**
  * Сбор с кэшем: валидный .git-signals.json (head + since + maxCommits + pathspec + версия)
  * отдаётся без запуска git вообще; иначе один проход git log и запись кэша (best-effort).
@@ -246,13 +318,7 @@ function loadSignals(root, opts) {
         if (!m) throw new SigError('HEAD не определён: ни файлы .git, ни git rev-parse не помогли');
         head = 'unborn:' + m[1].trim();
     }
-    const cachePath = path.join(root, CACHE_FILE);
-    let cache = null;
-    try {
-        cache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-    } catch (e) {
-        cache = null; // нет кэша или повреждён — пересбор
-    }
+    const cache = readSignalsCache(root);
     const valid = cache && cache.version === CACHE_VERSION && cache.head === head
         && cache.since === opts.since && cache.maxCommits === opts.maxCommits
         && JSON.stringify(cache.pathspec || []) === JSON.stringify(opts.pathspec || [])
@@ -260,7 +326,7 @@ function loadSignals(root, opts) {
     if (valid) return {data: cache, fromCache: true};
     const data = collectGitSignals(root, {since: opts.since, maxCommits: opts.maxCommits, pathspec: opts.pathspec, head});
     try {
-        fs.writeFileSync(cachePath, JSON.stringify(data));
+        publishSignalsCache(root, data);
     } catch (e) {
         process.stderr.write('Предупреждение: кэш не записан (' + e.message + ')\n');
     }
@@ -434,6 +500,8 @@ module.exports = {
     percentileRanks,
     perLine,
     pluralRu,
+    publishSignalsCache,
+    readSignalsCache,
     readHeadSha,
     resolveSince,
     revParseHead,

@@ -9,6 +9,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {execFileSync} = require('node:child_process');
 const {hashDir, requiresOf, isExcluded} = require('./lib/hash');
+const {parseVersion, parseDescription, parseFrontmatterVersion, descriptionIssue,
+    descriptionLimit: DESCRIPTION_LIMIT, descriptionWarn: DESCRIPTION_WARN} = require('./lib/metadata');
 
 // ---------- разбор аргументов ----------
 
@@ -105,7 +107,10 @@ function validateManifest(manifest, source) {
         validateName(entry && entry.name);
         if (names.has(entry.name)) throw new Error(`дубликат скилла в манифесте: ${entry.name}`);
         names.add(entry.name);
-        if (!parseVersion(entry.version) || !/^[a-f0-9]{64}$/.test(entry.sha256)
+        if (!parseVersion(entry.version)) {
+            throw new Error(`битая запись манифеста: ${entry.name} — version должна быть канонической числовой тройкой X.Y.Z без ведущих нулей, с safe-integer компонентами`);
+        }
+        if (!/^[a-f0-9]{64}$/.test(entry.sha256)
             || !Number.isSafeInteger(entry.files) || entry.files < 0) {
             throw new Error(`битая запись манифеста: ${entry.name}`);
         }
@@ -173,13 +178,6 @@ function today() {
     return new Date().toISOString().slice(0, 10);
 }
 
-// Разбор x.y.z без npm-пакета semver: десять строк.
-function parseVersion(s) {
-    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(s).trim());
-    if (!m) return null;
-    return {major: +m[1], minor: +m[2], patch: +m[3]};
-}
-
 function versionToString(v) {
     return `${v.major}.${v.minor}.${v.patch}`;
 }
@@ -195,47 +193,34 @@ function compareVersions(a, b) {
 function readVersionFile(dir, name) {
     const p = path.join(dir, 'VERSION');
     if (!fs.existsSync(p)) return null;
-    return parseVersion(readRegularFile(p));
+    const version = parseVersion(readRegularFile(p).trim());
+    if (!version) throw new Error(`skills/${name}: VERSION — нужна каноническая числовая тройка X.Y.Z без ведущих нулей, с safe-integer компонентами`);
+    return version;
 }
 
 // version: из frontmatter SKILL.md (блок между первым и вторым ---).
 function frontmatterVersion(skillDir) {
     const p = path.join(skillDir, 'SKILL.md');
     if (!fs.existsSync(p)) return null;
-    const parts = /^(?:\uFEFF?---[^\S\r\n]*\r?\n)([\s\S]*?)^---[^\S\r\n]*(?:\r?\n|$)/m.exec(readRegularFile(p));
-    if (!parts || parts.index !== 0) return null;
-    const m = /^version:\s*(\S+)\s*$/m.exec(parts[1]);
-    return m ? m[1] : null;
+    return parseFrontmatterVersion(readRegularFile(p));
 }
 
-// Лимиты на description: ZCode и Claude Code отказываются грузить скилл, если строка длиннее 1024 символов.
-const DESCRIPTION_LIMIT = 1024;
-const DESCRIPTION_WARN = 900;
-
-// Возвращает description из frontmatter с поддержкой однострочного и блочного (| и >) значений.
+// Локальный контракт CLI: decoded YAML string, длина в Unicode code points.
 function frontmatterDescription(skillDir) {
     const p = path.join(skillDir, 'SKILL.md');
     if (!fs.existsSync(p)) return null;
-    const parts = /^(?:\uFEFF?---[^\S\r\n]*\r?\n)([\s\S]*?)^---[^\S\r\n]*(?:\r?\n|$)/m.exec(readRegularFile(p));
-    if (!parts || parts.index !== 0) return null;
-    const lines = parts[1].split(/\r?\n/);
-    const start = lines.findIndex((l) => /^description:/.test(l));
-    if (start < 0) return null;
-    const first = lines[start].replace(/^description:\s*/, '');
-    if (/^[|>][-+]?\s*$/.test(first)) {
-        const block = [];
-        for (let i = start + 1; i < lines.length; i++) {
-            if (/^[A-Za-z_][\w-]*:/.test(lines[i])) break;
-            block.push(lines[i]);
-        }
-        return block.join('\n').trim();
+    return parseDescription(readRegularFile(p));
+}
+
+function validateSkillMetadata(dir, name, version, allowMissingVersion = false) {
+    const issue = descriptionIssue(frontmatterDescription(dir));
+    if (issue) throw new Error(`skills/${name}: ${issue}`);
+    const frontmatter = frontmatterVersion(dir);
+    if (frontmatter === null && allowMissingVersion) return;
+    if (frontmatter === null) throw new Error(`skills/${name}: в SKILL.md нет version: в frontmatter`);
+    if (frontmatter !== versionToString(version)) {
+        throw new Error(`skills/${name}: VERSION (${versionToString(version)}) и version: в SKILL.md (${frontmatter}) расходятся`);
     }
-    const value = [first];
-    for (let i = start + 1; i < lines.length; i++) {
-        if (!/^\s+\S/.test(lines[i])) break;
-        value.push(lines[i].trim());
-    }
-    return value.join(' ').trim();
 }
 
 // Готовит новый frontmatter без изменения файла; запись выполняется вместе с VERSION и манифестом.
@@ -313,6 +298,7 @@ function cmdManifest() {
         const dir = skillDir(e.name);
         const v = readVersionFile(dir, e.name);
         if (!v) throw new Error(`skills/${e.name}: нет файла VERSION — сначала добавьте его (см. README, раздел «Версии и обновление»)`);
+        validateSkillMetadata(dir, e.name, v);
         const {hash, files} = hashDir(dir);
         const requires = requiresOf(dir);
         const old = previous.skills.find((s) => s.name === e.name);
@@ -334,6 +320,10 @@ function cmdBump(name, level) {
     const cur = readVersionFile(dir, name);
     if (!cur) throw new Error(`skills/${name}: нет файла VERSION`);
     const manifest = loadManifest(MANIFEST_PATH);
+    validateSkillMetadata(dir, name, cur, true);
+    if (cur[level] === Number.MAX_SAFE_INTEGER) {
+        throw new Error(`skills/${name}: bump ${level} — переполнение safe-integer компонента VERSION`);
+    }
     const next = {...cur};
     if (level === 'patch') next.patch += 1;
     if (level === 'minor') { next.minor += 1; next.patch = 0; }
@@ -357,9 +347,9 @@ function cmdBump(name, level) {
 
 function cmdInstall(name, flags) {
     const src = skillDir(name);
-    readRegularFile(path.join(src, 'SKILL.md'));
     const v = readVersionFile(src, name);
     if (!v) throw new Error(`skills/${name}: нет корректного VERSION`);
+    validateSkillMetadata(src, name, v);
     const to = resolveInstallDir(flags, '--to');
     const dest = path.join(to, name);
     const srcReal = fs.realpathSync(src);
@@ -397,6 +387,7 @@ function cmdInstall(name, flags) {
         const {hash, files} = hashDir(staged);
         const version = readVersionFile(staged, name);
         if (!version) throw new Error(`skills/${name}: VERSION изменился во время копирования`);
+        validateSkillMetadata(staged, name, version);
         meta = {name, version: versionToString(version), hash, files, date: today(), commit: gitCommit()};
         fs.writeFileSync(path.join(staged, '.installed.json'), JSON.stringify(meta, null, 2) + '\n', {flag: 'wx'});
         if (exists) {
@@ -505,28 +496,34 @@ function cmdVerify() {
 
     for (const name of dirs) {
         const dir = skillDir(name);
-        const vf = readVersionFile(dir, name);
+        let vf;
+        try { vf = readVersionFile(dir, name); } catch (e) {
+            errors.push(e.message);
+            continue;
+        }
         if (!vf) {
             errors.push(`skills/${name}: нет файла VERSION`);
             continue;
         }
-        const fv = frontmatterVersion(dir);
-        if (!fv) {
-            errors.push(`skills/${name}: в SKILL.md нет version: в frontmatter`);
-        } else if (fv !== versionToString(vf)) {
-            errors.push(`skills/${name}: VERSION (${versionToString(vf)}) и version: в SKILL.md (${fv}) расходятся`);
-        }
-        const desc = frontmatterDescription(dir);
-        if (desc === null || !desc) {
-            errors.push(`skills/${name}: в SKILL.md нет description: в frontmatter`);
-        } else {
-            const len = [...desc].length;
-            if (len > DESCRIPTION_LIMIT) {
-                errors.push(`skills/${name}: description ${len} символов > ${DESCRIPTION_LIMIT} — ZCode/Claude Code не загрузят скилл`);
-            } else if (len > DESCRIPTION_WARN) {
-                warnings.push(`skills/${name}: description ${len} символов — близко к лимиту ${DESCRIPTION_LIMIT}`);
+        try {
+            const fv = frontmatterVersion(dir);
+            if (!fv) {
+                errors.push(`skills/${name}: в SKILL.md нет version: в frontmatter`);
+            } else if (fv !== versionToString(vf)) {
+                errors.push(`skills/${name}: VERSION (${versionToString(vf)}) и version: в SKILL.md (${fv}) расходятся`);
             }
-        }
+        } catch (e) { errors.push(`skills/${name}: ${e.message}`); }
+        try {
+            const desc = frontmatterDescription(dir);
+            const issue = descriptionIssue(desc);
+            if (issue) errors.push(`skills/${name}: ${issue}`);
+            else {
+                const len = [...desc].length;
+                if (len > DESCRIPTION_WARN) {
+                    warnings.push(`skills/${name}: description ${len} Unicode code points — близко к локальному лимиту ${DESCRIPTION_LIMIT}`);
+                }
+            }
+        } catch (e) { errors.push(`skills/${name}: ${e.message}`); }
         const entry = manifest.skills.find((s) => s.name === name);
         if (!entry) {
             errors.push(`skills/${name}: нет записи в манифесте — прогоните node skills.js bump или manifest`);

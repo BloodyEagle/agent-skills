@@ -60,6 +60,33 @@ test('TS/PY/HAR docs сохраняют раздельные CLI и реальн
     assert.match(har, /error exit2/);
 });
 
+test('TS docs: selector/symbol маршруты и TypeScript-before-info/profile порядок явные', () => {
+    const root = path.resolve(__dirname, '..', '..', 'skills/token-economy-ts');
+    const reference = fs.readFileSync(path.join(root, 'references/typescript.md'), 'utf8');
+    assert.match(reference, /селектор[^\n]*op: `selector`/i);
+    assert.match(reference, /пайп[^\n]*op: `symbol`/i);
+    for (const file of ['SKILL.md', 'README.md', 'references/typescript.md']) {
+        const doc = fs.readFileSync(path.join(root, file), 'utf8');
+        assert.match(doc, /references\/typescript\.md[^\n]*перед первой командой[^\n]*graph op=info|Перед первой командой[^\n]*references\/typescript\.md[^\n]*graph op=info/i);
+        assert.match(doc, /selector`\/`generate[^\n]*Angular-профиль[^\n]*component[^\n]*React-профиль/);
+    }
+    const angular = fs.readFileSync(path.join(root, 'references/angular.md'), 'utf8');
+    const react = fs.readFileSync(path.join(root, 'references/react.md'), 'utf8');
+    assert.match(angular, /после `graph op=info`[^\n]*перед `selector`\/`generate`/);
+    assert.match(react, /после `graph op=info`[^\n]*перед `op=component` независимо от projectType/);
+});
+
+test('TS docs: requests_file имеет единый regular/lexical/realpath контракт', () => {
+    const root = path.resolve(__dirname, '..', '..', 'skills/token-economy-ts');
+    for (const file of ['SKILL.md', 'README.md']) {
+        const doc = fs.readFileSync(path.join(root, file), 'utf8');
+        assert.match(doc, /requests_file[^\n]*обычн/);
+        assert.match(doc, /requests_file[^\n]*cwd/);
+        assert.match(doc, /requests_file[^\n]*realpath/);
+        assert.match(doc, /requests_file[^\n]*root=|root=[^\n]*requests_file/);
+    }
+});
+
 test('README явно описывает JavaScript', () => {
     const readme = fs.readFileSync(path.resolve(__dirname, '..', '..', 'README.md'), 'utf8');
     assert.match(readme, /JavaScript/);

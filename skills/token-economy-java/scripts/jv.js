@@ -226,7 +226,10 @@ const ops = {
     const idx = ensureIndex(ctx);
     const hits = [];
     const dot = q.lastIndexOf('.');
-    const [qc, qm] = dot > 0 && /^[A-Z]/.test(q.slice(q.lastIndexOf('.', dot - 1) + 1)) && /^[a-zA-Z_]/.test(q.slice(dot + 1)) && !/^[A-Z]/.test(q.slice(dot + 1)) ? [q.slice(0, dot), q.slice(dot + 1)] : [null, null];
+    // Явный # (и прежний ::) всегда разделяет owner/member, независимо от регистра.
+    const explicit = q0.match(/^(.+?)(?:#|::)([^#:]+)$/);
+    const isType = idx.nodes.some(n => n.decls.some(d => d.f.toLowerCase() === lq || d.n.toLowerCase() === lq || d.f.toLowerCase().endsWith('.' + lq)));
+    const [qc, qm] = explicit ? [explicit[1], explicit[2]] : !isType && dot > 0 && /^[A-Z]/.test(q.slice(q.lastIndexOf('.', dot - 1) + 1)) && /^[a-z_]/.test(q.slice(dot + 1)) ? [q.slice(0, dot), q.slice(dot + 1)] : [null, null];
     for (const n of idx.nodes) for (const d of n.decls) {
       if (!qc && (d.f.toLowerCase() === lq || d.n.toLowerCase() === lq || d.f.toLowerCase().endsWith('.' + lq))) hits.push([d.f, d.k, n.p, d.l, d.e]);
       if (qc) {

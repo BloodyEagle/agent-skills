@@ -23,6 +23,7 @@ const {parseRefLocator, SUPPORTED_READ_KINDS} = require('./lib/refs');
 const {maskCode} = require('./lib/mask');
 const {runHotspots} = require('./git-signals');
 const {computeMetrics, parseMetricsArgs, metricsRows, formatMetrics} = require('./lib/metrics');
+const {readRequestsFile} = require('./lib/requests-file');
 
 let args = {};
 // Порядок разбора: argv-JSON (pwsh 7.3+/bash/cmd) → argv key=value → stdin (обратная совместимость).
@@ -75,7 +76,7 @@ function setScope(p) {
 }
 const GRAPH_FILE = path.join(cwd, 'graph-deps.json');
 const CACHE_FILE = path.join(cwd, '.graph-deps-cache.json');
-const GRAPH_VERSION = 10; // v10: jsxUsages в parsed data — индекс JSX-использований (op=component)
+const GRAPH_VERSION = 11; // v11: JSX-index исключает .ts assertions/generics
 const MAX_BYTES = 1024 * 1024; // файлы крупнее (бандлы, вендорные стили) в граф не берём
 const NG_KINDS = {
     Component: 'component',
@@ -92,9 +93,7 @@ const CONFIG_FILES = ['angular.json', '.angular.json', 'tsconfig.json', 'package
 
 const emit = (obj) => console.log(JSON.stringify(obj));
 const fail = (msg) => {
-    emit({error: msg, ...(['deps', 'rdeps', 'path', 'metrics'].includes(args.op)
-        ? {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.'}, completeness: {complete: false, reasons: ['request-error']}}
-        : {})});
+    emit(queryError(msg, args));
     process.exit(1);
 };
 const toPosix = (p) => path.relative(cwd, p).replace(/\\/g, '/');
@@ -746,8 +745,9 @@ function parseTs(content, sourceType = 'ts', jsx = false) {
     // отдельная JSX-aware маска для диапазонов объявлений (lib/ranges.js)
     const rmask = maskCode(content, jsx);
 
-    // JSX-использования компонентов (op=component): одна строка скана по маске кода
-    const jsxUsages = collectJsxTags(codeMask, lineAt);
+    // В .ts JSX запрещён: <Name>value — assertion, не использование компонента.
+    // JS-исходники сохраняют прежний JSX-скан даже без расширения .jsx.
+    const jsxUsages = jsx || sourceType === 'js' ? collectJsxTags(codeMask, lineAt) : [];
 
     // Импорты, реэкспорты, require и динамические import(); многострочные поддержаны.
     // Спецификаторы исходников хранятся объектами {m, line} для rdeps/deps why.
@@ -1733,26 +1733,23 @@ function opSymbol(g, p) {
         return {
             name: p.name,
             ...(owner ? {in: owner} : {}),
-            ...(hits.length
-                ? {
-                    definedIn: hits.slice(0, 30),
-                    ...(hits.length > 30 ? {total: hits.length, hint: 'совпадений больше 30 — уточните in=ИмяКласса'} : {})
-                }
-                : {definedIn: []})
+            definedIn: hits
         };
     }
     return {
         name: p.name,
-        definedIn: [...new Set(ids)].map((id) => {
+        definedIn: [...new Set(ids)].flatMap((id) => {
             const f = byId(id);
-            const e = f.entities.find((x) => x.name === p.name || x.pipeName === p.name);
-            return {
-                file: f.path, kind: e ? e.kind : f.kind,
-                ...(e && e.line ? {line: e.line} : {}),
+            const entities = f.entities.filter((x) => x.name === p.name || x.pipeName === p.name);
+            // Export-only имя сохраняет прежний файловый ответ без выдуманного span.
+            if (!entities.length) return [{file: f.path, kind: f.kind}];
+            return entities.map((e) => ({
+                file: f.path, kind: e.kind,
+                ...(e.line ? {line: e.line} : {}),
                 ...rangeOf(e),
-                ...(e && e.selector ? {selector: e.selector} : {}),
-                ...(e && e.pipeName ? {pipe: e.pipeName} : {})
-            };
+                ...(e.selector ? {selector: e.selector} : {}),
+                ...(e.pipeName ? {pipe: e.pipeName} : {})
+            }));
         })
     };
 }
@@ -1948,20 +1945,21 @@ function dispatchOp(g, p) {
     }
 }
 
-/**
- * Обёртка: OpError → ответ с ошибкой (как fail в одиночном режиме: для deps/rdeps/path —
- * со scope/completeness); прочие исключения — программная ошибка, пробрасываются.
- */
+// Единая квалификация структурных ошибок, включая отказ целой batch scope-группы.
+function queryError(message, p, root = ROOT, specs = SPECS) {
+    const qualified = ['deps', 'rdeps', 'path', 'metrics'].includes(p.op);
+    return {error: message, ...(qualified ? {
+        scope: {root: cwd, scanRoot: toPosix(root) || '.', specs},
+        completeness: {complete: false, reasons: ['request-error']}
+    } : {})};
+}
+
 function runQuery(g, p) {
     try {
         return {ok: true, payload: dispatchOp(g, p)};
     } catch (e) {
-        if (e instanceof OpError) {
-            const extras = ['deps', 'rdeps', 'path', 'metrics'].includes(p.op)
-                ? {scope: {root: cwd, scanRoot: toPosix(ROOT) || '.'}, completeness: {complete: false, reasons: ['request-error']}}
-                : {};
-            return {ok: false, payload: {error: e.message, ...extras}};
-        }
+        if (e instanceof OpError)
+            return {ok: false, payload: queryError(e.message, p)};
         throw e;
     }
 }
@@ -1985,13 +1983,8 @@ function runBatch() {
         }
     }
     if (args.requests_file !== undefined && args.requests_file !== null && args.requests_file !== '') {
-        const rf = String(args.requests_file);
-        const rfAbs = path.resolve(cwd, rf);
-        const rfRel = path.relative(cwd, rfAbs);
-        if (rfRel === '..' || rfRel.startsWith('..' + path.sep) || path.isAbsolute(rfRel))
-            fail('requests_file вне рабочей директории запрещён: ' + rf);
         try {
-            requests = JSON.parse(fs.readFileSync(fs.realpathSync(rfAbs), 'utf8'));
+            requests = readRequestsFile(String(args.requests_file), cwd);
         } catch (e) {
             fail('Не удалось прочитать requests_file: ' + e.message);
         }
@@ -2038,7 +2031,7 @@ function runBatch() {
             setScope({root: relRoot === '' ? '.' : relRoot, specs: grp.specs});
         } catch (e) {
             for (const i of grp.idxs) {
-                results[i] = {index: i, error: e.message};
+                results[i] = {index: i, ...queryError(e.message, requests[i], grp.root, grp.specs)};
                 failed++;
             }
             continue;
@@ -2051,7 +2044,7 @@ function runBatch() {
             graphCtx = ensureGraph(grp.idxs.every(i => requests[i].op === 'metrics'));
         } catch (e) {
             for (const i of grp.idxs) {
-                results[i] = {index: i, error: e.message};
+                results[i] = {index: i, ...queryError(e.message, requests[i], grp.root, grp.specs)};
                 failed++;
             }
             continue;
@@ -2060,7 +2053,7 @@ function runBatch() {
             const res = runQuery(graphCtx.graph, requests[i]);
             if (res.ok) results[i] = {index: i, ...res.payload};
             else {
-                results[i] = requests[i].op === 'metrics' ? {index: i, ...res.payload} : {index: i, error: res.payload.error};
+                results[i] = {index: i, ...res.payload};
                 failed++;
             }
         }
