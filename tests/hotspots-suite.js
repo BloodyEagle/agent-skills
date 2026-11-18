@@ -344,7 +344,9 @@ function buildSignalsCacheSuite(label, moduleFile) {
 
     test(label + ' cache safety: HEAD/since/maxCommits/pathspec still invalidate cache', () => repo(root => {
         const first = signals.loadSignals(root, opts).data;
-        for (const changed of [{...opts, since: '2100-01-01'}, {...opts, maxCommits: 1}, {...opts, pathspec: ['src/source.ts']}]) {
+        // 2099, не 2100: с года 2100 git перестаёт применять --since и возвращает всю
+        // историю — тест на инвалидацию превращался в проверку игнорирования фильтра.
+        for (const changed of [{...opts, since: '2099-01-01'}, {...opts, maxCommits: 1}, {...opts, pathspec: ['src/source.ts']}]) {
             signals.publishSignalsCache(root, first);
             const miss = withoutGit(root, changed);
             assert.ifError(miss.error);
@@ -354,7 +356,7 @@ function buildSignalsCacheSuite(label, moduleFile) {
             assert.equal(collected.data.since, changed.since);
             assert.equal(collected.data.maxCommits, changed.maxCommits);
             assert.deepEqual(collected.data.pathspec, changed.pathspec);
-            if (changed.since === '2100-01-01') assert.equal(collected.data.commitsTotal, 0);
+            if (changed.since === '2099-01-01') assert.equal(collected.data.commitsTotal, 0);
             if (changed.maxCommits === 1) assert.equal(collected.data.ceiling, true);
             if (changed.pathspec.length) assert.deepEqual(Object.keys(collected.data.files), ['src/source.ts']);
         }
