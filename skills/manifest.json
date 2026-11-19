@@ -1,71 +1,71 @@
 {
   "schemaVersion": 1,
-  "generated": "2026-11-18",
+  "generated": "2026-11-19",
   "skills": [
     {
       "name": "automateskill",
-      "version": "1.1.3",
-      "updated": "2026-11-18",
-      "files": 4,
-      "sha256": "ba256c5c9e29b818380b7f54ae4681f25ac49c8efb3ee674418cc088ce0803dd",
+      "version": "1.1.4",
+      "updated": "2026-11-19",
+      "files": 6,
+      "sha256": "c3a2eb5fa89d608d5a236cc42293cb2157e2fb9bc722ff19e01c227bd2ce5ec0",
       "requires": []
     },
     {
       "name": "token-economy-har",
-      "version": "1.1.3",
-      "updated": "2026-11-18",
-      "files": 15,
-      "sha256": "66edecbbfbaffbfa7359e517e07c0979e24c44be90f6cd38e0f8dcbf9dcfc179",
+      "version": "1.1.4",
+      "updated": "2026-11-19",
+      "files": 17,
+      "sha256": "56b22ac1d88c2d606c2435230d69a9ad4084c553c8a45b793a4a9b260223f748",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-java",
-      "version": "1.2.1",
-      "updated": "2026-11-18",
-      "files": 15,
-      "sha256": "2db54a6eab60d10744a0b16888a392ef7816efa4958d7321a98ea73667dee4ed",
+      "version": "1.2.2",
+      "updated": "2026-11-19",
+      "files": 16,
+      "sha256": "3d8c6f492354f0f943b4d461040d199ccccbd9ed7f5ac7f4a72674819ce96a9f",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-kt",
-      "version": "1.2.1",
-      "updated": "2026-11-18",
-      "files": 8,
-      "sha256": "a72ba1f387442b1d068cdbe06198c949e294e7936fbee93e0f82d51a4307abaa",
+      "version": "1.2.2",
+      "updated": "2026-11-19",
+      "files": 9,
+      "sha256": "ca9b71fb242e00282a2855c4b71ddd68d22aafee27540d9da46458f420a08c16",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-php",
-      "version": "1.4.1",
-      "updated": "2026-11-18",
-      "files": 17,
-      "sha256": "47c5d11ba8782d74080768f5aece0a99368427878edb872b248f0c7fd78ff537",
+      "version": "1.4.2",
+      "updated": "2026-11-19",
+      "files": 18,
+      "sha256": "90bcde68adc21264f4e81b40922b1912818701ff68b828adce0f4b4ca5b8c741",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-py",
-      "version": "1.4.1",
-      "updated": "2026-11-18",
-      "files": 6,
-      "sha256": "44545bde7821146b769a82dd85fd55c4676a4a4ddd4a9a0119f02d23178cd70a",
+      "version": "1.4.2",
+      "updated": "2026-11-19",
+      "files": 7,
+      "sha256": "a3f72e2b02c984a2ccac16c5ae633b12405d202e303e787a41a872cfd2d2e2a0",
       "requires": [
         "python>=3"
       ]
     },
     {
       "name": "token-economy-ts",
-      "version": "1.6.1",
-      "updated": "2026-11-18",
-      "files": 20,
-      "sha256": "4b9a8210d590f2daffa3e9d8433db4358871c4af7db6b110f8b65fd50ee8df7f",
+      "version": "1.6.2",
+      "updated": "2026-11-19",
+      "files": 21,
+      "sha256": "47995ed4d39972719f01018312d8a8ab66906778d250755935d9634b792b7b9d",
       "requires": [
         "node>=18"
       ]
