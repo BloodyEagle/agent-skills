@@ -65,11 +65,15 @@ test('TS docs: selector/symbol маршруты и TypeScript-before-info/profil
     const reference = fs.readFileSync(path.join(root, 'references/typescript.md'), 'utf8');
     assert.match(reference, /селектор[^\n]*op: `selector`/i);
     assert.match(reference, /пайп[^\n]*op: `symbol`/i);
-    for (const file of ['SKILL.md', 'README.md', 'references/typescript.md']) {
+    for (const file of ['SKILL.md', 'README.ru.md', 'references/typescript.md']) {
         const doc = fs.readFileSync(path.join(root, file), 'utf8');
         assert.match(doc, /references\/typescript\.md[^\n]*перед первой командой[^\n]*graph op=info|Перед первой командой[^\n]*references\/typescript\.md[^\n]*graph op=info/i);
         assert.match(doc, /selector`\/`generate[^\n]*Angular-профиль[^\n]*component[^\n]*React-профиль/);
     }
+    const readmeEn = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+    assert.match(readmeEn, /references\/typescript\.md[^\n]*graph op=info/);
+    assert.match(readmeEn, /Angular/);
+    assert.match(readmeEn, /React/);
     const angular = fs.readFileSync(path.join(root, 'references/angular.md'), 'utf8');
     const react = fs.readFileSync(path.join(root, 'references/react.md'), 'utf8');
     assert.match(angular, /после `graph op=info`[^\n]*перед `selector`\/`generate`/);
@@ -78,13 +82,18 @@ test('TS docs: selector/symbol маршруты и TypeScript-before-info/profil
 
 test('TS docs: requests_file имеет единый regular/lexical/realpath контракт', () => {
     const root = path.resolve(__dirname, '..', '..', 'skills/token-economy-ts');
-    for (const file of ['SKILL.md', 'README.md']) {
+    for (const file of ['SKILL.md', 'README.ru.md']) {
         const doc = fs.readFileSync(path.join(root, file), 'utf8');
         assert.match(doc, /requests_file[^\n]*обычн/);
         assert.match(doc, /requests_file[^\n]*cwd/);
         assert.match(doc, /requests_file[^\n]*realpath/);
         assert.match(doc, /requests_file[^\n]*root=|root=[^\n]*requests_file/);
     }
+    const docEn = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+    assert.match(docEn, /requests_file/);
+    assert.match(docEn, /requests_file[^\n]*cwd/);
+    assert.match(docEn, /requests_file[^\n]*realpath/);
+    assert.match(docEn, /requests_file[^\n]*root=|root=[^\n]*requests_file/);
 });
 
 test('README явно описывает JavaScript', () => {

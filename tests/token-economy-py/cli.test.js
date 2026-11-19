@@ -595,11 +595,15 @@ test('a symlink root is canonicalized without losing valid project files', runti
 });
 
 test('Python snippet docs separate 120 content characters, markers and line prefix', () => {
-    for (const name of ['SKILL.md', 'README.md']) {
+    for (const name of ['SKILL.md', 'README.ru.md']) {
         const doc = fs.readFileSync(path.resolve(__dirname, '../../skills/token-economy-py', name), 'utf8');
         assert.match(doc, /120 символов содержимого плюс маркеры `…`/u, name);
         assert.match(doc, /префикс номера строки в этот лимит не входит/u, name);
     }
+    const docEn = fs.readFileSync(path.resolve(__dirname, '../../skills/token-economy-py/README.md'), 'utf8');
+    assert.match(docEn, /120/u);
+    assert.match(docEn, /…/u);
+    assert.match(docEn, /prefix/u);
 });
 
 for (const matchAt of [10, 100]) {

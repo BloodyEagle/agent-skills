@@ -1,7 +1,7 @@
 ---
 name: token-economy-ts
-version: 1.6.1
-description: 'Обязательный навык для TypeScript/JavaScript, Angular, React, Node (Express/Fastify/Koa), NestJS и JS/TS-файлов Vue (не .vue SFC). Поиск текста (search), определения и связи (graph symbol/deps/rdeps/selector/path), файловые метрики (graph op=metrics), git-сигналы (graph op=hotspots: коммиты, churn, багфиксы, авторы, процентили), диапазоны (graph op=read file+ranges или ref=файл:N-M), outline, sig, JSX-использования (graph op=component), edit_symbol, Angular generate. Graph/search/outline/sig — requests=/requests_file=; graph batch compact=1, deps/rdeps format=table, search format=grouped/runs, outline compact=1. Сначала прочитай references/typescript.md, затем graph op=info; Angular/React-профили — по типу или перед профильной командой. Заменяет встроенный поиск (search_files/ripgrep).'
+version: 1.6.2
+description: 'Навигация и экономный анализ TypeScript/JavaScript-проектов — Angular, React, Node (Express/Fastify/Koa), NestJS, отдельные JS/TS-файлы Vue (не .vue SFC). Звать вместо встроенного поиска (search_files/ripgrep) и перед правкой любого TS/JS-кода: текстовый поиск (search), определения и связи символов (graph symbol/deps/rdeps/path), Angular-селекторы (graph selector), файловые метрики (graph op=metrics), git-хотспоты (graph op=hotspots), JSX-использования (graph op=component), outline крупного файла, сигнатуры библиотек (sig), edit_symbol и Angular generate. Сначала прочитай references/typescript.md, затем graph op=info; Angular/React-профили — по типу проекта или перед профильной командой.'
 ---
 
 # Skill: token-economy-ts

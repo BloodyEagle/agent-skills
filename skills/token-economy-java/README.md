@@ -1,106 +1,109 @@
 # token-economy-java
 
-Скилл для агента Kilo Code: экономит токены при работе с проектами на Java 17+ и Spring Boot 3+. Вместо чтения десятков файлов агент вызывает скрипт `jv.js` и получает короткий ответ: где определён класс, кто его использует, какие есть эндпоинты и бины, где задано свойство, как устроена таблица, какие методы у класса библиотеки.
+[Русская версия](README.ru.md)
 
-Правила для агента и примеры команд PowerShell — в `SKILL.md`. Устройство индекса и подробные ограничения — в `references/spring.md`.
+A skill for the Kilo Code agent: it saves tokens when working with Java 17+ and Spring Boot 3+ projects. Instead of reading dozens of files, the agent calls the `jv.js` script and gets a short answer: where a class is defined, who uses it, which endpoints and beans exist, where a property is set, how a table is structured, which methods a library class has.
 
-## Требования
+Rules for the agent and PowerShell command examples — in `SKILL.md`. The index design and detailed limitations — in `references/spring.md`.
 
-- **Node.js 18 или новее.** Код использует только стандартную библиотеку, проверен на Node 22. Пакеты из npm не нужны, сеть не нужна.
-- **Проект:** Java 17+, Spring Boot 3+, сборка Maven или Gradle (Groovy и Kotlin DSL). Для Spring Boot 2.x скрипт работает, но `info` предупредит, что скилл рассчитан на Boot 3+ (`jakarta.*`).
-- **Git** не обязателен. С ним список файлов берётся из `git ls-files` (учитывается `.gitignore`), без него — обход каталогов с исключением папок сборки.
-- **JDK не нужен.** Только для `sig` по классам самого JDK (`java.*`, `javax.*`) требуется `javap`.
-- **Для `sig` по библиотекам** нужны доступные jar, но предварительная сборка проекта не обязательна: подойдут локальный Maven (`~/.m2/repository`, `localRepository` из `~/.m2/settings.xml`), Gradle (`GRADLE_USER_HOME` или `~/.gradle`), `lib/` корня проекта либо `jars`/`JV_JARS`. Уже скомпилированные классы дополнительно читаются из корневых `target/classes` и `build/classes/java/main`. `sig` ничего не скачивает.
-- **Запуск** из корня проекта (для многомодульных — из корня репозитория) или с параметром `root`.
-- **PowerShell:** команды — одной строкой, параметры argv-аргументами `ключ=значение`; кириллица через argv не портится (node читает командную строку через Unicode API Windows). Значения с пробелами — в одинарных кавычках, двойные кавычки в значениях не используй.
-- **Права:** индекс и jar-кэш пишутся в папку `.jv-cache` в корне проекта (внутри лежит `.gitignore` со звёздочкой); `hotspots` отдельно пишет `.git-signals.json` в корне, не трогая индекс. Cache endpoint `.git-signals.json` должен быть обычным файлом: внутренние, внешние и dangling-ссылки отвергаются. Публикация — через уникальный эксклюзивный tmp в реальном корне (корневой junction допустим), без гарантии crash-safe транзакции или изоляции от конкурентной подмены предков. `patch` и `create` пишут в указанный файл. Исходный код проекта и jar при анализе только читаются; код библиотек не загружается и не исполняется.
+## Requirements
 
-## Установка
+- **Node.js 18 or newer.** The code uses only the standard library, tested on Node 22. No npm packages, no network.
+- **Project:** Java 17+, Spring Boot 3+, Maven or Gradle build (Groovy and Kotlin DSL). On Spring Boot 2.x the script works, but `info` will warn that the skill targets Boot 3+ (`jakarta.*`).
+- **Git** is optional. With it the file list comes from `git ls-files` (`.gitignore` respected), without it — directory traversal excluding build folders.
+- **No JDK needed.** Only `sig` over the JDK's own classes (`java.*`, `javax.*`) requires `javap`.
+- **For `sig` over libraries** accessible jars are needed, but building the project first is not required: a local Maven (`~/.m2/repository`, `localRepository` from `~/.m2/settings.xml`), Gradle (`GRADLE_USER_HOME` or `~/.gradle`), the project's `lib/` or `jars`/`JV_JARS` all work. Already compiled classes are additionally read from root `target/classes` and `build/classes/java/main`. `sig` downloads nothing.
+- **Run** from the project root (for multi-module — from the repository root) or with the `root` parameter.
+- **PowerShell:** commands on one line, parameters as argv arguments `key=value`; Cyrillic survives argv (node reads the Windows command line through the Unicode API). Values with spaces — in single quotes, do not use double quotes inside values.
+- **Permissions:** the index and jar cache are written into the `.jv-cache` folder in the project root (it contains a `.gitignore` with a single asterisk); `hotspots` separately writes `.git-signals.json` into the root without touching the index. The cache endpoint `.git-signals.json` must be a regular file: internal, external and dangling links are rejected. Publication goes through a unique exclusive tmp in the real root (a root junction is allowed), with no crash-safe transaction or isolation from concurrent ancestor substitution guaranteed. `patch` and `create` write to the given file. Project sources and jars are only read during analysis; library code is not loaded or executed.
 
-Скопируй папку `token-economy-java` в каталог навыков агента:
+## Install
 
-    глобально в ZCode:      %USERPROFILE%\.zcode\skills\token-economy-java
-    глобально в Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-java
-    локально в репозитории: .zcode\skills\token-economy-java (ZCode) или .kilo\skills\token-economy-java (Kilo Code)
-    Linux и macOS:          ~/.config/kilo/skills/token-economy-java
+Copy the `token-economy-java` folder into the agent's skills directory:
 
-Структура:
+    globally in ZCode:      %USERPROFILE%\.zcode\skills\token-economy-java
+    globally in Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-java
+    locally in a repo:      .zcode\skills\token-economy-java (ZCode) or .kilo\skills\token-economy-java (Kilo Code)
+    Linux and macOS:        ~/.config/kilo/skills/token-economy-java
+
+Layout:
 
     token-economy-java/
-      SKILL.md                правила и команды для агента
-      README.md               этот файл
-      references/spring.md    устройство индекса, ограничения
+      SKILL.md                rules and commands for the agent
+      README.md               this file (English)
+      README.ru.md            Russian version
+      references/spring.md    index design, limitations
       scripts/
-        jv.js                 точка входа, все операции
-        lib/                  разбор Java, индекс, Spring, конфигурация, jar и class-файлы
+        jv.js                 entry point, all operations
+        lib/                  Java parsing, index, Spring, configuration, jar and class files
 
-Проверка из корня анализируемого проекта: `node "<SCRIPTS_DIR>\jv.js" op=info` (`<SCRIPTS_DIR>` — абсолютный путь к установленному скиллу). Выводит версии Boot и Java, модули, профили и состав проекта. Git-сигналы «где болит»: `node "<SCRIPTS_DIR>\jv.js" op=hotspots top=10` (или `file=ПУТЬ` — один файл с персональными процентильными метками).
+Check from the root of the analyzed project: `node "<SCRIPTS_DIR>\jv.js" op=info` (`<SCRIPTS_DIR>` — absolute path to the installed skill). It prints the Boot and Java versions, modules, profiles and project composition. Git signals of «where it hurts»: `node "<SCRIPTS_DIR>\jv.js" op=hotspots top=10` (or `file=ПУТЬ` — one file with personal percentile labels).
 
-## Что умеет
+## What it does
 
-| Задача | Операция |
+| Task | Operation |
 |---|---|
-| Профиль проекта: версии, модули, главный класс, зависимости, профили, кодировки | `info` |
-| Где определён класс, интерфейс, метод, поле, таблица БД | `symbol` |
-| Оглавление класса с аннотациями, сигнатурами и диапазонами строк (с предками через `inherit`) | `outline` |
-| Кто использует файл, что использует он, цепочка связей | `rdeps`, `deps`, `path`, `node`, `stats` |
-| Где болит по git-истории: коммиты, churn, багфиксы, авторы, процентили | `hotspots` |
-| Файловая связанность и область воздействия: fan-in/out, dependents, impact, PageRank, percentile | `metrics` |
-| Реализации и наследники интерфейса | `impls` |
-| HTTP-эндпоинты: метод, полный путь, обработчик, ограничения доступа | `endpoints` |
-| Бины, внедряемые зависимости, `@Bean`-методы | `beans` |
-| Свойства: значения по профилям, где используются (секреты скрыты) | `config` |
-| JPA-сущности, поля, связи, репозитории и `@Query` | `entities` |
-| Колонки таблицы и миграции (`CREATE TABLE`, `ALTER TABLE`) | `table` |
-| Слушатели событий, Kafka, RabbitMQ, JMS, SQS/SNS, `@Scheduled`, публикации и отправки | `listeners` |
-| Сигнатуры классов библиотек из jar без декомпиляции | `sig` |
-| Поиск по тексту с учётом кодировки | `search` |
-| Чтение, правка и создание файлов не в UTF-8 | `read`, `patch`, `create` |
+| Project profile: versions, modules, main class, dependencies, profiles, encodings | `info` |
+| Where a class, interface, method, field or DB table is defined | `symbol` |
+| Class outline with annotations, signatures and line ranges (with ancestors via `inherit`) | `outline` |
+| Who uses a file, what it uses, link chains | `rdeps`, `deps`, `path`, `node`, `stats` |
+| Where it hurts by git history: commits, churn, bugfixes, authors, percentiles | `hotspots` |
+| File coupling and impact area: fan-in/out, dependents, impact, PageRank, percentile | `metrics` |
+| Implementations and descendants of an interface | `impls` |
+| HTTP endpoints: method, full path, handler, access restrictions | `endpoints` |
+| Beans, injected dependencies, `@Bean` methods | `beans` |
+| Properties: values per profile, where they are used (secrets masked) | `config` |
+| JPA entities, fields, links, repositories and `@Query` | `entities` |
+| Table columns and migrations (`CREATE TABLE`, `ALTER TABLE`) | `table` |
+| Event listeners, Kafka, RabbitMQ, JMS, SQS/SNS, `@Scheduled`, publications and sends | `listeners` |
+| Signatures of library classes from jars without decompilation | `sig` |
+| Text search with encoding awareness | `search` |
+| Reading, editing and creating non-UTF-8 files | `read`, `patch`, `create` |
 
-## Файловые метрики
+## File metrics
 
 ```text
 node "<SCRIPTS_DIR>\jv.js" op=metrics file=src/main/java/com/acme/UserService.java depth=2
 node "<SCRIPTS_DIR>\jv.js" op=metrics top=15
 ```
 
-`file` **либо** `top` (вместе нельзя); `top` — положительное safe integer, default 15, без обоих тоже top-15. `depth` — строго целое 1..5, default 2 только для metrics (`deps`/`rdeps` остаются 1). `fan_in/out` — уникальные проектные соседи; `dependents` — обратная достижимость до depth; `impact` — вся обратная достижимость без ограничения, корень исключён. PageRank — 20 итераций, damping 0.85, равномерная dangling mass; percentile — midrank `(less + halfEqual)/N*100`, в тексте округлённый `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc.
+`file` **or** `top` (not both); `top` is a positive safe integer, default 15, with neither given also top-15. `depth` is a strict integer 1..5, default 2 for metrics only (`deps`/`rdeps` stay 1). `fan_in/out` — unique project neighbors; `dependents` — backward reachability up to depth; `impact` — the entire backward reachability without a limit, root excluded. PageRank — 20 iterations, damping 0.85, uniform dangling mass; percentile — midrank `(less + halfEqual)/N*100`, printed as rounded `pN`. Top: fan_in desc, pagerank desc, stable path asc.
 
-Учитываются все существующие виды связей и фильтры Java-индекса, включая проектные тесты; внешние endpoints не добавляются. Это статический файловый граф, не символьный/full runtime call graph, не проверка Spring-контекста и не гарантия риска правки. Вывод — общий текст с `dependents(2)` и `impact`; неизвестный файл — exit1 с `op=stats`, пустой граф показывает `.jv-cache/index.json`, цикл — `циклов: N` без подсказки `op=cycles`. Прогретые graph/parse-кэши не меняются. Полный контракт — в SKILL.md.
+All existing link kinds and the filters of the Java index are counted, including project tests; external endpoints are not added. This is a static file graph, not a symbol-level/full runtime call graph, not a Spring-context check and not a guarantee of edit risk. The output is plain text with `dependents(2)` and `impact`; unknown file — exit1 with `op=stats`, an empty graph prints `.jv-cache/index.json`, a cycle — `циклов: N` without an `op=cycles` hint. Warmed graph/parse caches are not touched. The full contract is in SKILL.md.
 
-Связи в графе трёх типов: `extends/implements`, `inject` (эвристика по конструкторам, `@Autowired`/`@Inject`, Lombok и `@Bean`-параметрам) и `uses`. Тесты из `src/test` входят с меткой `[test]`. `rdeps` по умолчанию показывает один уровень (до 60 файлов, `depth=1–5`); это статические зависимости в индексе, не полный список затронутых runtime-тестов.
+Graph links come in three types: `extends/implements`, `inject` (a heuristic over constructors, `@Autowired`/`@Inject`, Lombok and `@Bean` parameters) and `uses`. Tests from `src/test` are included with the `[test]` mark. `rdeps` shows one level by default (up to 60 files, `depth=1–5`); these are the static dependencies of the index, not the full list of affected runtime tests.
 
-Индекс строится автоматически; при изменениях размера/mtime заново разбираются изменённые файлы. Точные timings зависят от проекта и окружения; здесь они не гарантируются.
+The index is built automatically; on size/mtime changes only the changed files are re-parsed. Exact timings depend on the project and environment; they are not guaranteed here.
 
-## Чего скрипт не видит
+## What the script does not see
 
-- **Конфигурацию бинов вне аннотаций:** XML, `@Import`, ограничения `@ComponentScan`, автоконфигурации. `beans` перечисляет все аннотированные классы проекта и не проверяет, попадают ли они в контекст.
-- **Условия активации:** `@Bean`-методы показываются вместе с `@Profile` и `@ConditionalOn…`, но условия не вычисляются.
-- **Сгенерированный код:** методы Lombok (геттеры, сеттеры, конструкторы, билдеры), MapStruct, QueryDSL, `target/generated-sources`.
-- **Функциональные маршруты** (`RouterFunction`), код на Kotlin и Groovy.
-- **Источники свойств вне файлов:** переменные окружения, Config Server, `spring.config.import`, аргументы командной строки.
-- **Типы в строках:** имена классов в XML, `Class.forName`, SpEL.
-- **Liquibase:** только упоминания `tableName`; схема восстанавливается из SQL-миграций (`CREATE TABLE`).
-- **JPA/SQL:** таблица без `@Table(name)` оценивается через snake_case, naming strategy не вычисляется. Поля читаются по field-аннотациям, не property access. `table` показывает `CREATE TABLE`, отдельные выдержки `ALTER TABLE` и упоминания Liquibase, а не итоговую схему после выполнения миграций.
-- **Несколько полей в одном объявлении** (`int a, b;`): записывается только первое имя.
-- **Имена параметров методов библиотек** в `sig`: видны, только если библиотека собрана с `-parameters`; иначе выводятся одни типы.
+- **Bean configuration outside annotations:** XML, `@Import`, `@ComponentScan` restrictions, autoconfigurations. `beans` lists all annotated classes of the project and does not check whether they land in the context.
+- **Activation conditions:** `@Bean` methods are shown together with `@Profile` and `@ConditionalOn…`, but the conditions are not evaluated.
+- **Generated code:** Lombok methods (getters, setters, constructors, builders), MapStruct, QueryDSL, `target/generated-sources`.
+- **Functional routes** (`RouterFunction`), Kotlin and Groovy code.
+- **Property sources outside files:** environment variables, Config Server, `spring.config.import`, command-line arguments.
+- **Types in strings:** class names in XML, `Class.forName`, SpEL.
+- **Liquibase:** only `tableName` mentions; the schema is reconstructed from SQL migrations (`CREATE TABLE`).
+- **JPA/SQL:** a table without `@Table(name)` is estimated via snake_case, the naming strategy is not evaluated. Fields are read by field annotations, not property access. `table` shows `CREATE TABLE`, separate `ALTER TABLE` excerpts and Liquibase mentions, not the resulting schema after migrations.
+- **Several fields in one declaration** (`int a, b;`): only the first name is recorded.
+- **Library method parameter names** in `sig`: visible only if the library was built with `-parameters`; otherwise only types are shown.
 
-## Что учесть
+## Notes
 
-- **Первый вызов за разговор — `info`.** Он сообщает версии, профили и кодировки, а также предупреждает про `javax.*` при Spring Boot 3 и про файлы не в UTF-8.
-- **Кодировки.** Для cp1251 используй `read`/`patch`; Java не поддерживает UTF-16. `patch` сохраняет BOM/кодировку и нормализует заменяемые строки к преобладающему LF/CRLF; непредставимый в cp1251 символ отменяет запись. `create` создаёт новый файл без BOM, с LF по умолчанию (`eol=crlf` для CRLF), не добавляет завершающий перенос и выбирает UTF-8 либо cp1251 по правилам в `SKILL.md`. Обе операции записывают сразу, dry-run нет. UTF-8 правь штатным точечным Edit.
-- **Секреты.** `config` и `search` по `application*.yml|yaml|properties`/`bootstrap*` скрывают чувствительные значения: password/passwd/pwd, secret, token, credential, private-key, api-key, access-key, client-secret, salt. Учитываются вложенные ключи, списки, блочные и многострочные YAML-скаляры, продолжения `.properties` и экранированные ключи. Чистая ссылка `${MAIL_PASSWORD}` видима, `${MAIL_PASSWORD:секрет}` скрывается. Inline-контейнер с чувствительными ключами скрывается целиком. Поиск сохраняет исходные номера строк, количество совпадений и лимит; совпадение по секретному значению не раскрывает его. Это не универсальная очистка произвольных исходников/комментариев. Не передавай секрет как `query`: no-match повторяет запрос. Не читай конфигурацию напрямую ради паролей.
-- **Lombok.** Методов, которые генерирует Lombok, в исходниках нет. `symbol` их не найдёт: смотри аннотации класса в `outline`.
-- **Первый вызов `sig`** индексирует jar в локальных репозиториях и может занять несколько секунд на больших репозиториях `~/.m2`; результат кэшируется в `.jv-cache/jars.json`. При нескольких версиях кандидаты сортируются по числовым фрагментам полного пути, не по зависимостям сборки; `jar` фильтрует подстроку полного пути без учёта регистра. Битые архивы/классы пропускаются с предупреждением, полностью повреждённый найденный класс даёт понятную ошибку. Проверяются EOCD, центральный и локальный заголовки, границы, распакованный размер и CRC32. ZIP64/многотомные ZIP не поддерживаются; пределы 64 MiB для каталога, 16 MiB для класса, 128 уровней generic-вложенности.
-- **Пути.** `..foo.java` допустим. Traversal и внешние/неразрешимые symlink/junction, в том числе в предках нового файла и `.jv-cache`, отклоняются; внутренние ссылки допустимы. Временные файлы записи уникальны и создаются эксклюзивно. Проверка не защищает от одновременной подмены каталогов другим процессом между проверкой и записью.
-- **Кэш.** Папка `.jv-cache` создаёт `.gitignore` со звёздочкой; это не удаляет ранее отслеживаемые файлы из git. Актуальность Java и jar определяется списком файлов, размером и mtime, не хешем содержимого. Изменение build-файлов само по себе не инвалидирует тёплый Java-индекс; `op=build` пересобирает узлы/связи, но переиспользует parse-кэш совпадающих size/mtime. Для полного перепарсинга после обновления анализатора удали `.jv-cache`.
-- **Многомодульные проекты.** Запускай из корня репозитория: тогда граф охватывает все модули, а `info` перечисляет модули.
-- **Метки ролей** (`controller`, `service`, `repository`, `entity`, `config`, `test`…) определяются по аннотациям. Нестандартные составные аннотации скрипт не раскрывает.
-- **Проверка.** Помимо `selftest`, в репозитории есть `node --test`-регрессии: class/JAR-фикстуры создаются stdlib без JDK, malformed-разбор работает в дочерних процессах с timeout и heap-лимитом. Интеграция проверяет индекс, injection/rdeps, endpoints/beans/config, JPA/SQL и listeners. Файлы и Maven/Gradle home изолированы во временных каталогах. На Windows выполняются junction-проверки; тест файлового symlink пропускается, если ОС запрещает его создание.
+- **The first call of a conversation is `info`.** It reports versions, profiles and encodings, and warns about `javax.*` on Spring Boot 3 and about non-UTF-8 files.
+- **Encodings.** For cp1251 use `read`/`patch`; Java does not support UTF-16. `patch` keeps BOM/encoding and normalizes the replaced lines to the prevailing LF/CRLF; a character not representable in cp1251 cancels the write. `create` makes a new file without BOM, with LF by default (`eol=crlf` for CRLF), adds no trailing newline and picks UTF-8 or cp1251 by the rules in `SKILL.md`. Both operations write immediately, no dry-run. Edit UTF-8 with the native targeted Edit.
+- **Secrets.** `config` and `search` over `application*.yml|yaml|properties`/`bootstrap*` mask sensitive values: password/passwd/pwd, secret, token, credential, private-key, api-key, access-key, client-secret, salt. Nested keys, lists, block and multi-line YAML scalars, `.properties` continuations and escaped keys are handled. A clean reference `${MAIL_PASSWORD}` stays visible, `${MAIL_PASSWORD:секрет}` is masked. An inline container with sensitive keys is masked as a whole. Search keeps the original line numbers, the match count and the limit; a match by a secret value does not reveal it. This is not a universal scrub of arbitrary sources/comments. Never pass a secret as `query`: no-match repeats the query. Do not read configuration directly for passwords.
+- **Lombok.** Methods generated by Lombok do not exist in the sources. `symbol` will not find them: look at the class annotations in `outline`.
+- **The first `sig` call** indexes jars in the local repositories and can take several seconds on large `~/.m2` repositories; the result is cached in `.jv-cache/jars.json`. With several versions, candidates are sorted by the numeric fragments of the full path, not by build dependencies; `jar` filters by a case-insensitive substring of the full path. Broken archives/classes are skipped with a warning, a fully damaged found class gives a clear error. EOCD, central and local headers, boundaries, unpacked size and CRC32 are checked. ZIP64/multi-volume ZIP is not supported; limits are 64 MiB for the directory, 16 MiB for a class, 128 levels of generic nesting.
+- **Paths.** `..foo.java` is allowed. Traversal and external/unresolvable symlink/junction, including ancestors of a new file and `.jv-cache`, are rejected; internal links are allowed. Write temp files are unique and created exclusively. The check does not protect against another process substituting directories between the check and the write.
+- **Cache.** The `.jv-cache` folder creates a `.gitignore` with a single asterisk; this does not remove previously tracked files from git. Freshness of Java and jars is determined by the file list, size and mtime, not by content hash. Changing build files by itself does not invalidate a warm Java index; `op=build` rebuilds nodes/links but reuses the parse cache of files with matching size/mtime. For a full re-parse after an analyzer update, delete `.jv-cache`.
+- **Multi-module projects.** Run from the repository root: then the graph covers all modules and `info` lists the modules.
+- **Role marks** (`controller`, `service`, `repository`, `entity`, `config`, `test`…) are derived from annotations. Non-standard composed annotations are not unfolded.
+- **Verification.** Besides `selftest`, the repository has `node --test` regressions: class/JAR fixtures are created by the stdlib without a JDK, malformed parsing runs in child processes with a timeout and heap limit. Integration tests cover the index, injection/rdeps, endpoints/beans/config, JPA/SQL and listeners. Files and Maven/Gradle homes are isolated in temp directories. On Windows junction checks run; the file symlink test is skipped if the OS forbids creating one.
 
-## Регрессионные тесты
+## Regression tests
 
-Из корня репозитория `agent-skills` (Node 18+, без npm-зависимостей; команды работают и в Windows):
+From the root of the `agent-skills` repository (Node 18+, no npm dependencies; the commands also work on Windows):
 
 ```text
 node skills/token-economy-java/scripts/jv.js op=selftest
@@ -108,4 +111,4 @@ node --test tests/token-economy-java/metrics.test.js
 node --test tests/token-economy-java/classfile.test.js tests/token-economy-java/jar.test.js tests/token-economy-java/paths.test.js tests/token-economy-java/cache.test.js tests/token-economy-java/config.test.js tests/token-economy-java/integration.test.js
 ```
 
-Тесты не запускают Maven/Gradle, не используют сеть и не изменяют реальные пользовательские кэши. Формат YAML остаётся подмножеством, не полноценным YAML-парсером; неизвестные теги и alias/merge-вычисления не интерпретируются.
+The tests do not run Maven/Gradle, use no network and do not touch real user caches. The YAML format stays a subset, not a full YAML parser; unknown tags and alias/merge computations are not interpreted.

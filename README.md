@@ -1,160 +1,176 @@
-# Сборник полезностей для агентов ИИ
+# A collection of useful tools for AI agents
 
-Набор инструментов, которые уменьшают объём кода и данных, попадающих в контекст модели. Вместо «прочитай файл целиком» — одна команда, которая отвечает на конкретный вопрос коротким текстом: где определено, кто использует, что тормозит, сколько весит, где ошибка.
+[Русская версия](README.ru.md)
 
-Скрипты анализа работают локально и не требуют установки собственных зависимостей — каталог копируется целиком. Сетевые действия выполняются явно: `skills.js check --manifest URL` скачивает манифест, а `automateskill` работает с GitHub и Git при подготовке и исполнении планов.
+A set of tools that reduce the amount of code and data reaching the model's context. Instead of "read the whole file" — one command that answers a specific question with a short text: where is it defined, who uses it, what is slow, how big it is, where the error is.
+
+The analysis scripts run locally and require no installation of their own dependencies — the directory is copied as a whole. Network actions are explicit: `skills.js check --manifest URL` downloads a manifest, and `automateskill` works with GitHub and Git when preparing and executing plans.
 
 ---
 
-## Что внутри
+## What's inside
 
-| Раздел | Для чего |
+| Section | Purpose |
 |---|---|
-| [`skills/`](skills) | семь скиллов: шесть `token-economy-*` — по одному на язык или формат данных — и `automateskill` |
-| [`rules/`](rules) | общие правила и паспорт проекта; правила стека лежат в самих скиллах |
-| [`docker-images/`](docker-images) | `docker-compose` для вспомогательных сервисов (Hindsight) |
-| [`tests/`](tests) | проверки для скиллов: самопроверка и фикстуры |
+| [`skills/`](skills) | seven skills: six `token-economy-*` — one per language or data format — and `automateskill` |
+| [`rules/`](rules) | common rules and the project passport; the stack rules live inside the skills themselves |
+| [`docker-images/`](docker-images) | `docker-compose` for helper services (Hindsight) |
+| [`tests/`](tests) | checks for the skills: self-tests and fixtures |
 
 ---
 
-## Скиллы
+## Skills
 
 ### token-economy-ts — TypeScript / JavaScript / Angular
 
-Обязательный навык для TypeScript, JavaScript и Angular-проектов: заменяет встроенный поиск и ручное чтение файлов. Поддерживает React, Node.js, Express/Fastify/Koa, NestJS и JS/TS-файлы Vue-проектов, ESM и CommonJS (`require`, `module.exports`); `.vue` SFC не разбираются. Angular-команды применимы только при наличии Angular.
+**Docs:** [skills/token-economy-ts/README.md](skills/token-economy-ts/README.md)
 
-- `search` — найти текст или регулярку по проекту, с фильтром по расширениям; пакетно — `requests=`/`requests_file=`;
-- `graph symbol` — где объявлен класс, пайп, `$`-переменная или миксин; `graph selector` — только Angular-селектор;
-- `graph deps` / `graph rdeps` / `graph path` — что использует файл, кто использует его, цепочка связей;
-- `graph op=metrics` — файловые fan-in/out, локальный dependents, полный impact, PageRank и percentile; одиночный ответ — текст, `json=1` и batch — JSON;
-- `graph op=read` — точное чтение нескольких диапазонов одного файла одним вызовом (вместо серии Read); с версии 1.4.0 также готовый локатор `ref=файл:N-M` или `ref=файл#LN-LM`. Без диапазона `ref=файл` читает только файл меньше 300 строк и в пределах 1 МиБ; Git-refs не читаются;
-- `outline` — оглавление TS/JS-файла, включая JSX: вместо 800 строк — список символов с номерами; `compact=1` даёт диапазоны `L<start>-<end>`, `node` листает оглавление больших файлов;
-- `sig` — сигнатуры функций и методов сторонних библиотек без чтения исходников;
-- `graph op=component` — где объявлен React-компонент и где он применён в JSX (нужен `react` ≥ 16); правила React-проектов — `references/react.md`;
-- `edit_symbol` — замена тела метода или функции по имени, без переписывания файла;
-- `graph hotspots` — git-сигналы «где болит»: коммиты, churn, багфиксы, авторы и процентили p50/p90/p97 по каждому файлу; кэш валидируется по HEAD без запуска git;
-- `generate` — создание сущностей Angular через CLI.
+A mandatory skill for TypeScript, JavaScript and Angular projects: it replaces the built-in search and manual file reading. Supports React, Node.js, Express/Fastify/Koa, NestJS and the JS/TS files of Vue projects, ESM and CommonJS (`require`, `module.exports`); `.vue` SFC files are not parsed. Angular commands apply only when Angular is present.
 
-Все читающие команды (`graph`, `search`, `outline`, `sig`) поддерживают пакетный режим: один вызов — много запросов, у `graph` — один проход по графу на группу scope (`metrics` включён, `hotspots` не входит в batch). Компактные выводы: `graph` — `compact=1` в batch (словарь путей) и `format=table` для deps/rdeps, `search` — `format=grouped`/`runs`, `outline` — `compact=1`.
+- `search` — find text or a regex across the project, with an extension filter; batch — `requests=`/`requests_file=`;
+- `graph symbol` — where a class, pipe, `$` variable or mixin is declared; `graph selector` — Angular selectors only;
+- `graph deps` / `graph rdeps` / `graph path` — what a file uses, who uses it, link chains;
+- `graph op=metrics` — file fan-in/out, local dependents, full impact, PageRank and percentile; a single answer is text, `json=1` and batch are JSON;
+- `graph op=read` — reading several ranges of one file in one call (instead of a series of Reads); since 1.4.0 also the ready locator `ref=файл:N-M` or `ref=файл#LN-LM`. Without a range `ref=файл` reads only a file under 300 lines and within 1 MiB; Git refs are not read;
+- `outline` — the outline of a TS/JS file, including JSX: instead of 800 lines — a list of symbols with numbers; `compact=1` gives `L<start>-<end>` ranges, `node` pages through the outline of large files;
+- `sig` — signatures of third-party library functions and methods without reading their sources;
+- `graph op=component` — where a React component is declared and where it is used in JSX (needs `react` ≥ 16); the React project rules — `references/react.md`;
+- `edit_symbol` — replacing a method or function body by name, without rewriting the file;
+- `graph hotspots` — git signals of "where it hurts": commits, churn, bugfixes, authors and p50/p90/p97 percentiles per file; the cache is validated against HEAD without running git;
+- `generate` — creating Angular entities via the CLI.
 
-Требуется Node.js. Перед первой командой прочитайте `references/typescript.md`, затем выполните `graph op=info` в корне анализируемого проекта. Профильные `references/angular.md` / `references/react.md` читаются после определения соответствующего типа либо перед профильной операцией по её отдельному гейту. Скрипты в каталоге `scripts/`: `code-searcher.js` (search), `graph-tool.js` (graph), `symbol-index.js` (outline), `sig-reader.js` (sig), `edit-symbol.js` (edit_symbol), `scaffold-helper.js` (generate).
+All read commands (`graph`, `search`, `outline`, `sig`) support batch mode: one call — many requests, and `graph` does one graph pass per scope group (`metrics` included, `hotspots` not in batch). Compact outputs: `graph` — `compact=1` in batch (a path dictionary) and `format=table` for deps/rdeps, `search` — `format=grouped`/`runs`, `outline` — `compact=1`.
+
+Requires Node.js. Before the first command read `references/typescript.md`, then run `graph op=info` in the root of the analyzed project. The profile `references/angular.md` / `references/react.md` are read after the corresponding type is determined or before the profile operation by its separate gate. The scripts in the `scripts/` directory: `code-searcher.js` (search), `graph-tool.js` (graph), `symbol-index.js` (outline), `sig-reader.js` (sig), `edit-symbol.js` (edit_symbol), `scaffold-helper.js` (generate).
 
 ### token-economy-py — Python
 
-Один скрипт `te.py` на стандартной библиотеке (Python 3.9+):
+**Docs:** [skills/token-economy-py/README.md](skills/token-economy-py/README.md)
 
-- `info` — паспорт проекта одним вызовом: версия Python, зависимости, состав, крупнейшие файлы;
-- `graph build` — принудительное обновление графа;
-- `graph` — кто импортирует модуль, какие тесты заденет правка;
-- `graph hotspots` — «где болит» по git-истории: коммиты, churn, багфиксы, авторы, процентили; формат вывода совпадает с ts;
-- `graph metrics` — файловые метрики по всем внутренним импортам, включая lazy/types; stdlib-порт без Node.js, текст с LF;
-- `outline` — оглавление крупного файла;
-- `search` — текст по проекту;
-- `sig` — сигнатура функции установленной библиотеки без чтения её исходников.
+One script `te.py` on the standard library (Python 3.9+):
 
-Запуск: `python -I -B "<SCRIPTS_DIR>/te.py" …` из корня проекта; `<SCRIPTS_DIR>` — абсолютный путь к доверенной установленной копии скилла. Иначе передайте `--root ПУТЬ`. На Windows — `python`, не `python3`.
+- `info` — the project passport in one call: Python version, dependencies, composition, largest files;
+- `graph build` — a forced graph refresh;
+- `graph` — who imports a module, which tests an edit will affect;
+- `graph hotspots` — "where it hurts" by git history: commits, churn, bugfixes, authors, percentiles; the output format matches ts;
+- `graph metrics` — file metrics over all internal imports, including lazy/types; a stdlib port without Node.js, LF text;
+- `outline` — the outline of a large file;
+- `search` — text across the project;
+- `sig` — the signature of a function from an installed library without reading its sources.
+
+Run: `python -I -B "<SCRIPTS_DIR>/te.py" …` from the project root; `<SCRIPTS_DIR>` — the absolute path to the trusted installed copy of the skill. Otherwise pass `--root ПУТЬ`. On Windows — `python`, not `python3`.
 
 ### token-economy-php — PHP
 
-Скрипт `bx.js`, четыре режима, выбираются по содержимому проекта:
+**Docs:** [skills/token-economy-php/README.md](skills/token-economy-php/README.md)
 
-- **универсальный** — поиск определений, граф классов и функций, оглавления, безопасное чтение и правка файлов в `cp1251`;
-- **1С-Битрикс** — компоненты, события, языковые сообщения, схема таблиц, маршруты по `urlrewrite.php` и физическим файлам (не D7 Router), старое API и D7;
-- **Laravel 8–13** — маршруты, модели Eloquent, привязки контейнера, Blade, команды и расписание;
-- **MODX** (Revolution и Evolution) — файловые элементы, теги шаблонов.
+The `bx.js` script, four modes chosen by the project contents:
 
-Во всех режимах — `hotspots`: git-сигналы «где болит» (коммиты, churn, багфиксы, авторы, процентили); в Битриксе каталоги `bitrix/modules` и `upload` относительно обнаруженного docroot (`www/`, `public/` и т.п.) не считаются, пользовательский `local/modules` сохраняется.
+- **universal** — definition search, class and function graph, outlines, safe reading and editing of `cp1251` files;
+- **1C-Bitrix** — components, events, language messages, table schema, routes via `urlrewrite.php` and physical files (not the D7 Router), the legacy API and D7;
+- **Laravel 8–13** — routes, Eloquent models, container bindings, Blade, commands and the schedule;
+- **MODX** (Revolution and Evolution) — file-based elements, template tags.
 
-`op=metrics` — файловые метрики во всех четырёх режимах; все существующие виды рёбер, пользовательские модули и прежние core/vendor/cache-фильтры сохраняются.
+In all modes — `hotspots`: git signals of "where it hurts" (commits, churn, bugfixes, authors, percentiles); in Bitrix the `bitrix/modules` and `upload` directories relative to the detected docroot (`www/`, `public/` etc.) are not counted, the user's `local/modules` is kept.
+
+`op=metrics` — file metrics in all four modes; all existing link kinds, user modules and the previous core/vendor/cache filters are kept.
 
 ### token-economy-java — Java 17+ / Spring Boot 3+
 
-Скрипт `jv.js`:
+**Docs:** [skills/token-economy-java/README.md](skills/token-economy-java/README.md)
 
-- поиск определений, оглавление класса, реализации интерфейса;
-- граф связей: наследование, внедрение зависимостей, использование;
-- `op=metrics` — файловая связанность, dependents/impact, PageRank и percentile;
-- HTTP-эндпоинты и бины, конфигурация с маскированием секретов;
-- JPA-сущности, репозитории, статический каталог таблиц и фрагментов миграций (не итоговая схема базы после применения миграций);
-- слушатели событий и очередей;
-- сигнатуры классов из `jar` без декомпиляции;
-- `hotspots` — git-сигналы «где болит»: коммиты, churn, багфиксы, авторы, процентили.
+The `jv.js` script:
+
+- definition search, class outline, interface implementations;
+- link graph: inheritance, dependency injection, usage;
+- `op=metrics` — file coupling, dependents/impact, PageRank and percentile;
+- HTTP endpoints and beans, configuration with secret masking;
+- JPA entities, repositories, a static catalog of tables and migration fragments (not the final DB schema after migrations);
+- event and queue listeners;
+- signatures of classes from `jar` without decompilation;
+- `hotspots` — git signals of "where it hurts": commits, churn, bugfixes, authors, percentiles.
 
 ### token-economy-kt — Kotlin / Android
 
-Скрипт `kt.js` для проектов на Jetpack Compose и XML Views, с Java interop:
+**Docs:** [skills/token-economy-kt/README.md](skills/token-economy-kt/README.md)
 
-- граф связей: наследование, Hilt/Dagger, вызовы Compose-функций, ViewBinding;
-- `op=metrics` — файловые метрики исходников Kotlin/Java и XML manifests/layouts/navigation/values;
-- манифест: компоненты, разрешения, intent-фильтры, deep link, предупреждения `exported`;
-- Room: сущности, таблицы, SQL-методы DAO;
-- граф DI: модули, `@Provides`/`@Binds`, где связан тип и кто его получает;
-- навигация: маршруты Compose и `nav-xml`, кто куда переходит;
-- строковые ресурсы по локалям и отсутствующие переводы;
-- каталог Retrofit-endpoint'ов, анализ Gradle-конфигурации и version catalog без запуска сборки, ресурсы и layout-файлы;
-- сигнатуры классов из `jar` и `aar` без декомпиляции;
-- `hotspots` — git-сигналы «где болит»: коммиты, churn, багфиксы, авторы, процентили.
+The `kt.js` script for projects on Jetpack Compose and XML Views, with Java interop:
 
-Связи Java/Kotlin строятся статическими эвристиками: это не разрешение всех runtime-вызовов, Spring-контекста, DI-привязок или результат Android resource-merger.
+- link graph: inheritance, Hilt/Dagger, Compose function calls, ViewBinding;
+- `op=metrics` — file metrics of Kotlin/Java sources and XML manifests/layouts/navigation/values;
+- manifest: components, permissions, intent filters, deep links, `exported` warnings;
+- Room: entities, tables, SQL DAO methods;
+- DI graph: modules, `@Provides`/`@Binds`, where a type is bound and who receives it;
+- navigation: Compose and `nav-xml` routes, who navigates where;
+- string resources by locale and missing translations;
+- a catalog of Retrofit endpoints, Gradle configuration and version catalog analysis without running a build, resources and layout files;
+- signatures of classes from `jar` and `aar` without decompilation;
+- `hotspots` — git signals of "where it hurts": commits, churn, bugfixes, authors, percentiles.
 
-### Общий контракт metrics
+The Java/Kotlin links are built by static heuristics: this is not resolution of all runtime calls, the Spring context, DI bindings or the result of the Android resource merger.
 
-Для пяти языковых скиллов: одна цель `file` **либо** рейтинг `top` (положительное safe integer ≤ 9007199254740991, default 15; без цели и top тоже top-15); в Python цель позиционная, top — `--top`. `depth` — целое 1..5, default 2 **только у metrics**, остальные операции сохраняют прежние defaults.
+### The shared metrics contract
 
-`fan_in/out` считают уникальных проектных файлов-соседей; `dependents(depth)` — обратную достижимость до depth, `impact` — всю уникальную обратную достижимость **без ограничения глубины**, корень исключён. PageRank: 20 итераций, damping 0.85, равномерная dangling mass. Percentile: midrank `(less + halfEqual)/N*100`, текст округляет до `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc. Поля машинного объекта: `fan_in`, `fan_out`, `dependents`, `impact`, `pagerank`, `percentile:{fan_in,pagerank}`, `depth`.
+For the five language skills: a single `file` target **or** a `top` rating (a positive safe integer ≤ 9007199254740991, default 15; with neither target nor top — top-15); in Python the target is positional, top is `--top`. `depth` is an integer 1..5, default 2 **for metrics only**, the other operations keep their previous defaults.
 
-Это статический **файловый**, не символьный или полный runtime call graph; метрики не гарантируют риск или безопасность правки. Все существующие внутренние виды связей и фильтры сохраняются, внешние endpoints не добавляются. TS одиночный metrics по умолчанию печатает текст; `json=1` — `{perFile:[],total,cycles,depth,empty,scope,completeness,file?}` через emit, total/percentile/PageRank рассчитаны на полном графе; batch всегда JSON, compact кодирует `perFile[].path` в общем `paths`. Ошибки и неоднозначность TS остаются JSON. Python — stdlib-порт без Node.js/metrics.js, паритет с JS 1e-9 и текст LF; metrics учитывает lazy/types, тогда как `graph cycles` остаётся runtime-only. KT/Java/PHP показывают число циклов без hint несуществующего `op=cycles`. Пустой граф показывает путь к кэшу, неизвестная цель — ошибку и stats-подсказку. Прогретые graph/parse-кэши не меняются; холодный запуск законно строит граф.
+`fan_in/out` counts unique project-file neighbors; `dependents(depth)` — backward reachability up to depth, `impact` — all unique backward reachability **without a depth limit**, the root excluded. PageRank: 20 iterations, damping 0.85, uniform dangling mass. Percentile: midrank `(less + halfEqual)/N*100`, the text rounds to `pN`. Top: fan_in desc, pagerank desc, stable path asc. Fields of the machine object: `fan_in`, `fan_out`, `dependents`, `impact`, `pagerank`, `percentile:{fan_in,pagerank}`, `depth`.
 
-Четыре JS-копии `scripts/lib/metrics.js` (TS/KT/Java/PHP) должны совпадать побайтово; Python — порт, не пятая копия. `tests/metrics-copies.test.js` проверяет SHA256 и одинаковые тесты формул; численное совпадение Python проверяется его отдельным набором. Версии и манифест обновляются штатным `skills.js bump` при выпуске изменений.
+This is a static **file** graph, not a symbol-level or full runtime call graph; the metrics do not guarantee edit risk or safety. All existing internal link kinds and filters are kept, external endpoints are not added. TS single metrics prints text by default; `json=1` — `{perFile:[],total,cycles,depth,empty,scope,completeness,file?}` via emit, total/percentile/PageRank are computed on the full graph; batch is always JSON, compact encodes `perFile[].path` in a shared `paths`. TS errors and ambiguity stay JSON. Python is a stdlib port without Node.js/metrics.js, parity with JS at 1e-9 and LF text; metrics counts lazy/types, whereas `graph cycles` stays runtime-only. KT/Java/PHP show the cycle count without a hint for the nonexistent `op=cycles`. An empty graph prints the cache path, an unknown target — an error and a stats hint. Warmed graph/parse caches are not touched; a cold start legitimately builds the graph.
 
-### token-economy-har — разбор сетевых записей
+The four JS copies of `scripts/lib/metrics.js` (TS/KT/Java/PHP) must match byte for byte; Python is a port, not a fifth copy. `tests/metrics-copies.test.js` checks the SHA256 and identical formula tests; numeric parity of Python is checked by its own suite. Versions and the manifest are updated with the regular `skills.js bump` when releasing changes.
 
-Скрипт `har.js` (Node.js ≥ 18, без зависимостей) для `.har`-файлов, которые нельзя открывать в контексте: запись на 30–40 МБ может занимать миллионы токенов из-за захваченных тел ответов и метаданных. Тело в HAR хранится текстом или base64; base64 сам по себе не означает сжатие.
+### token-economy-har — parsing captured network traffic
 
-- `info` — сводка: запросов, страниц, объём, времена p50/p95/p99, статусы, методы, домены, типы;
-- `domains` — группировка по доменам с сортировкой по объёму, числу запросов или времени;
-- `slow` — самые медленные с разбивкой по фазам (`blocked`, `dns`, `connect`, `ssl`, `send`, `wait`, `receive`);
-- `errors` — статусы ≥ 400, обрывы, таймауты, пустые ответы;
-- `content` — что весит: категории и MIME, сжатое против несжатого;
-- `dup` — дубли и почти-дубли по точному URL, нормализованному и по хешу тела;
-- `search`, `entry` — отбор и одна запись с телом (только по явному запросу и с обрезкой);
-- `waterfall`, `diff` — старты и длительности, сравнение двух записей;
-- `redact` — вычистить `Authorization`, `Cookie` и токены перед передачей файла.
+**Docs:** [skills/token-economy-har/README.md](skills/token-economy-har/README.md)
 
-Все команды поддерживают `--json`. Для повторяющихся структур `--json --compact` возвращает самодостаточный `har-compact-v1`, только когда он короче обычного JSON; короткие и диагностические ответы остаются в legacy-форме. Lossless означает обратимость относительно уже ограниченного legacy JSON команды, а не сохранение всего исходного HAR.
+The `har.js` script (Node.js ≥ 18, no dependencies) for `.har` files that must not be opened in context: a 30–40 MB capture can take millions of tokens because of the captured response bodies and metadata. A body in HAR is stored as text or base64; base64 by itself does not mean compression.
 
-### automateskill — отложенные задачи из свободного описания (только ZCode)
+- `info` — a summary: requests, pages, volume, p50/p95/p99 times, statuses, methods, domains, types;
+- `domains` — grouping by domain with sorting by volume, request count or time;
+- `slow` — the slowest with a phase breakdown (`blocked`, `dns`, `connect`, `ssl`, `send`, `wait`, `receive`);
+- `errors` — statuses ≥ 400, interruptions, timeouts, empty responses;
+- `content` — what weighs: categories and MIME, compressed vs uncompressed;
+- `dup` — duplicates and near-duplicates by exact URL, normalized and by body hash;
+- `search`, `entry` — selection and a single record with a body (only on explicit request and capped);
+- `waterfall`, `diff` — starts and durations, comparison of two captures;
+- `redact` — scrub `Authorization`, `Cookie` and tokens before handing the file over.
 
-Единственный скилл набора без скриптов: вся логика — в инструкции агенту. Работает **только в ZCode**: опирается на `CronCreate` (персистентные автоматизации по расписанию), `ListModels` и субагентов из `.zcode/agents/` с моделями вида `провайдер/модель$уровень`. В других агентах (Claude Code, Kilo Code, Codex, Gemini CLI) скилл загрузится, но шаги выполнить не сможет.
+All commands support `--json`. For repetitive structures `--json --compact` returns a self-contained `har-compact-v1` only when it is shorter than the plain JSON; short and diagnostic answers stay in the legacy form. Lossless means reversibility relative to the already capped legacy JSON of the command, not preservation of the whole original HAR.
 
-Пользователь описывает задачу одним сообщением («в 03:00 в репозитории X проанализируй код моделью Y, напиши план исправлений, затем моделью Z выполни его в ветке Q и запушь»), скилл:
+### automateskill — deferred tasks from a free-form description (ZCode only)
 
-- извлекает расписание, целевой репозиторий, модели-исполнители, ветку; для разового абсолютного времени согласует будущую календарную дату в локальной зоне; недостающее спрашивает; названные модели проверяет на доступность через список моделей хоста — недоступная или не указанная показывает полным списком для выбора;
-- до публикации плана требует подтверждённую основную `main` у runner и target и совместимый контракт исполнителей; другую base branch не подставляет молча — останавливается и спрашивает;
-- проверяет права на push; при проблемах с авторизацией просит пользователя настроить доступ (`gh auth login` / Git Credential Manager) и повторяет проверку; при подтверждённом отсутствии прав предлагает форк и создаёт его только после согласия;
-- пишет план с frontmatter (`repo`/`repo-path`, `executor`, `branch`) в `tasks/input/<slug>/` runner-репозитория `automatization`; отсутствие пересечений с другими автоматизациями проверяется по их промптам, а не предполагается по имени папки;
-- создаёт выделенную автоматизацию `CronCreate` на указанное время: относительная задержка — `delayMinutes`, интервалы «каждые N» — `intervalUnit` + `interval`, календарное расписание — локальный `cron`; исполнители — субагенты из пула `.zcode/agents` на выбранных моделях (модель вне пула — скилл предлагает создать нового агента); фоллбек выбирается явно для исполнителя и может отсутствовать: с ним до 6 попыток, без него — одна попытка, независимо от числа фаз; коммиты по пунктам, отчёт в `tasks/done`, архивирование, merge в `main` и push обеспечиваются определением исполнителя, которое нужно проверить заранее;
-- планы могут порождать следующие планы: цепочка «анализ → план исправлений → выполнение» выполняется в одном запуске (до 10 планов за запуск).
+**Docs:** [skills/automateskill/README.md](skills/automateskill/README.md)
 
-Шаблоны плана и промпта автоматизации — `references/plan-template.md` и `references/automation-prompt.md`.
+The only skill of the set without scripts: all the logic is an instruction to the agent. Works **only in ZCode**: it relies on `CronCreate` (persistent scheduled automations), `ListModels` and subagents from `.zcode/agents/` with models of the form `provider/model$level`. In other agents (Claude Code, Kilo Code, Codex, Gemini CLI) the skill will load but cannot execute the steps.
+
+The user describes the task in one message ("at 03:00 in repository X analyze the code with model Y, write a fix plan, then execute it with model Z in branch Q and push"), the skill:
+
+- extracts the schedule, target repository, executor models, branch; for a one-shot absolute time it agrees on a future calendar date in the local timezone; asks for what is missing; checks the named models for availability via the host's model list — an unavailable or unnamed model is shown as a full list for selection;
+- before publishing the plan requires a confirmed `main` at the runner and the target and a compatible executor contract; it does not silently substitute another base branch — it stops and asks;
+- checks push rights; on authorization problems asks the user to set up access (`gh auth login` / Git Credential Manager) and repeats the check; on confirmed absence of rights it offers a fork and creates it only after consent;
+- writes a plan with frontmatter (`repo`/`repo-path`, `executor`, `branch`) into `tasks/input/<slug>/` of the runner repository `automatization`; the absence of overlaps with other automations is verified by their prompts, not assumed from the folder name;
+- creates a dedicated `CronCreate` automation for the specified time: a relative delay — `delayMinutes`, "every N" intervals — `intervalUnit` + `interval`, a calendar schedule — a local `cron`; the executors are subagents from the `.zcode/agents` pool on the chosen models (a model outside the pool — the skill offers to create a new agent); the fallback is chosen explicitly per executor and may be absent: with it up to 6 attempts, without it — one attempt, regardless of the number of phases; per-item commits, a report into `tasks/done`, archiving, merge into `main` and push are provided by the executor definition, which must be checked in advance;
+- plans can spawn further plans: the chain "analysis → fix plan → execution" runs in one launch (up to 10 plans per launch).
+
+The plan and automation prompt templates — `references/plan-template.md` and `references/automation-prompt.md`.
 
 ---
 
-## rules — правила для агента
+## rules — rules for the agent
 
-`rules/` содержит три файла: `RULES.md` (общие правила), `project-passport.md` (паспорт проекта) и `hindsight.md` (работа с внешней памятью). Правила стека лежат в каталогах самих скиллов и приезжают вместе с ними: `skills/token-economy-ts/references/typescript.md` (+ `references/angular.md`), `skills/token-economy-php/references/php.md`, `skills/token-economy-java/references/java.md`, `skills/token-economy-py/references/python.md`, `skills/token-economy-kt/references/kotlin.md`.
+`rules/` contains three files: `RULES.md` (common rules), `project-passport.md` (the project passport) and `hindsight.md` (working with external memory). The stack rules live in the skill directories themselves and arrive with them: `skills/token-economy-ts/references/typescript.md` (+ `references/angular.md`), `skills/token-economy-php/references/php.md`, `skills/token-economy-java/references/java.md`, `skills/token-economy-py/references/python.md`, `skills/token-economy-kt/references/kotlin.md`.
 
 ## docker-images
 
-`docker-images/hindsight/docker-compose.yml` — compose для локального сервера памяти Hindsight. Скопируйте `.env.example` в `.env` и заполните параметры провайдера; `.env` исключён из Git. Запуск Docker не входит в локальные тесты скиллов.
+`docker-images/hindsight/docker-compose.yml` — a compose file for a local Hindsight memory server. Copy `.env.example` to `.env` and fill in the provider parameters; `.env` is excluded from Git. Running Docker is not part of the local skill tests.
 
 ## mcp
 
-`mcp/mcp.json` — пример конфигурации Kilo Code, не универсальный конфиг и не обязательная часть скиллов. Включайте только нужные серверы и проверяйте команды перед переносом в свой клиент. Команды `npx` скачивают пакеты из сети; эта конфигурация автоматически не запускается.
+`mcp/mcp.json` — an example Kilo Code configuration, not a universal config and not a mandatory part of the skills. Enable only the servers you need and check the commands before moving them into your client. The `npx` commands download packages from the network; this configuration is not launched automatically.
 
-## Тесты
+## Tests
 
-Из корня репозитория, Node.js 20/22 и Python 3.9+ (в CI — 3.13), без `npm install`:
+From the repository root, Node.js 20/22 and Python 3.9+ (3.13 in CI), without `npm install`:
 
 ```sh
 node skills.js verify
@@ -167,9 +183,9 @@ python -I -B skills/token-economy-py/scripts/te.py selftest
 node skills.js verify
 ```
 
-`node --test` находит наборы CLI (`tests/*.test.js`) и скиллов (`tests/token-economy-*/`), включая регрессии путей, кодировок и повреждённых входных данных. Для отдельной проверки укажите файл: `node --test tests/check-install.test.js`. Не передавайте каталог (`node --test tests/`): это несовместимо с Windows. Тесты работают во временных каталогах; проверки симлинков явно пропускаются, если ОС запрещает их создание.
+`node --test` finds the CLI suites (`tests/*.test.js`) and the skill suites (`tests/token-economy-*/`), including regressions for paths, encodings and damaged input. For a single check name the file: `node --test tests/check-install.test.js`. Do not pass a directory (`node --test tests/`): that is incompatible with Windows. The tests work in temp directories; symlink checks are explicitly skipped when the OS forbids creating them.
 
-Целевые регрессии metrics (по одной команде на скилл; из корня репозитория):
+Targeted metrics regressions (one command per skill; from the repository root):
 
 ```sh
 node --test tests/token-economy-ts/metrics.test.js
@@ -179,59 +195,59 @@ node --test tests/token-economy-php/metrics.test.js
 node --test tests/token-economy-py/metrics.test.js
 ```
 
-Python-скилл не требует Node.js; здесь Node — только runner тестов. Suites проверяют формулы, текст/CLI, ошибки, циклы и неизменность SHA прогретого графа. Проверка четырёх JS-копий — `tests/metrics-copies.test.js` на завершающем этапе.
+The Python skill does not require Node.js; here Node is only the test runner. The suites check the formulas, the text/CLI, errors, cycles and the unchanged SHA of the warmed graph. The check of the four JS copies — `tests/metrics-copies.test.js` at the final stage.
 
-PHP-фикстуры и golden-проверки: [`tests/token-economy-php/README.md`](tests/token-economy-php/README.md). Полный HAR-бенчмарк запускается отдельно; bounded-регрессия очистки 100 MiB входит в обычный набор. Тесты в каталог скилла не входят: при копировании в агента переносится только содержимое `skills/<скилл>/`.
+PHP fixtures and golden checks: [`tests/token-economy-php/README.md`](tests/token-economy-php/README.md). The full HAR benchmark runs separately; the bounded 100 MiB scrub regression is part of the regular set. The tests are not part of a skill directory: when copying into an agent only the contents of `skills/<skill>/` are transferred.
 
 ---
 
-## Версии и обновление
+## Versions and updates
 
-У каждого скилла есть `VERSION` (одна строка, каноническая числовая тройка `X.Y.Z`: без ведущих нулей, каждый компонент — неотрицательный safe integer) и `version:` в frontmatter `SKILL.md`; обе строки и хеш содержимого записаны в `skills/manifest.json`. Prerelease/build metadata не поддерживаются; переполнение при bump отклоняется до записи. CLI `skills.js` (Node ≥ 18, без зависимостей) отвечает на вопрос «у меня установлено то же, что в репозитории, или отстал?»:
+Each skill has a `VERSION` (one line, a canonical numeric triple `X.Y.Z`: no leading zeros, each component a non-negative safe integer) and a `version:` in the `SKILL.md` frontmatter; both lines and the content hash are recorded in `skills/manifest.json`. Prerelease/build metadata is not supported; overflow on bump is rejected before writing. The `skills.js` CLI (Node ≥ 18, no dependencies) answers the question "is what I have installed the same as in the repository, or has it fallen behind?":
 
     node skills.js check --dir ~/.hermes/skills
 
-| Статус | Значение |
+| Status | Meaning |
 |---|---|
-| `актуально` | версия и хеш совпадают с манифестом |
-| `изменён локально` | версия та же, файлы отличаются от манифеста |
-| `устарело (1.2.0 → 1.3.0)` | в репозитории есть более свежая версия |
-| `новее манифеста (1.3.0 > 1.2.0)` | установленная версия новее указанной в манифесте |
-| `не установлен` | каталога скилла нет в `--dir` |
-| `неизвестно (установлен вручную)` | каталог есть, `.installed.json` нет — скопирован без CLI |
-| `неизвестно (битый .installed.json)` | метка установки не читается или содержит некорректные данные |
-| `неизвестно (небезопасный каталог установки)` | вместо обычного каталога или внутри него обнаружена не исключённая ссылка |
+| `актуально` | the version and hash match the manifest |
+| `изменён локально` | the version is the same, the files differ from the manifest |
+| `устарело (1.2.0 → 1.3.0)` | the repository has a newer version |
+| `новее манифеста (1.3.0 > 1.2.0)` | the installed version is newer than the one in the manifest |
+| `не установлен` | the skill directory is missing in `--dir` |
+| `неизвестно (установлен вручную)` | the directory exists, there is no `.installed.json` — copied without the CLI |
+| `неизвестно (битый .installed.json)` | the installation mark is unreadable or contains invalid data |
+| `неизвестно (небезопасный каталог установки)` | a non-excluded link is found instead of a regular directory or inside it |
 
-Статусы `устарело` и `новее манифеста` определяются по версии в `.installed.json` до хеширования файлов: они не подтверждают отсутствие локальных изменений или ссылок внутри установленного скилла.
+The `устарело` and `новее манифеста` statuses are determined by the version in `.installed.json` before hashing files: they do not confirm the absence of local changes or links inside the installed skill.
 
-Команды:
+Commands:
 
-- `node skills.js install <name> --to PATH` — подготовить копию скилла и заменить каталог `<PATH>/<name>`, записав `.installed.json` (версия, хеш, дата, коммит). Повторная установка удаляет старые и локально добавленные файлы внутри этого каталога: предварительно сохраните нужные правки. При ошибке подготовки прежняя копия остаётся нетронутой; ссылки внутри скилла и пересечение с источником отклоняются;
-- `node skills.js check [--dir PATH] [--manifest ПУТЬ|URL] [--json]` — таблица статусов; без `--manifest` берётся `skills/manifest.json` из этого репозитория, `AGENT_SKILLS_DIR` задаёт каталог установки по умолчанию;
-- `node skills.js bump <name> <patch|minor|major>` — поднять версию у скилла в репозитории (VERSION, `version:`, манифест одной командой);
-- `node skills.js verify` — согласованность репозитория: `VERSION` = `version:` = манифест, хеши, число файлов и `requires` совпадают; `description` во frontmatter проверяется после декодирования поддерживаемого YAML, единица длины — Unicode code points, максимум 1024, предупреждение при длине больше 900; missing/empty/unsupported — ошибка. Это локальный контракт CLI, не подтверждение совместимости с внешними загрузчиками ZCode/Claude Code; код 1 при расхождении;
-- `node skills.js manifest` — пересобрать манифест из текущих `VERSION` (первичное заполнение);
-- `node skills.js hash <name>` — хеш каталога скилла (для отладки).
+- `node skills.js install <name> --to PATH` — prepare a copy of the skill and replace the directory `<PATH>/<name>`, writing `.installed.json` (version, hash, date, commit). Reinstalling deletes old and locally added files inside that directory: save the edits you need first. If preparation fails, the previous copy stays untouched; links inside the skill and overlaps with the source are rejected;
+- `node skills.js check [--dir PATH] [--manifest ПУТЬ|URL] [--json]` — a table of statuses; without `--manifest` it takes `skills/manifest.json` from this repository, `AGENT_SKILLS_DIR` sets the default installation directory;
+- `node skills.js bump <name> <patch|minor|major>` — raise the version of a skill in the repository (VERSION, `version:`, the manifest in one command);
+- `node skills.js verify` — repository consistency: `VERSION` = `version:` = the manifest, hashes, the file count and `requires` match; the `description` in the frontmatter is checked after decoding supported YAML, the length unit is Unicode code points, max 1024, a warning above 900; missing/empty/unsupported — an error. This is a local CLI contract, not a confirmation of compatibility with the external loaders ZCode/Claude Code; exit code 1 on a mismatch;
+- `node skills.js manifest` — rebuild the manifest from the current `VERSION` (primary population);
+- `node skills.js hash <name>` — the hash of a skill directory (for debugging).
 
-`description` поддерживает однострочный plain scalar, одинарные кавычки (удвоенный апостроф) и двойные кавычки с YAML escape-последовательностями, а также block scalar `|` / `>` с clip/strip/keep (`-` / `+`) и единым отступом. Plain null/bool/numeric не считаются строковым описанием и отклоняются; в кавычках такие значения остаются текстом. BOM/CRLF нормализуются для разбора. Многострочные plain/quoted, explicit indent indicator, более глубокие отступы внутри блока, tags/anchors/collections не интерпретируются наугад: CLI выдаёт unsupported-диагностику. Unicode escape должен представлять scalar: non-BMP задаётся исходным символом или `\U0001F600`, а surrogate escapes (включая пары `\uD83D\uDE00`) отклоняются. Границы длины относятся к декодированному значению, не к кавычкам, маркерам или сырому frontmatter.
+`description` supports a single-line plain scalar, single quotes (a doubled apostrophe) and double quotes with YAML escape sequences, as well as the block scalar `|` / `>` with clip/strip/keep (`-` / `+`) and a single indent. Plain null/bool/numeric values do not count as a string description and are rejected; inside quotes they remain text. BOM/CRLF are normalized for parsing. Multi-line plain/quoted, an explicit indent indicator, deeper indentation inside a block, tags/anchors/collections are not guessed: the CLI emits unsupported diagnostics. A Unicode escape must represent a scalar: a non-BMP character is given as the raw character or `\U0001F600`, and surrogate escapes (including pairs `\uD83D\uDE00`) are rejected. The length limits apply to the decoded value, not to quotes, markers or the raw frontmatter.
 
-Список `requires` выводится из расширений файлов (`node>=18`, `python>=3`), а не из анализа всех runtime-возможностей: уточнённые минимальные версии и инструменты отдельных операций указаны в документации скиллов.
+The `requires` list is derived from file extensions (`node>=18`, `python>=3`), not from analyzing all runtime capabilities: precise minimum versions and the tools of individual operations are listed in the skill documentation.
 
-Манифест содержит `schemaVersion: 1`; чтение прежнего формата без этого поля поддерживается. `manifest` сохраняет дату `updated` у неизменённых скиллов. `bump` готовит все файлы до замены и откатывает уже записанные при обычной ошибке ввода-вывода; это не транзакция, защищённая от отключения питания. Имена скиллов — строчные латинские буквы, цифры, `.`, `_`, `-`, начиная с буквы или цифры, без точки в конце и сегментов пути. Python bytecode, `.DS_Store`, `Thumbs.db`, `desktop.ini` и прочие исключения из `lib/hash.js` не входят в хеш и установку. Загрузка `--manifest URL` ограничена 10 секундами.
+The manifest carries `schemaVersion: 1`; reading the older format without this field is supported. `manifest` keeps the `updated` date of unchanged skills. `bump` prepares all files before replacing and rolls back what was written on an ordinary I/O error; it is not a transaction protected from power loss. Skill names are lowercase Latin letters, digits, `.`, `_`, `-`, starting with a letter or digit, no trailing dot, no path segments. Python bytecode, `.DS_Store`, `Thumbs.db`, `desktop.ini` and the other exclusions of `lib/hash.js` are not part of the hash or the installation. Loading `--manifest URL` is limited to 10 seconds.
 
-Правила подъёма версий: **patch** — исправления, не меняющие вызовов; **minor** — новая команда или флаг; **major** — изменился синтаксис существующих команд. Исправления аудита 2026-11-18 сохраняют синтаксис CLI, но ужесточают файловую безопасность: внешние batch JSON / PHP `@payload` и ссылки cache endpoints больше не принимаются; это breaking-эффект для workflows, которые опирались на прежний обход заявленных границ. CI на каждый PR прогоняет `verify`, все автономные тесты и selftest на Linux и Windows с Node.js 20/22.
+Version bump rules: **patch** — fixes that do not change invocations; **minor** — a new command or flag; **major** — the syntax of existing commands changed. The audit fixes of 2026-11-18 keep the CLI syntax but tighten file security: external batch JSON / PHP `@payload` and links of cache endpoints are no longer accepted; this is a breaking effect for workflows that relied on the previous traversal of the declared boundaries. CI on every PR runs `verify`, all standalone tests and the self-tests on Linux and Windows with Node.js 20/22.
 
 ---
 
-## Как подключить
+## How to connect
 
-1. Скопировать нужный каталог из `skills/` в каталог скиллов агента (например `~/.zcode/skills/` для ZCode или `~/.claude/skills/` для Claude Code; для остальных клиентов уточните их путь); тесты из `tests/` не копируются. Для `automateskill` нужен именно ZCode.
-2. Проверить путь к скриптам: в `SKILL.md` он обозначен как `<SCRIPTS_DIR>` или `<SKILL_DIR>` и должен указывать на каталог скилла.
-3. Положить рядом правила из `rules/` — копируются только `RULES.md`, `project-passport.md` и `hindsight.md`; правила стека отдельно не копируются — они уже внутри каталога скилла в `references/` и приезжают вместе с ним (в том числе при `skills.js install`).
+1. Copy the needed directory from `skills/` into the agent's skills directory (for example `~/.zcode/skills/` for ZCode or `~/.claude/skills/` for Claude Code; for other clients check their path); the tests from `tests/` are not copied. `automateskill` requires ZCode specifically.
+2. Check the path to the scripts: in `SKILL.md` it is denoted `<SCRIPTS_DIR>` or `<SKILL_DIR>` and must point to the skill directory.
+3. Put the rules from `rules/` nearby — only `RULES.md`, `project-passport.md` and `hindsight.md` are copied; the stack rules are not copied separately — they are already inside the skill directory in `references/` and arrive with it (including via `skills.js install`).
 
-## Принципы
+## Principles
 
-- **Одна команда вместо файла.** Скрипт отвечает на вопрос, а не отдаёт исходник.
-- **Короткий вывод.** Списки обрезаются, лишнее уходит в `--json` или в файл.
-- **Без обязательной установки зависимостей скилла.** Скрипты используют стандартную библиотеку; отдельным операциям нужны инструменты или пакеты проекта (Angular CLI, JDK, зависимости для чтения сигнатур), они не устанавливаются автоматически.
-- **Явные ограничения.** `SKILL.md` описывает область применения, ограничения команд и порядок безопасного чтения и правок; неподдерживаемые связи и усечённый вывод не выдаются за полный анализ.
+- **One command instead of a file.** The script answers a question instead of handing over a source.
+- **Short output.** Lists are cut, the rest goes into `--json` or a file.
+- **No mandatory installation of the skill's dependencies.** The scripts use the standard library; individual operations need project tools or packages (Angular CLI, JDK, dependencies for signature reading), they are not installed automatically.
+- **Explicit limitations.** `SKILL.md` describes the application area, the command limitations and the order of safe reading and editing; unsupported links and truncated output are not passed off as a full analysis.

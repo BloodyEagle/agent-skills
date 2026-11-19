@@ -1,12 +1,16 @@
-Скилл для экономии токенов.
+# token-economy-ts
 
-Скилл рассчитан на агентные CLI (ZCode, Kilo Code): секция в самом начале SKILL.md, ограниченная `---`, обязательна — без неё агент не увидит скилл.
+[Русская версия](README.ru.md)
 
-Скрипты написаны для запуска через Node.js, без новых npm-зависимостей. Поддерживаются `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, ESM и CommonJS; `.vue` SFC не индексируются. React-гейт проверяет major спецификатора в package.json (≥ 16 либо нераспознанный); `graph op=component` показывает JSX-использования независимо от projectType. Angular-гейт и детект projectType имеют различия, описанные в SKILL.md.
+Token-saving skill.
 
-## Файловые метрики
+The skill is designed for agent CLIs (ZCode, Kilo Code): the section at the very beginning of SKILL.md bounded by `---` is mandatory — without it the agent will not see the skill.
 
-`graph op=metrics` — метрики статического файлового графа, не символьного/full runtime call graph и не гарантия риска правки. Учитывает все существующие внутренние связи с прежними `root`/`specs` и фильтрами (включая template/style), внешние endpoints не добавляет.
+The scripts run under Node.js and add no new npm dependencies. Supported: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, ESM and CommonJS; `.vue` SFC files are not indexed. The React gate checks the major of the spec in package.json (≥ 16 or unrecognized); `graph op=component` shows JSX usages regardless of projectType. The Angular gate and projectType detection have differences described in SKILL.md.
+
+## File metrics
+
+`graph op=metrics` — metrics of the static file graph, not a symbol-level/full runtime call graph, and not a guarantee of edit risk. It counts all existing internal links with the previous `root`/`specs` and filters (including template/style) and does not add external endpoints.
 
 ```text
 node "<SCRIPTS_DIR>\graph-tool.js" op=metrics file=src/db.ts depth=2
@@ -14,11 +18,11 @@ node "<SCRIPTS_DIR>\graph-tool.js" op=metrics top=15
 node "<SCRIPTS_DIR>\graph-tool.js" op=metrics file=src/db.ts json=1
 ```
 
-`file` **либо** `top` (вместе нельзя); `top` — положительное safe integer, default 15, без обоих тоже top-15. `depth` — строго целое 1..5, default 2 только для metrics (`deps`/`rdeps` остаются 1). `fan_in/out` — уникальные проектные соседи; `dependents` — обратная достижимость до depth; `impact` — вся обратная достижимость без ограничения, корень исключён. PageRank — 20 итераций, damping 0.85, равномерная dangling mass; percentile — midrank `(less + halfEqual)/N*100`, в тексте округлённый `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc.
+`file` **or** `top` (not both); `top` is a positive safe integer, default 15, with neither given also top-15. `depth` is a strict integer 1..5, default 2 for metrics only (`deps`/`rdeps` stay 1). `fan_in/out` — unique project neighbors; `dependents` — backward reachability up to depth; `impact` — the entire backward reachability without a limit, root excluded. PageRank — 20 iterations, damping 0.85, uniform dangling mass; percentile — midrank `(less + halfEqual)/N*100`, printed as rounded `pN`. Top: fan_in desc, pagerank desc, stable path asc.
 
-Текст по умолчанию только для новой операции: `src/db.ts  fan-in 12 (p95)  fan-out 4  dependents(2) 27  impact 41  pagerank 0.0132 (p95)`. `json=1` через emit выдаёт `{perFile:[{id,path,fan_in,fan_out,dependents,impact,pagerank,percentile:{fan_in,pagerank},depth}],total,cycles,depth,empty,scope,completeness,file?}`; total, percentile и PageRank относятся ко всему графу, perFile — цель или top. Неизвестный файл/неверные аргументы — JSON error/exit1 с `completeness.complete=false` и stats-подсказкой для файла; ambiguous — JSON/exit0. Batch всегда JSON (metrics включён), `compact=1` кодирует `perFile[].path` в общем `paths`. Пустой граф показывает путь к `graph-deps.json`, циклы — `циклов: N (op=cycles)`, неполнота — предупреждение. Полный контракт — в SKILL.md.
+The text output exists only for the new operation: `src/db.ts  fan-in 12 (p95)  fan-out 4  dependents(2) 27  impact 41  pagerank 0.0132 (p95)`. `json=1` via emit returns `{perFile:[{id,path,fan_in,fan_out,dependents,impact,pagerank,percentile:{fan_in,pagerank},depth}],total,cycles,depth,empty,scope,completeness,file?}`; total, percentile and PageRank refer to the whole graph, perFile — the target or top. Unknown file/bad arguments — JSON error/exit1 with `completeness.complete=false` and a stats hint for the file; ambiguous — JSON/exit0. Batch is always JSON (metrics included), `compact=1` encodes `perFile[].path` in a shared `paths` dictionary. An empty graph prints the path to `graph-deps.json`, cycles — `циклов: N (op=cycles)`, incompleteness — a warning. The full contract is in SKILL.md.
 
-Проверки JavaScript и регрессий TypeScript находятся в репозитории agent-skills, в каталоге `tests/token-economy-ts/`; в сам скилл они не входят. Запуск из корня репозитория:
+The JavaScript checks and TypeScript regressions live in the agent-skills repository, in `tests/token-economy-ts/`; they are not part of the skill itself. Run from the repository root:
 
 ```text
 node --test tests/token-economy-ts/files.test.js
@@ -36,41 +40,41 @@ node --test tests/token-economy-ts/hotspots.test.js
 node --test tests/token-economy-ts/metrics.test.js
 ```
 
-Весь набор один раз в конце:
+The whole set at once at the end:
 
 ```text
 node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/search.test.js tests/token-economy-ts/ranges.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/react-detect.test.js tests/token-economy-ts/react-component.test.js tests/token-economy-ts/ref-corpus.test.js tests/token-economy-ts/ref-read.test.js tests/token-economy-ts/edit-docs.test.js tests/token-economy-ts/hotspots.test.js tests/token-economy-ts/metrics.test.js
 ```
 
-Тесты создают и удаляют собственные временные проекты; `edit_symbol` в режиме auto может загрузить уже установленный TypeScript (в том числе найденный от каталога скрипта). `npm install` не нужен. В существующих suites проверяются также сигнатуры (`symbols.test.js`), realpath/junction confinement, root exports, missing-dependency fallback, Unicode, Windows-регистр, фантомы из комментариев/шаблонов, JSON completeness и две цепочки по 6200 файлов (линейная и замкнутая).
+The tests create and delete their own temporary projects; `edit_symbol` in auto mode may load an already installed TypeScript (including one found from the script directory). `npm install` is not needed. The existing suites also cover signatures (`symbols.test.js`), realpath/junction confinement, root exports, missing-dependency fallback, Unicode, Windows case handling, phantoms from comments/templates, JSON completeness and two chains of 6200 files (linear and closed).
 
-Штатная самопроверка скилла:
+The built-in self-check of the skill:
 
 ```text
 node skills/token-economy-ts/scripts/graph-tool.js op=selftest
 ```
 
-Git-сигналы «где болит» (таблица top или один файл):
+Git signals «where it hurts» (a top table or one file):
 
 ```text
 node skills/token-economy-ts/scripts/graph-tool.js op=hotspots top=10
 node skills/token-economy-ts/scripts/graph-tool.js op=hotspots file=src/merge.ts since=90d
 ```
 
-Перед первой командой прочитай `references/typescript.md`, затем один раз в текущем проекте вызови `graph op=info`. Тип проекта определяется автоматически (`projectType`: `angular` / `react` / `nest` / `node` / `ts` — по angular.json, `@angular/core`, `react` (>= 16), `@nestjs/*`, серверным пакетам в package.json). Универсальные правила — в SKILL.md; после info читай `references/angular.md` при `projectType=angular` или `references/react.md` при `projectType=react`. Перед `selector`/`generate` прочитай Angular-профиль, перед `component` — React-профиль независимо от типа: команды имеют отдельные гейты. Селекторы компонентов/директив ищи через `selector`, пайпы по имени и стилевые символы — через `symbol`.
+Before the first command read `references/typescript.md`, then run `graph op=info` once in the current project. The project type is detected automatically (`projectType`: `angular` / `react` / `nest` / `node` / `ts` — by angular.json, `@angular/core`, `react` (>= 16), `@nestjs/*`, server packages in package.json). The universal rules are in SKILL.md; after info read `references/angular.md` when `projectType=angular` or `references/react.md` when `projectType=react`. Before `selector`/`generate` read the Angular profile, before `component` — the React profile regardless of the type: the commands have separate gates. Look for component/directive selectors via `selector`, pipes by name and style symbols via `symbol`.
 
-`requests_file` во всех четырёх CLI — UTF-8 JSON в обычном файле внутри cwd по lexical и realpath границам; `root=` эту границу не меняет. Внутренние ссылки и root-junction поддерживаются, внешние/dangling-ссылки, каталоги и traversal отклоняются до batch. Конкурентная подмена предков не исключена. `symbol` сохраняет все перегрузки и реализации с отдельными spans/owners; JSX-index `component` исключает `.ts`, сохраняя `.tsx/.jsx` и JS. Структурные batch-ошибки `deps/rdeps/path/metrics` сохраняют scope/completeness даже при отказе scope-группы и `compact=1`.
+`requests_file` in all four CLIs — UTF-8 JSON in a regular file inside cwd by lexical and realpath boundaries; `root=` does not change this boundary. Internal links and a root junction are supported, external/dangling links, directories and traversal are rejected before batch. Concurrent substitution of ancestors is not excluded. `symbol` keeps all overloads and implementations with separate spans/owners; the JSX index of `component` excludes `.ts` while keeping `.tsx/.jsx` and JS. Structural batch errors of `deps/rdeps/path/metrics` keep scope/completeness even when a scope group fails, also with `compact=1`.
 
-Компактные формы и пакетные запросы (всё opt-in, legacy-выдача не изменена): search — `word=1`, `format=grouped|runs` (с `pathPrefix`), `context=N`, batch через `requests`/`requests_file`; outline — `compact=1` и batch; sig — сохранение literal whitespace, `full=1`, диагностика обрезки, `offset` и batch (`full` общий, пределы обхода сохраняются); graph — диапазоны объявлений и тел в `symbol`/`node`, `op=read` через `file+ranges` или `ref=файл:N-M`, `format=table` для deps/rdeps, пагинация `node`, batch и только в batch `compact=1` (словарь путей). Обратимость проверяется декодерами в `search.test.js` и `ranges.test.js`; refs — в `ref-corpus.test.js`/`ref-read.test.js`. Graph-кэш проверяет исходники по mtime/size, не по хешу; sig не использует общий read/parse-кэш.
+Compact forms and batch requests (all opt-in, the legacy output unchanged): search — `word=1`, `format=grouped|runs` (with `pathPrefix`), `context=N`, batch via `requests`/`requests_file`; outline — `compact=1` and batch; sig — literal whitespace preserved, `full=1`, clipping diagnostics, `offset` and batch (`full` is common, traversal limits stay); graph — declaration and body ranges in `symbol`/`node`, `op=read` via `file+ranges` or `ref=файл:N-M`, `format=table` for deps/rdeps, `node` pagination, batch and, batch-only, `compact=1` (a path dictionary). Reversibility is checked by the decoders in `search.test.js` and `ranges.test.js`; refs — in `ref-corpus.test.js`/`ref-read.test.js`. The graph cache checks sources by mtime/size, not by hash; sig uses no shared read/parse cache.
 
-Скрипты скилла:
+Skill scripts:
 
-| Действие | Что делает | Экономия                                  |
+| Action | What it does | Savings                                  |
 |---|---|-------------------------------------------|
-| `search` | `code-searcher.js` — совпадения: файл, строка, короткий сниппет | не читает найденные файлы целиком |
-| `graph` | `graph-tool.js` — где определён символ, кто использует файл, цепочки связей, чтение диапазонов, React-компоненты | навигационные ответы вместо файлов в контексте; `read` отдаёт запрошенные строки |
-| `graph op=metrics` | файловые fan-in/out, dependents, impact, PageRank и percentile | связанность и область проверки без выдачи всех зависимых файлов |
-| `outline` | `symbol-index.js` — оглавление файла с номерами строк | вместо файла целиком |
-| `sig` | `sig-reader.js` — сигнатуры библиотек из `node_modules` | без чтения `.d.ts` |
-| `edit_symbol` | `edit-symbol.js` — замена тела функции или метода | правка без чтения файла в контекст |
-| `generate` | `scaffold-helper.js` — Angular-сущности через локальный CLI | краткий список созданных файлов |
+| `search` | `code-searcher.js` — matches: file, line, short snippet | does not read the found files in full |
+| `graph` | `graph-tool.js` — where a symbol is defined, who uses a file, link chains, range reading, React components | navigation answers instead of files in context; `read` returns the requested lines |
+| `graph op=metrics` | file fan-in/out, dependents, impact, PageRank and percentile | coupling and the area to check without listing all dependent files |
+| `outline` | `symbol-index.js` — a file outline with line numbers | instead of the whole file |
+| `sig` | `sig-reader.js` — library signatures from `node_modules` | without reading `.d.ts` |
+| `edit_symbol` | `edit-symbol.js` — replacing a function or method body | an edit without reading the file into context |
+| `generate` | `scaffold-helper.js` — Angular entities via the local CLI | a short list of created files |
