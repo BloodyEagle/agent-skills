@@ -1,7 +1,7 @@
 ---
 name: token-economy-kt
 version: 1.2.1
-description: 'Экономия токенов в Kotlin/Android (Jetpack Compose, XML Views, Java interop). Поиск определений, статический граф (наследование, Hilt/Dagger, использование, Compose-вызовы, ViewBinding), файловые метрики (metrics), git-сигналы (hotspots: коммиты, churn, багфиксы, авторы, процентили), оглавления классов/функций, реализации интерфейсов. Исходный манифест (компоненты, разрешения, intent-фильтры, deep link, exported-предупреждения), Room (сущности, таблицы, SQL DAO), DI (модули, @Provides/@Binds, привязки типов, потребители), Compose/nav-xml, строки по локалям и отсутствующие переводы, Retrofit-endpoint''ы, Gradle без сборки (модули, SDK, version catalog), layout/id/строки, сигнатуры jar и classes.jar из aar без декомпиляции. Команды — PowerShell; правила — references/kotlin.md.'
+description: 'Экономный анализ Kotlin/Android-проектов (Jetpack Compose, XML Views, Java interop) скриптом kt.js — без чтения файлов целиком. Звать для поиска определений, статического графа (наследование, Hilt/Dagger, Compose-вызовы, ViewBinding), файловых метрик, git-хотспотов, оглавлений классов и функций, разбора исходного манифеста (компоненты, разрешения, intent-фильтры, deep link), Room, DI-модулей, Retrofit-эндпоинтов, Gradle-модулей и version catalog без сборки, строк по локалям с отсутствующими переводами, сигнатур jar и classes.jar из aar. Правила стека — references/kotlin.md.'
 ---
 # Skill: token-economy-kt
 Правила стека — `references/kotlin.md` в этом же каталоге скилла: прочитай перед первой командой сессии. Путь относительный от каталога скилла, а не от корня агента.
