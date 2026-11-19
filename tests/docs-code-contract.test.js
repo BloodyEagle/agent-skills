@@ -10,8 +10,10 @@ test('docs: TypeScript routes selectors separately from pipe/style symbols', () 
     const reference = read('skills/token-economy-ts/references/typescript.md');
     assert.match(reference, /селектор[^\n]*op: `selector`/i);
     assert.match(reference, /пайп[^\n]*op: `symbol`/i);
-    const overview = read('README.md');
+    const overview = read('README.ru.md');
     assert.match(overview, /`graph symbol`[^\n]*пайп[^\n]*`graph selector`[^\n]*Angular-селектор/);
+    const overviewEn = read('README.md');
+    assert.match(overviewEn, /`graph symbol`[^\n]*pipe[^\n]*`graph selector`[^\n]*Angular selector/);
 });
 
 test('docs: generic TS rules precede info and framework rules are conditional', () => {
