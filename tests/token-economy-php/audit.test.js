@@ -384,11 +384,15 @@ test('F12: PHP snippets — 120 символов содержимого плюс
 });
 
 test('F12: PHP docs закрепляют лимит содержимого и отдельно маркеры', () => {
-  for (const name of ['SKILL.md', 'README.md']) {
+  for (const name of ['SKILL.md', 'README.ru.md']) {
     const doc = fs.readFileSync(path.resolve(__dirname, '../../skills/token-economy-php', name), 'utf8');
     assert.match(doc, /120 символов содержимого[^\n]*маркеры `…`/);
     assert.match(doc, /префикс номера строки[^\n]*не входит/);
   }
+  const docEn = fs.readFileSync(path.resolve(__dirname, '../../skills/token-economy-php/README.md'), 'utf8');
+  assert.match(docEn, /120/);
+  assert.match(docEn, /…/);
+  assert.match(docEn, /prefix/);
 });
 
 test('P3: route не выдумывает путь отсутствующего или namespaced view', (t) => {
