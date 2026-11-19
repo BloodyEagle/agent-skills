@@ -1,92 +1,95 @@
 # token-economy-py
 
-Скилл для любого агента с терминалом: экономит токены при работе с Python-проектами. Вместо чтения целых файлов и исходников библиотек агент вызывает скрипт `te.py` и получает короткий текстовый ответ: где определена функция, кто импортирует модуль, оглавление большого файла, сигнатура функции установленной библиотеки.
+[Русская версия](README.ru.md)
 
-Правила для агента и таблица команд — в `SKILL.md`. Устройство графа и подробные ограничения — в `references/graph.md`.
+A skill for any agent with a terminal: it saves tokens when working with Python projects. Instead of reading whole files and library sources, the agent calls the `te.py` script and gets a short text answer: where a function is defined, who imports a module, the outline of a large file, the signature of a function from an installed library.
 
-## Требования
+Rules for the agent and the command table — in `SKILL.md`. The graph design and detailed limitations — in `references/graph.md`.
 
-- **Python 3.9 или новее.** Скрипт использует `ast.unparse` (3.9+) и `end_lineno` (3.8+). Проверен на Python 3.12.
-- **Только стандартная библиотека.** Пакеты из pip не нужны, сеть не нужна.
-- **Git** не обязателен. С ним список файлов берётся из `git ls-files` (учитывается `.gitignore`), без него — обход каталогов с исключением виртуальных окружений и кэшей.
-- **Запуск** доверенного скрипта по абсолютному пути: `python -I -B "<SCRIPTS_DIR>\te.py" … --root ПУТЬ`. `-I` исключает каталог скрипта и cwd из поиска импортов, `-B` предотвращает запись bytecode. Для недоверенного проекта cwd держи вне его каталога. На Windows вместо `python3` вызывай `python`.
-- **Для `sig`** нужно, чтобы нужный пакет был установлен в интерпретаторе, которым запущен скрипт, либо в `.venv` / `venv` / `env` проекта (они подхватываются автоматически).
-- **Права:** операции анализа пишут кэш только в папку `.token-economy` в корне проекта (внутри лежит `.gitignore` со звёздочкой). `selftest` отдельно создаёт и удаляет синтетический проект во временном каталоге. Исходный Python-код проекта и библиотек анализатор читает, не исполняя; для модулей из `sys.builtin_module_names` `sig` использует импорт и `inspect`.
+## Requirements
 
-## Установка
+- **Python 3.9 or newer.** The script uses `ast.unparse` (3.9+) and `end_lineno` (3.8+). Tested on Python 3.12.
+- **Standard library only.** No pip packages, no network.
+- **Git** is optional. With it the file list comes from `git ls-files` (`.gitignore` respected), without it — directory traversal excluding virtual environments and caches.
+- **Run** the trusted script by absolute path: `python -I -B "<SCRIPTS_DIR>\te.py" … --root ПУТЬ`. `-I` excludes the script directory and cwd from the import search, `-B` prevents bytecode writing. For an untrusted project keep cwd outside its directory. On Windows call `python`, not `python3`.
+- **For `sig`** the package in question must be installed in the interpreter running the script, or in the project's `.venv` / `venv` / `env` (picked up automatically).
+- **Permissions:** analysis operations write the cache only into the `.token-economy` folder in the project root (it contains a `.gitignore` with a single asterisk). `selftest` separately creates and deletes a synthetic project in a temp directory. The project's Python sources and library code are read by the analyzer, never executed; for modules from `sys.builtin_module_names` `sig` uses import and `inspect`.
 
-Скопируй папку `token-economy-py` в каталог навыков агента:
+## Install
 
-    глобально в ZCode:      %USERPROFILE%\.zcode\skills\token-economy-py
-    глобально в Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-py
-    локально в репозитории: .zcode\skills\token-economy-py (ZCode) или .kilo\skills\token-economy-py (Kilo Code)
-    Linux и macOS:          ~/.config/kilo/skills/token-economy-py
+Copy the `token-economy-py` folder into the agent's skills directory:
 
-Структура:
+    globally in ZCode:      %USERPROFILE%\.zcode\skills\token-economy-py
+    globally in Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-py
+    locally in a repo:      .zcode\skills\token-economy-py (ZCode) or .kilo\skills\token-economy-py (Kilo Code)
+    Linux and macOS:        ~/.config/kilo/skills/token-economy-py
+
+Layout:
 
     token-economy-py/
-      SKILL.md                правила и команды для агента
-      README.md               этот файл
-      references/graph.md     устройство графа, виды связей, ограничения
+      SKILL.md                rules and commands for the agent
+      README.md               this file (English)
+      README.ru.md            Russian version
+      references/graph.md     graph design, link kinds, limitations
       scripts/
-        te.py                 единый скрипт: graph, outline, search, sig, info
+        te.py                 the single script: graph, outline, search, sig, info
 
-Проверка вручную: `python -I -B "<SCRIPTS_DIR>\te.py" graph stats --root ПУТЬ` выводит число файлов и связей, самые импортируемые модули, запускаемые скрипты и внешние пакеты. `<SCRIPTS_DIR>` — абсолютный путь к каталогу `scripts` установленного скилла. Git-сигналы «где болит»: `python -I -B "<SCRIPTS_DIR>\te.py" graph hotspots --top 10` (или `--file ПУТЬ` — один файл с персональными процентильными метками; формат вывода совпадает с `op=hotspots` token-economy-ts).
+Manual check: `python -I -B "<SCRIPTS_DIR>\te.py" graph stats --root ПУТЬ` prints the number of files and links, the most imported modules, runnable scripts and external packages. `<SCRIPTS_DIR>` is the absolute path to the `scripts` directory of the installed skill. Git signals of «where it hurts»: `python -I -B "<SCRIPTS_DIR>\te.py" graph hotspots --top 10` (or `--file ПУТЬ` — one file with personal percentile labels; the output format matches `op=hotspots` of token-economy-ts).
 
-## Что умеет
+## What it does
 
-| Задача | Команда |
+| Task | Command |
 |---|---|
-| Где определён класс, функция, метод, константа (`Engine`, `Engine.run`, `app.models.User`) | `graph symbol` |
-| Что импортирует файл, кто импортирует файл (с глубиной `--depth`), цепочка между двумя файлами | `graph deps`, `graph rdeps`, `graph path` |
-| Сводка по файлу, циклические импорты, обзор проекта | `graph node`, `graph cycles`, `graph stats` |
-| Где болит по git-истории: коммиты, churn, багфиксы, авторы, процентили | `graph hotspots` (`--top`, `--file`, `--since`, `--max-commits`) |
-| Файловая связанность и область воздействия: fan-in/out, dependents, impact, PageRank, percentile | `graph metrics` |
-| Оглавление файла с диапазонами строк (`L126-160`), декораторами и сигнатурами | `outline` (`--docs` добавляет первый абзац docstring) |
-| Поиск подстроки или регулярки, результат сгруппирован по файлам | `search` (`--ext`, `--re`, `-i`, `--path`, `--limit`) |
-| Сигнатура, docstring и путь к источнику функции или класса из stdlib и установленных пакетов | `sig` (`--doc` — полный docstring, до 1500 символов) |
-| Паспорт проекта: python, зависимости, состав и крупнейшие файлы | `info` |
+| Where a class, function, method or constant is defined (`Engine`, `Engine.run`, `app.models.User`) | `graph symbol` |
+| What a file imports, who imports a file (with `--depth`), the chain between two files | `graph deps`, `graph rdeps`, `graph path` |
+| Per-file summary, cyclic imports, project overview | `graph node`, `graph cycles`, `graph stats` |
+| Where it hurts by git history: commits, churn, bugfixes, authors, percentiles | `graph hotspots` (`--top`, `--file`, `--since`, `--max-commits`) |
+| File coupling and impact area: fan-in/out, dependents, impact, PageRank, percentile | `graph metrics` |
+| File outline with line ranges (`L126-160`), decorators and signatures | `outline` (`--docs` adds the first docstring paragraph) |
+| Substring or regex search, results grouped by file | `search` (`--ext`, `--re`, `-i`, `--path`, `--limit`) |
+| Signature, docstring and source path of a function or class from the stdlib and installed packages | `sig` (`--doc` — full docstring, up to 1500 chars) |
+| Project passport: python, dependencies, file composition and largest files | `info` |
 
-## Файловые метрики
+## File metrics
 
 ```text
 python -I -B "<SCRIPTS_DIR>\te.py" graph metrics src/app/core.py --depth 2
 python -I -B "<SCRIPTS_DIR>\te.py" graph metrics --top 15
 ```
 
-Позиционный `file` **либо** `--top` (вместе нельзя); top — положительное safe integer, default 15, без обоих тоже top-15. `--depth` — строго целое 1..5, default 2 только для metrics (`deps`/`rdeps` остаются 1). `fan_in/out` — уникальные проектные соседи; `dependents` — обратная достижимость до depth; `impact` — вся обратная достижимость без ограничения, корень исключён. PageRank — 20 итераций, damping 0.85, равномерная dangling mass; percentile — midrank `(less + halfEqual)/N*100`, в тексте округлённый `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc.
+Positional `file` **or** `--top` (not both); top is a positive safe integer, default 15, with neither given also top-15. `--depth` is a strict integer 1..5, default 2 for metrics only (`deps`/`rdeps` stay 1). `fan_in/out` — unique project neighbors; `dependents` — backward reachability up to depth; `impact` — the entire backward reachability without a limit, root excluded. PageRank — 20 iterations, damping 0.85, uniform dangling mass; percentile — midrank `(less + halfEqual)/N*100`, printed as rounded `pN`. Top: fan_in desc, pagerank desc, stable path asc.
 
-Metrics — stdlib-порт в `te.py`, без Node.js/metrics.js; числовая паритетность с JS проверяется с допуском 1e-9. CLI печатает общий текст с LF (не JSON), включая `dependents(2)` и `impact`. Учитываются все существующие внутренние связи, **включая lazy/types**, с прежними фильтрами `--root`/`--src`; внешние endpoints не добавляются. Число `циклов: N` здесь может отличаться от `graph cycles`, который остаётся runtime-only. Это статический файловый граф, не символьный/full runtime call graph и не гарантия риска правки. Неизвестная цель — exit1 с hint `op=stats` (команда `graph stats`); пустой граф показывает `.token-economy/graph.json`; cyclic hint `op=cycles` относится к существующей команде `graph cycles` с runtime-only фильтром. Прогретые graph/AST-кэши не меняются. Полный контракт — в SKILL.md.
+Metrics is a stdlib port inside `te.py`, no Node.js/metrics.js; numeric parity with JS is checked with a 1e-9 tolerance. The CLI prints plain LF text (not JSON), including `dependents(2)` and `impact`. All existing internal links are counted, **including lazy/types**, with the previous `--root`/`--src` filters; external endpoints are not added. The `циклов: N` number here may differ from `graph cycles`, which stays runtime-only. This is a static file graph, not a symbol-level/full runtime call graph and not a guarantee of edit risk. Unknown target — exit1 with the `op=stats` hint (the `graph stats` command); an empty graph prints `.token-economy/graph.json`; the cyclic hint `op=cycles` refers to the existing `graph cycles` command with its runtime-only filter. Warmed graph/AST caches are not touched. The full contract is in SKILL.md.
 
-## Регрессионные тесты metrics
+## Metrics regression tests
 
-Из корня репозитория: `node --test tests/token-economy-py/metrics.test.js`. Node нужен только тестовому runner, не самому скиллу. Проверяются формулы, JS-паритет 1e-9, LF-текст, CLI, lazy/types, аргументы и неизменность прогретого кэша.
+From the repository root: `node --test tests/token-economy-py/metrics.test.js`. Node is needed only by the test runner, not by the skill itself. It checks the formulas, JS parity at 1e-9, LF text, the CLI, lazy/types, arguments and the immutability of the warmed cache.
 
-Связи в графе трёх видов: статический импорт при загрузке модуля, ленивый импорт внутри функции (`(lazy)`) и статический импорт под `TYPE_CHECKING` вне функции (`(types)`). Распознанные динамические вызовы всегда помечаются `(lazy)`, даже на уровне модуля. В `graph cycles` участвуют только runtime-рёбра: циклы через lazy/types эта операция не показывает; `graph metrics` учитывает все три вида связей. Файлы помечены `[test]`, `[script]` (есть `__main__`) и `[package]`, а `rdeps` показывает тесты, которые статически импортируют изменяемый модуль.
+Graph links come in three kinds: a static import at module load, a lazy import inside a function (`(lazy)`) and a static import under `TYPE_CHECKING` outside functions (`(types)`). Recognized dynamic calls are always marked `(lazy)`, even at module level. Only runtime edges participate in `graph cycles`: cycles through lazy/types are not shown by that operation; `graph metrics` counts all three kinds. Files are marked `[test]`, `[script]` (has `__main__`) and `[package]`, and `rdeps` shows the tests that statically import the module being changed.
 
-`sig` не импортирует Python-код: он находит файл-источник по `sys.path`, проекту и виртуальному окружению и разбирает его через `ast`. Идёт по реэкспортам (`from .api import get`), звёздным импортам, псевдонимам модулей (`os.path`) и базовым классам, заданным простым именем (в том числе импортированным). Для модулей из `sys.builtin_module_names` применяется импорт и `inspect`.
+`sig` does not import Python code: it finds the source file via `sys.path`, the project and the virtual environment and parses it with `ast`. It follows re-exports (`from .api import get`), star imports, module aliases (`os.path`) and base classes given by a simple name (including imported ones). For modules from `sys.builtin_module_names` it uses import and `inspect`.
 
-Примеры экономии: оглавление `subprocess.py` (88 КБ, 2216 строк) занимает около 4,6 КБ, то есть около 5% файла; сигнатура `subprocess.run` — около 230 байт. Скорость: на стандартной библиотеке Python 3.12 (572 файла) первая сборка графа около 2,5 с, повторный запрос около 0,09 с.
+Savings examples: the outline of `subprocess.py` (88 KB, 2216 lines) takes about 4.6 KB, i.e. about 5% of the file; the signature of `subprocess.run` — about 230 bytes. Speed: on the Python 3.12 standard library (572 files) the first graph build takes about 2.5 s, a repeated query about 0.09 s.
 
-## Чего скрипт не видит
+## What the script does not see
 
-- **Динамические импорты** с непостоянным или относительным первым аргументом не учитываются. Распознаются строковые константы в `importlib.import_module("pkg.mod")`, `__import__("pkg.mod")` и bare `import_module("pkg.mod")`; привязка имени не проверяется. Все такие рёбра — `(lazy)`, включая вызовы на уровне модуля. Подробности — `references/graph.md`.
-- **Атрибуты, создаваемые во время выполнения:** `sig` их не найдёт; не поддерживаются ленивые модули через `__getattr__`.
-- **Регистрация через декораторы и конфигурацию** (маршруты Flask и FastAPI, плагины через entry points): связи нет, пока нет явного импорта.
-- **Вложенные функции и атрибуты классов:** в `symbol` попадают классы, функции, методы, модульные переменные и константы; локальные функции и атрибуты экземпляров нет.
-- **Скомпилированные модули** (`.so`, `.pyd`): у них нет исходников, `sig` сообщит об этом.
-- **Другие файлы:** `.pyi`, ноутбуки Jupyter, конфигурации и шаблоны в граф не входят (для них используй `search` с `--ext`).
-- **`from x import *`:** связь строится на модуль `x`, а не на отдельные имена.
+- **Dynamic imports** with a non-constant or relative first argument are not counted. String constants in `importlib.import_module("pkg.mod")`, `__import__("pkg.mod")` and bare `import_module("pkg.mod")` are recognized; name binding is not checked. All such edges are `(lazy)`, including module-level calls. Details — `references/graph.md`.
+- **Attributes created at runtime:** `sig` will not find them; lazy modules via `__getattr__` are not supported.
+- **Registration via decorators and configuration** (Flask and FastAPI routes, plugins via entry points): no link until there is an explicit import.
+- **Nested functions and class attributes:** `symbol` covers classes, functions, methods, module-level variables and constants; local functions and instance attributes are not included.
+- **Compiled modules** (`.so`, `.pyd`): they have no sources, `sig` will report that.
+- **Other files:** `.pyi`, Jupyter notebooks, configs and templates are not in the graph (use `search` with `--ext` for them).
+- **`from x import *`:** the link is made to module `x`, not to individual names.
 
-## Что учесть
+## Notes
 
-- **Корни пакетов.** Корнем считается сам проект и `src/`, если такая папка есть. Другие корни задаются параметром `--src ПАПКА` (можно повторять); указывай его при каждом вызове, иначе импорты этих пакетов будут считаться внешними.
-- **Правка файлов.** Скилл не содержит операций правки: используй штатный инструмент агента. Для файла длиннее 50 строк при правке менее 30% не перезаписывай его целиком.
-- **Поиск.** По умолчанию `.py`, до 30 совпавших строк (`--limit` меняет число строк, не вхождений); сниппеты обрезаются вокруг первого совпадения до 120 символов содержимого плюс маркеры `…`; префикс номера строки в этот лимит не входит. `-l`/`--files` выводит до 500 файлов и игнорирует `--limit`. `graph`/`search` пропускают файлы крупнее 1 000 000 байт, а `search` — также файл с NUL-байтом в первых 2048 байтах.
-- **Кодировки.** Оглавление и граф читают файлы как байты (учитывается объявление кодировки PEP 263), а `search` декодирует файлы как UTF-8, при неудаче пробует cp1251 и только затем заменяет нечитаемые символы: в cp1251-файлах кириллица находится и выводится корректно, в более экзотических кодировках может быть искажена.
-- **Какой интерпретатор.** `sig` ищет пакеты в `sys.path` того Python, который запустил скрипт, а также в `.venv`, `venv` и `env` проекта. Если зависимости лежат в окружении с другим именем, запусти скрипт его интерпретатором.
-- **Встроенные модули** из `sys.builtin_module_names`: для них `sig` импортирует модуль и берёт описание через `inspect`. `math` бывает встроенным или скомпилированным расширением — это зависит от сборки Python; во втором случае сигнатура недоступна.
-- **`.pyi` в `sig`.** Стабы учитываются для подмодулей и `__init__`; соседний `.py` имеет приоритет. Top-level модуль или пакет, доступный только как `.pyi`, не находится.
-- **Версии Python ниже 3.10.** Набор стандартных модулей определяется через `sys.stdlib_module_names`; на 3.9 его нет, и перечень приблизительно восстанавливается по `sys.builtin_module_names` и содержимому каталога стандартной библиотеки.
-- **Кэш.** Папка `.token-economy` исключает себя из git сама. Внутренние/внешние symlink/junction этой папки, ссылки cache-файлов (включая dangling и hard links) и ссылки `.gitignore` отклоняются до чтения/записи; ссылки исходников и корневой junction по-прежнему допустимы. Граф, AST-кэш, Python hotspots и `.gitignore` публикуются через уникальный эксклюзивный tmp в проверенном реальном каталоге кэша; фиксированные `*.tmp` не затрагиваются. Отказ до публикации сохраняет прежний файл кэша и байты исходника; crash-safe транзакция и защита от враждебной конкурентной подмены предков не обещаются. Свежесть определяется по списку файлов, mtime_ns, size и alias-путям, не по хешу содержимого. Граф пересобирается при обнаруженном изменении; разбираются только файлы с изменившимися mtime_ns/size. `graph build` пересчитывает связи, но AST неизменённых файлов переиспользует из кэша.
-- **Проверка.** Скилл проверялся на тестовых проектах и на стандартной библиотеке Python 3.12 на Linux. Python 3.9 и Windows не проверялись: перед использованием выполни `graph stats` и `outline` на своём проекте и сверь результат с кодом.
+- **Package roots.** The project itself and `src/` (if present) are the roots. Other roots are set by `--src FOLDER` (repeatable); pass it on every call, otherwise imports of those packages count as external.
+- **Editing files.** The skill has no edit operations: use the agent's native tool. For a file longer than 50 lines with an edit under 30%, do not rewrite the whole file.
+- **Search.** By default `.py`, up to 30 matched lines (`--limit` changes the number of lines, not occurrences); snippets are cut around the first match to 120 characters of content plus `…` markers; the line-number prefix does not count into this limit. `-l`/`--files` lists up to 500 files and ignores `--limit`. `graph`/`search` skip files larger than 1 000 000 bytes, and `search` also skips a file with a NUL byte in the first 2048 bytes.
+- **Encodings.** The outline and the graph read files as bytes (the PEP 263 encoding declaration is respected), while `search` decodes files as UTF-8, on failure tries cp1251 and only then replaces unreadable characters: in cp1251 files Cyrillic is found and printed correctly, in more exotic encodings it may be distorted.
+- **Which interpreter.** `sig` looks for packages in the `sys.path` of the Python that ran the script, plus the project's `.venv`, `venv` and `env`. If dependencies live in an environment with another name, run the script with its interpreter.
+- **Built-in modules** from `sys.builtin_module_names`: for them `sig` imports the module and takes the description via `inspect`. `math` can be built-in or a compiled extension — it depends on the Python build; in the latter case the signature is unavailable.
+- **`.pyi` in `sig`.** Stubs are used for submodules and `__init__`; a neighboring `.py` wins. A top-level module or package available only as `.pyi` is not found.
+- **Python versions below 3.10.** The set of standard modules is determined via `sys.stdlib_module_names`; 3.9 lacks it, and the list is approximately reconstructed from `sys.builtin_module_names` and the contents of the standard library directory.
+- **Cache.** The `.token-economy` folder excludes itself from git on its own. Internal/external symlink/junction of this folder, links to cache files (including dangling and hard links) and links to `.gitignore` are rejected before read/write; links to sources and a root junction are still allowed. The graph, AST cache, Python hotspots and `.gitignore` are published through a unique exclusive tmp in the verified real cache directory; fixed `*.tmp` files are not touched. A failure before publication keeps the previous cache file and source bytes; no crash-safe transaction or protection from hostile concurrent ancestor substitution is promised. Freshness is determined by the file list, mtime_ns, size and alias paths, not by content hash. The graph is rebuilt on a detected change; only files with changed mtime_ns/size are re-parsed. `graph build` recomputes links but reuses the AST of unchanged files from cache.
+- **Verification.** The skill was tested on test projects and on the Python 3.12 standard library on Linux. Python 3.9 and Windows were not tested: before using it, run `graph stats` and `outline` on your project and compare the result with the code.
