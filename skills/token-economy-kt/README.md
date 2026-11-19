@@ -1,77 +1,80 @@
 # token-economy-kt
 
-Скилл для агента Kilo Code: экономит токены при работе с Android-проектами на Kotlin (Jetpack Compose и XML Views, Java interop). Вместо чтения каталогов и десятков файлов агент вызывает скрипт `kt.js` и получает короткий ответ: где определён класс или Compose-функция, кто внедряет зависимость, что в манифесте, какая структура базы Room, где связан интерфейс в Hilt, кто переходит по маршруту, где строка локализована и где нет перевода, какие endpoint'ы есть у Retrofit-клиента, сигнатуры классов из jar/aar.
+[Русская версия](README.ru.md)
 
-Правила для агента и примеры команд PowerShell — в `SKILL.md`. Устройство индекса, роли, кодировки и подробные ограничения — в `references/android.md`.
+A skill for the Kilo Code agent: it saves tokens when working with Android projects on Kotlin (Jetpack Compose and XML Views, Java interop). Instead of reading directories and dozens of files, the agent calls the `kt.js` script and gets a short answer: where a class or Compose function is defined, who injects a dependency, what the manifest contains, what a Room database looks like, where an interface is bound in Hilt, who navigates to which route, where a string is localized and where a translation is missing, which endpoints a Retrofit client has, signatures of classes from jar/aar.
 
-## Требования
+Rules for the agent and PowerShell command examples — in `SKILL.md`. The index design, roles, encodings and detailed limitations — in `references/android.md`.
 
-- **Node.js 18 или новее.** Только стандартная библиотека, пакеты из npm не нужны, сеть не нужна. Проект не запускается — всё разбирает собственный анализатор исходников.
-- **Проект:** Kotlin, Android (Compose и/или XML Views), многомодульный Gradle, Kotlin+Java. Без Android-структуры остаются навигация, граф, outline и sig; `room`/`di` могут работать по Kotlin-аннотациям независимо от манифеста. Gradle-файлы и version catalog анализируются текстово, без выполнения сборки и без вычисления всех DSL-выражений.
-- **Сборка не нужна:** `gradle`/`gradlew`, `adb`, эмулятор и тесты не запускаются — проверки выполняет пользователь.
-- **Библиотеки для `sig`:** нужны уже доступные jar/aar; скрипт ничего не скачивает. `jars` — каталоги через запятую, `KT_JARS` — через системный разделитель путей; относительные пути — от cwd. Автоматически ищутся `libs/` модулей и `~/.gradle/caches/modules-2/files-2.1`, не `GRADLE_USER_HOME` и не Android SDK. Для `android.*` явно передай каталог с `android.jar`.
-- **Запуск** из корня проекта или с параметром `root` (для многомодульных — из корня репозитория).
-- **PowerShell:** команды — одной строкой, параметры argv-аргументами `ключ=значение`; кириллица через argv не портится. Значения с пробелами — в одинарных кавычках, двойные кавычки в значениях не используй. Для правок с многострочными значениями — файл параметров (`@.kt-cache/payload.json`).
-- **Права:** индексный кэш создаётся внутри корня проекта в `.kt-cache` (внутри — `.gitignore` со звёздочкой); `hotspots` отдельно пишет `.git-signals.json` в корне, не трогая индекс. Cache endpoint `.git-signals.json` должен быть обычным файлом: внутренние, внешние и dangling-ссылки отвергаются. Публикация — через уникальный эксклюзивный tmp в реальном корне (корневой junction допустим), без гарантии crash-safe транзакции или изоляции от конкурентной подмены предков. `patch` и `create` меняют указанный файл. Проверка учитывает realpath и регистр Windows. Обход исходников пропускает symlink/junction; точные `read`/`patch`/`create` допускают внутренние ссылки, но отклоняют выход из корня. Для `sig` внешние библиотеки читаются из явно заданных каталогов и Gradle-кэша.
+## Requirements
 
-## Установка
+- **Node.js 18 or newer.** Standard library only, no npm packages, no network. The project is never run — everything is parsed by the script's own source analyzer.
+- **Project:** Kotlin, Android (Compose and/or XML Views), multi-module Gradle, Kotlin+Java. Without the Android structure, navigation, graph, outline and sig remain; `room`/`di` can work from Kotlin annotations without the manifest. Gradle files and the version catalog are analyzed as text, without running a build and without evaluating all DSL expressions.
+- **No build needed:** `gradle`/`gradlew`, `adb`, the emulator and tests are never launched — the user runs the checks.
+- **Libraries for `sig`:** already available jar/aar are needed; the script downloads nothing. `jars` — comma-separated directories, `KT_JARS` — separated by the system path separator; relative paths are from cwd. `libs/` of modules and `~/.gradle/caches/modules-2/files-2.1` are searched automatically, not `GRADLE_USER_HOME` and not the Android SDK. For `android.*` pass the directory with `android.jar` explicitly.
+- **Run** from the project root or with the `root` parameter (for multi-module — from the repository root).
+- **PowerShell:** commands on one line, parameters as argv arguments `key=value`; Cyrillic survives argv. Values with spaces — in single quotes, do not use double quotes inside values. For edits with multi-line values — a parameter file (`@.kt-cache/payload.json`).
+- **Permissions:** the index cache is created inside the project root in `.kt-cache` (with a `.gitignore` with a single asterisk inside); `hotspots` separately writes `.git-signals.json` into the root without touching the index. The cache endpoint `.git-signals.json` must be a regular file: internal, external and dangling links are rejected. Publication goes through a unique exclusive tmp in the real root (a root junction is allowed), with no crash-safe transaction or isolation from concurrent ancestor substitution guaranteed. `patch` and `create` modify the given file. The check takes realpath and the Windows case into account. Source traversal skips symlink/junction; targeted `read`/`patch`/`create` allow internal links but reject leaving the root. For `sig` external libraries are read from the explicitly given directories and the Gradle cache.
 
-Скопируй папку `token-economy-kt` в каталог навыков агента:
+## Install
 
-    глобально в ZCode:      %USERPROFILE%\.zcode\skills\token-economy-kt
-    глобально в Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-kt
-    локально в репозитории: .zcode\skills\token-economy-kt (ZCode) или .kilo\skills\token-economy-kt (Kilo Code)
-    Linux и macOS:          ~/.config/kilo/skills/token-economy-kt
+Copy the `token-economy-kt` folder into the agent's skills directory:
 
-Структура:
+    globally in ZCode:      %USERPROFILE%\.zcode\skills\token-economy-kt
+    globally in Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-kt
+    locally in a repo:      .zcode\skills\token-economy-kt (ZCode) or .kilo\skills\token-economy-kt (Kilo Code)
+    Linux and macOS:        ~/.config/kilo/skills/token-economy-kt
+
+Layout:
 
     token-economy-kt/
-      SKILL.md                правила и команды для агента
-      README.md               этот файл
-      references/android.md   устройство индекса, роли, ограничения
-      scripts/kt.js           точка входа, все операции
+      SKILL.md                rules and commands for the agent
+      README.md               this file (English)
+      README.ru.md            Russian version
+      references/android.md   index design, roles, limitations
+      scripts/kt.js           entry point, all operations
 
-## Что умеет
+## What it does
 
-| Задача | Операция |
+| Task | Operation |
 |---|---|
-| Паспорт проекта: Gradle, модули, версии AGP/Kotlin/библиотек, sdk, compose, состав по ролям, предупреждения | `info` |
-| Где определён класс, объект, функция, таблица Room, layout, id, строковый ресурс, маршрут | `symbol` |
-| Оглавление файла или класса: методы, свойства, Compose-функции, inject | `outline` |
-| Кто использует файл, что использует он, цепочка связей, реализации интерфейса | `rdeps`, `deps`, `path`, `node`, `stats`, `impls` |
-| Где болит по git-истории: коммиты, churn, багфиксы, авторы, процентили | `hotspots` |
-| Файловая связанность и область воздействия: fan-in/out, dependents, impact, PageRank, percentile | `metrics` |
-| Манифест: компоненты, разрешения, intent-фильтры, deep link, exported-предупреждения | `manifest` |
-| Room: сущности, таблицы, DAO-методы с SQL | `room` |
-| DI (Hilt/Dagger): модули, провайдеры, где связан тип, кто получает | `di` |
-| Навигация: маршруты Compose и nav-xml, кто куда переходит | `nav` |
-| Строковые ресурсы по локалям, отсутствующие переводы | `res` |
-| Каталог Retrofit-endpoint'ов с baseUrl | `api` |
-| Сигнатуры классов из jar/aar без декомпиляции | `sig` |
-| Поиск по тексту с учётом кодировки | `search` |
-| Чтение, правка и создание файлов с сохранением cp1251 / UTF-8 / UTF-16LE/BE, BOM и CRLF | `read`, `patch`, `create` |
+| Project passport: Gradle, modules, AGP/Kotlin/library versions, sdk, compose, composition by role, warnings | `info` |
+| Where a class, object, function, Room table, layout, id, string resource or route is defined | `symbol` |
+| Outline of a file or class: methods, properties, Compose functions, inject | `outline` |
+| Who uses a file, what it uses, link chains, interface implementations | `rdeps`, `deps`, `path`, `node`, `stats`, `impls` |
+| Where it hurts by git history: commits, churn, bugfixes, authors, percentiles | `hotspots` |
+| File coupling and impact area: fan-in/out, dependents, impact, PageRank, percentile | `metrics` |
+| Manifest: components, permissions, intent filters, deep links, exported warnings | `manifest` |
+| Room: entities, tables, DAO methods with SQL | `room` |
+| DI (Hilt/Dagger): modules, providers, where a type is bound, who receives it | `di` |
+| Navigation: Compose and nav-xml routes, who navigates where | `nav` |
+| String resources by locale, missing translations | `res` |
+| Catalog of Retrofit endpoints with baseUrl | `api` |
+| Signatures of classes from jar/aar without decompilation | `sig` |
+| Text search with encoding awareness | `search` |
+| Reading, editing and creating files keeping cp1251 / UTF-8 / UTF-16LE/BE, BOM and CRLF | `read`, `patch`, `create` |
 
-## Файловые метрики
+## File metrics
 
 ```text
 node "<SCRIPTS_DIR>\kt.js" op=metrics file=app/src/main/java/com/acme/UserDao.kt depth=2
 node "<SCRIPTS_DIR>\kt.js" op=metrics top=15
 ```
 
-`file` **либо** `top` (вместе нельзя); `top` — положительное safe integer, default 15, без обоих тоже top-15. `depth` — строго целое 1..5, default 2 только для metrics; `deps`/`rdeps` остаются прямыми. `fan_in/out` — уникальные проектные соседи; `dependents` — обратная достижимость до depth; `impact` — вся обратная достижимость без ограничения, корень исключён. PageRank — 20 итераций, damping 0.85, равномерная dangling mass; percentile — midrank `(less + halfEqual)/N*100`, в тексте округлённый `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc.
+`file` **or** `top` (not both); `top` is a positive safe integer, default 15, with neither given also top-15. `depth` is a strict integer 1..5, default 2 for metrics only; `deps`/`rdeps` stay direct. `fan_in/out` — unique project neighbors; `dependents` — backward reachability up to depth; `impact` — the entire backward reachability without a limit, root excluded. PageRank — 20 iterations, damping 0.85, uniform dangling mass; percentile — midrank `(less + halfEqual)/N*100`, printed as rounded `pN`. Top: fan_in desc, pagerank desc, stable path asc.
 
-Учитываются Kotlin/Java и XML manifests/layouts/navigation/values с прежними фильтрами и всеми существующими видами рёбер; произвольные XML/Gradle-файлы и внешние endpoints не добавляются. Это статический файловый граф, не символьный/full runtime call graph и не гарантия риска правки. Вывод — общий текст с `dependents(2)` и `impact`; неизвестный файл — exit1 с `op=stats`, пустой граф показывает `.kt-cache/index.json`, цикл — `циклов: N` без подсказки `op=cycles`. Прогретый индекс не меняется. Полный контракт — в SKILL.md.
+Kotlin/Java and XML manifests/layouts/navigation/values are counted with the previous filters and all existing link kinds; arbitrary XML/Gradle files and external endpoints are not added. This is a static file graph, not a symbol-level/full runtime call graph and not a guarantee of edit risk. The output is plain text with `dependents(2)` and `impact`; unknown file — exit1 with `op=stats`, an empty graph prints `.kt-cache/index.json`, a cycle — `циклов: N` without an `op=cycles` hint. The warmed index is not touched. The full contract is in SKILL.md.
 
-## Регрессионные тесты metrics
+## Metrics regression tests
 
-Из корня репозитория скиллов: `node --test tests/token-economy-kt/metrics.test.js`. Формулы совпадают с TS; проверяются CLI, XML-universe, typed-дедупликация, строгие аргументы и неизменность кэша после прогрева.
+From the repository root: `node --test tests/token-economy-kt/metrics.test.js`. The formulas match TS; the CLI, the XML universe, typed deduplication, strict arguments and the immutability of the cache after warm-up are checked.
 
-Связи в графе: `extends`/`implements`, `inject` (эвристика по конструкторам, `@Inject` и непосредственным методам `@Provides`/`@Binds`), `uses`, `calls` (верхнеуровневые/Compose-функции), `binding` (ViewBinding). Это файловый граф по именам, не разрешение импортов/перегрузок и не Hilt-контекст. `deps`/`rdeps` показывают прямых соседей до 40 каждого вида; для цепочек — `path`. `outline inherit=true` работает только с `name=Класс`, не `file=…`.
+Graph links: `extends`/`implements`, `inject` (a heuristic over constructors, `@Inject` and immediate `@Provides`/`@Binds` methods), `uses`, `calls` (top-level/Compose functions), `binding` (ViewBinding). This is a file-level graph by names, not import/overload resolution and not a Hilt context. `deps`/`rdeps` show direct neighbors, up to 40 of each kind; for chains — `path`. `outline inherit=true` works only with `name=Class`, not `file=…`.
 
-Проверка из корня анализируемого проекта: `node "<SCRIPTS_DIR>\kt.js" op=info`, где `<SCRIPTS_DIR>` — абсолютный путь к установленному скиллу. Git-сигналы «где болит»: `node "<SCRIPTS_DIR>\kt.js" op=hotspots top=10` (или `file=ПУТЬ` — один файл с персональными процентильными метками). `op=selftest` — встроенные проверки без проекта; их число не является стабильным контрактом.
+Check from the root of the analyzed project: `node "<SCRIPTS_DIR>\kt.js" op=info`, where `<SCRIPTS_DIR>` is the absolute path to the installed skill. Git signals of «where it hurts»: `node "<SCRIPTS_DIR>\kt.js" op=hotspots top=10` (or `file=ПУТЬ` — one file with personal percentile labels). `op=selftest` — built-in checks without a project; their number is not a stable contract.
 
-Регрессии разработчика из корня репозитория скиллов: `node --test tests/token-economy-kt/audit.test.js`. Проверки запускают настоящий CLI во временных проектах с отдельным HOME, таймаутом и лимитом heap; реальные Gradle-кэши и отслеживаемые фикстуры не меняются. Создание файловых symlink может быть недоступно в Windows — соответствующая проверка отмечается skipped.
+Developer regressions from the repository root: `node --test tests/token-economy-kt/audit.test.js`. The checks run the real CLI in temp projects with a separate HOME, a timeout and a heap limit; real Gradle caches and tracked fixtures are not touched. Creating a file symlink may be unavailable on Windows — that check is marked skipped.
 
-Повреждённые и неподдерживаемые JAR/AAR/.class пропускаются с предупреждением; если ни один класс не прочитан, выводится no-match с exit 0. `sig` выбирает версию эвристически среди первых 30 исправных кандидатов, не по Gradle dependency resolution; AAR содержит для него только `classes.jar`. `Class#method` фильтрует методы, но не поля/конструкторы. Кэш проверяется по SHA-256 содержимого, размеру и mtime; изменение пересобирает индекс целиком, инкрементального парсинга нет.
+Damaged and unsupported JAR/AAR/.class files are skipped with a warning; if no class was read, a no-match with exit 0 is printed. `sig` picks a version heuristically among the first 30 healthy candidates, not via Gradle dependency resolution; an AAR contains only `classes.jar` for it. `Class#method` filters methods, not fields/constructors. The cache is verified by SHA-256 of content, size and mtime; a change rebuilds the whole index, there is no incremental parsing.
 
-`patch`/`create` записывают сразу, dry-run нет; `patch` неатомарен. UTF-16LE/BE распознаётся по BOM. При записи cp1251 непредставимые символы заменяются на `?`, а не вызывают отказ; для нового Unicode-текста явно выбирай `enc=utf-8`. `read` по умолчанию показывает 400 строк; большие файлы читай с `offset`/`limit`. Манифест, Room, DI и ресурсы — статические выборки, не результат manifest/resource merger или выполнения Android/Gradle.
+`patch`/`create` write immediately, no dry-run; `patch` is not atomic. UTF-16LE/BE is recognized by BOM. When writing cp1251, non-representable characters are replaced with `?` instead of failing; for new Unicode text choose `enc=utf-8` explicitly. `read` shows 400 lines by default; read large files with `offset`/`limit`. Manifest, Room, DI and resources are static selections, not the result of the manifest/resource merger or of running Android/Gradle.
