@@ -1,68 +1,71 @@
 # token-economy-php
 
-Скилл для агента Kilo Code: экономит токены при работе с PHP-проектами в четырёх режимах — универсальном (любой PHP-проект без CMS), 1С-Битрикс (старое API до D7 и D7), Laravel 8–13 и MODX (Revolution/Evolution, файловые элементы). Вместо чтения каталогов и десятков файлов агент вызывает скрипт `bx.js` и получает короткий ответ: где определён класс, кто подключает файл, какие страницы вызывают компонент, кто обрабатывает событие, где задано сообщение, какой файл обслуживает URL, какие маршруты и модели есть в Laravel, кто что рендерит и куда привязано в контейнере, какие файловые элементы вызывает шаблон MODX.
+[Русская версия](README.ru.md)
 
-Правила для агента и примеры команд PowerShell — в `SKILL.md`. Правила и операции режимов, устройство индекса и подробные ограничения — в `references/bitrix.md` (Битрикс), `references/laravel.md` (Laravel) и `references/modx.md` (MODX).
+A skill for the Kilo Code agent: it saves tokens when working with PHP projects in four modes — universal (any PHP project without a CMS), 1C-Bitrix (the legacy pre-D7 API and D7), Laravel 8–13 and MODX (Revolution/Evolution, file-based elements). Instead of reading directories and dozens of files, the agent calls the `bx.js` script and gets a short answer: where a class is defined, who includes a file, which pages call a component, who handles an event, where a message is defined, which file serves a URL, which routes and models exist in Laravel, who renders what and what is bound in the container, which file-based elements a MODX template calls.
 
-## Требования
+Rules for the agent and PowerShell command examples — in `SKILL.md`. Mode rules and operations, the index design and detailed limitations — in `references/bitrix.md` (Bitrix), `references/laravel.md` (Laravel) and `references/modx.md` (MODX).
 
-- **Node.js 18 или новее.** Проверки используют `node --test`; пакеты из npm и сеть не нужны.
-- **PHP не нужен.** Разбор выполняет собственный лексер в `scripts/lib/php.js`, проект не запускается.
-- **Проект:** обычный PHP, 1С-Битрикс (старое API и D7), Laravel 8–13 или MODX Revolution/Evolution (файловые элементы extras; элементы в БД недоступны). Сначала проверяются composer-пакеты Laravel/Lumen либо содержательный `artisan` со ссылкой на существующий `bootstrap/app.php`. Затем Битрикс: `bitrix/` или `local/` с типичным подкаталогом (`components`, `templates`, `modules`, `php_interface`) в корне или docroot (`www`, `public_html`, `httpdocs`, `web`, `public`, `htdocs`, `site`, `docroot`). MODX Revolution — `manager/` + `connectors/` + `core/model/modx` (или `core/src/Revolution`), Evolution — `manager/includes/` + `assets/`. Пустой `artisan`, голые `bitrix/`, `local/` и `manager/` не включают режим.
-- **Git** не обязателен. С ним список файлов берётся из `git ls-files` (учитывается `.gitignore`), без него — обход каталогов.
-- **Ядро Битрикса** (`bitrix/modules/main`, `iblock`…) в рабочей папке нужно только для операций с `"core":true`. Если ядра в репозитории нет, остальное работает без него.
-- **Запуск** из корня проекта или с параметром `root`.
-- **PowerShell:** команды — одной строкой, параметры argv-аргументами `ключ=значение`; кириллица через argv не портится (node читает командную строку через Unicode API Windows). Значения с пробелами — в одинарных кавычках, двойные кавычки в значениях не используй. Для правок с многострочными значениями — файл параметров (`@.bx-cache/payload.json`).
-- **Права:** индексный кэш пишется в `.bx-cache` в корне проекта (внутри лежит `.gitignore` со звёздочкой); `hotspots` отдельно пишет `.git-signals.json` в корне, не трогая индекс. Cache endpoint `.git-signals.json` должен быть обычным файлом: внутренние, внешние и dangling-ссылки отвергаются. Публикация — через уникальный эксклюзивный tmp в реальном корне (корневой junction допустим), без гарантии crash-safe транзакции или изоляции от конкурентной подмены предков. `patch`, `patch_symbol` и `create` пишут также в указанный файл. `selftest` отдельно создаёт и удаляет временные проекты. Проверка realpath отклоняет выход через symlink/junction, включая отсутствующие предки. Уникальный tmp открывается эксклюзивно; `create` не перезаписывает параллельно созданный файл. Это не изоляция от процесса, который одновременно подменяет родительские каталоги; для `create` файловая система должна поддерживать hard link.
+## Requirements
 
-## Установка
+- **Node.js 18 or newer.** The checks use `node --test`; no npm packages, no network.
+- **PHP is not needed.** Parsing is done by the script's own lexer in `scripts/lib/php.js`, the project is never run.
+- **Project:** plain PHP, 1C-Bitrix (legacy API and D7), Laravel 8–13 or MODX Revolution/Evolution (file-based extras; elements in the DB are unavailable). Laravel/Lumen composer packages or a meaningful `artisan` referencing an existing `bootstrap/app.php` are checked first. Then Bitrix: `bitrix/` or `local/` with a typical subdirectory (`components`, `templates`, `modules`, `php_interface`) in the root or docroot (`www`, `public_html`, `httpdocs`, `web`, `public`, `htdocs`, `site`, `docroot`). MODX Revolution — `manager/` + `connectors/` + `core/model/modx` (or `core/src/Revolution`), Evolution — `manager/includes/` + `assets/`. An empty `artisan`, bare `bitrix/`, `local/` and `manager/` do not enable a mode.
+- **Git** is optional. With it the file list comes from `git ls-files` (`.gitignore` respected), without it — directory traversal.
+- **The Bitrix core** (`bitrix/modules/main`, `iblock`…) in the working folder is needed only for operations with `"core":true`. Without the core in the repository, everything else works.
+- **Run** from the project root or with the `root` parameter.
+- **PowerShell:** commands on one line, parameters as argv arguments `key=value`; Cyrillic survives argv (node reads the Windows command line through the Unicode API). Values with spaces — in single quotes, do not use double quotes inside values. For edits with multi-line values — a parameter file (`@.bx-cache/payload.json`).
+- **Permissions:** the index cache is written into `.bx-cache` in the project root (with a `.gitignore` with a single asterisk inside); `hotspots` separately writes `.git-signals.json` into the root without touching the index. The cache endpoint `.git-signals.json` must be a regular file: internal, external and dangling links are rejected. Publication goes through a unique exclusive tmp in the real root (a root junction is allowed), with no crash-safe transaction or isolation from concurrent ancestor substitution guaranteed. `patch`, `patch_symbol` and `create` also write to the given file. `selftest` separately creates and deletes temp projects. The realpath check rejects leaving via symlink/junction, including missing ancestors. The unique tmp is opened exclusively; `create` does not overwrite a file created concurrently. This is not isolation from a process that swaps parent directories at the same time; `create` requires a file system that supports hard links.
 
-Скопируй папку `token-economy-php` в каталог навыков агента:
+## Install
 
-    глобально в ZCode:      %USERPROFILE%\.zcode\skills\token-economy-php
-    глобально в Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-php
-    локально в репозитории: .zcode\skills\token-economy-php (ZCode) или .kilo\skills\token-economy-php (Kilo Code)
-    Linux и macOS:          ~/.config/kilo/skills/token-economy-php
+Copy the `token-economy-php` folder into the agent's skills directory:
 
-Структура:
+    globally in ZCode:      %USERPROFILE%\.zcode\skills\token-economy-php
+    globally in Kilo Code:  %USERPROFILE%\.kilocode\skills\token-economy-php
+    locally in a repo:      .zcode\skills\token-economy-php (ZCode) or .kilo\skills\token-economy-php (Kilo Code)
+    Linux and macOS:        ~/.config/kilo/skills/token-economy-php
+
+Layout:
 
     token-economy-php/
-      SKILL.md                правила и команды для агента
-      README.md               этот файл
-      references/bitrix.md    устройство индекса, ограничения, старое API
-      references/laravel.md  устройство Laravel-части, ограничения
-      references/modx.md     файловые элементы MODX, ограничения
+      SKILL.md                rules and commands for the agent
+      README.md               this file (English)
+      README.ru.md            Russian version
+      references/bitrix.md    index design, limitations, legacy API
+      references/laravel.md  design of the Laravel part, limitations
+      references/modx.md     MODX file-based elements, limitations
       scripts/
-        bx.js                 точка входа, все операции
-        lib/                  лексер PHP, индекс, определение режима, классификация Битрикс/Laravel/MODX, кодировки
+        bx.js                 entry point, all operations
+        lib/                  PHP lexer, index, mode detection, Bitrix/Laravel/MODX classification, encodings
 
-Проверка: `node scripts\bx.js op=info` в корне сайта выводит корень сайта, версию Битрикса, `utf_mode`, кодировки файлов, шаблоны, свои модули и компоненты; в Laravel — версию фреймворка, структуру каркаса (8–10 или 11+), число маршрутов, моделей и миграций. Git-сигналы «где болит»: `node scripts\bx.js op=hotspots top=10` (или `file=ПУТЬ` — один файл; в Битриксе `bitrix/modules` и `upload` не считаются относительно найденного docroot: например, `www/bitrix/modules` и `www/upload`; `www/local/modules/acme.module` остаётся). Исключения входят в ключ кэша. Пример вложенного сайта: `node scripts\bx.js op=hotspots file=www/local/modules/acme.module/include.php`.
+Check: `node scripts\bx.js op=info` in the site root prints the site root, the Bitrix version, `utf_mode`, file encodings, templates, custom modules and components; in Laravel — the framework version, the skeleton structure (8–10 or 11+), the number of routes, models and migrations. Git signals of «where it hurts»: `node scripts\bx.js op=hotspots top=10` (or `file=ПУТЬ` — one file; in Bitrix `bitrix/modules` and `upload` are counted relative to the found docroot: for example, `www/bitrix/modules` and `www/upload`; `www/local/modules/acme.module` stays). Exclusions are part of the cache key. Example of a nested site: `node scripts\bx.js op=hotspots file=www/local/modules/acme.module/include.php`.
 
-## Что умеет
+## What it does
 
-| Задача | Операция |
+| Task | Operation |
 |---|---|
-| Профиль проекта: корень сайта, версия, `utf_mode`, кодировки, шаблоны, модули, компоненты, стиль кода (D7 или старое API) | `info` |
-| Где определён класс, метод (в том числе унаследованный от `CAll*`), функция, константа, таблица ORM | `symbol` |
-| Оглавление: классы с диапазонами строк, сигнатуры, поля ORM-таблиц; список ограничен 60 строками объявлений — при усечении печатается точный count и `limit=0 — вывести все` (`limit=` задаёт предел; extras и inherit не входят); для страниц и шаблонов — вызванные компоненты, модули, ключи `$arResult` и `$arParams` | `outline` |
-| Кто использует файл, что использует он, цепочка связей; `node` — объявления файла с итогами и пагинацией (страница 50, `limit`/`offset`) | `rdeps`, `deps`, `path`, `node`, `stats` |
-| Где болит по git-истории: коммиты, churn, багфиксы, авторы, процентили (в Битриксе без `bitrix/modules` и `upload`) | `hotspots` |
-| Файловая связанность и область воздействия: fan-in/out, dependents, impact, PageRank, percentile | `metrics` во всех четырёх режимах |
-| Компонент: файлы, ключи параметров из `.parameters.php` (до 60), шаблоны и переопределения по сайтам, вызовы (до 30 с маркером остатка) | `component` |
-| Обработчики событий (`AddEventHandler`, `registerEventHandler`, `RegisterModuleDependences`) и вызовы `GetModuleEvents` | `events` |
-| Языковое сообщение по ключу или по тексту, где оно используется | `lang` |
-| Какой файл обслуживает URL: физический файл или правило `urlrewrite.php`; в Laravel — `method=GET` по умолчанию, маршрут → контроллер и метод → найденный view | `route` |
-| Схема таблицы: D7-класс и поля, `CREATE TABLE` из `install/db/mysql/install.sql`, где встречается | `table` |
-| **Laravel:** каталог маршрутов с именами и middleware (группы, resource, `Route::controller(...)`), фильтры `uri`/`name`/`controller` | `routes` |
-| **Laravel:** модель Eloquent — таблица, миграции с колонками и ключами, `fillable`/`casts`, связи и обратные связи, scopes, кто использует | `model` |
-| **Laravel:** привязки контейнера (`bind`/`singleton`/`scoped`/`instance`, `when…needs…give`) и инжекции через конструктор | `container` |
-| **Laravel:** Blade-шаблоны — директивы, переменные, наследование, откуда рендерится, неиспользуемые | `blade` |
-| **Laravel:** artisan-команды и расписание с частотами (вывод ограничен 50 записями суммарно; `limit=` меняет кап, `limit=0` — всё, при усечении — маркер с числом скрытых записей) | `console` |
-| Поиск по тексту с учётом кодировки | `search` |
-| Правка тела метода/функции без чтения старого тела в контекст: сигнатура, комментарии, кодировка, BOM и EOL — байт в байт | `patch_symbol` |
-| Чтение, правка и создание файлов с сохранением cp1251 / UTF-8 / UTF-16LE/BE, BOM и CRLF; чтение нескольких диапазонов строк за вызов (`ranges`) | `read`, `patch`, `create` |
+| Project profile: site root, version, `utf_mode`, encodings, templates, modules, components, code style (D7 or legacy API) | `info` |
+| Where a class, method (including inherited from `CAll*`), function, constant or ORM table is defined | `symbol` |
+| Outline: classes with line ranges, signatures, ORM-table fields; the list is capped at 60 declaration lines — on truncation the exact count and `limit=0 — show all` are printed (`limit=` sets the cap; extras and inherit are not included); for pages and templates — called components, modules, `$arResult` and `$arParams` keys | `outline` |
+| Who uses a file, what it uses, link chains; `node` — the file's declarations with totals and pagination (page 50, `limit`/`offset`) | `rdeps`, `deps`, `path`, `node`, `stats` |
+| Where it hurts by git history: commits, churn, bugfixes, authors, percentiles (in Bitrix without `bitrix/modules` and `upload`) | `hotspots` |
+| File coupling and impact area: fan-in/out, dependents, impact, PageRank, percentile | `metrics` in all four modes |
+| Component: files, parameter keys from `.parameters.php` (up to 60), templates and per-site overrides, calls (up to 30 with a remainder marker) | `component` |
+| Event handlers (`AddEventHandler`, `registerEventHandler`, `RegisterModuleDependences`) and `GetModuleEvents` calls | `events` |
+| A language message by key or by text, where it is used | `lang` |
+| Which file serves a URL: a physical file or a `urlrewrite.php` rule; in Laravel — `method=GET` by default, route → controller and method → found view | `route` |
+| Table schema: the D7 class and fields, `CREATE TABLE` from `install/db/mysql/install.sql`, where it occurs | `table` |
+| **Laravel:** route catalog with names and middleware (groups, resource, `Route::controller(...)`), filters `uri`/`name`/`controller` | `routes` |
+| **Laravel:** an Eloquent model — table, migrations with columns and keys, `fillable`/`casts`, relations and inverse relations, scopes, who uses it | `model` |
+| **Laravel:** container bindings (`bind`/`singleton`/`scoped`/`instance`, `when…needs…give`) and constructor injections | `container` |
+| **Laravel:** Blade templates — directives, variables, inheritance, who renders it, unused ones | `blade` |
+| **Laravel:** artisan commands and the schedule with frequencies (output capped at 50 records in total; `limit=` changes the cap, `limit=0` — everything, on truncation a marker with the number of hidden records) | `console` |
+| Text search with encoding awareness | `search` |
+| Editing a method/function body without reading the old body into context: signature, comments, encoding, BOM and EOL — byte for byte | `patch_symbol` |
+| Reading, editing and creating files keeping cp1251 / UTF-8 / UTF-16LE/BE, BOM and CRLF; reading several line ranges in one call (`ranges`) | `read`, `patch`, `create` |
 
-## Файловые метрики
+## File metrics
 
 ```text
 node "<SCRIPTS_DIR>\bx.js" op=metrics file=src/Support/helpers.php depth=2
@@ -70,40 +73,40 @@ node "<SCRIPTS_DIR>\bx.js" op=metrics top=15
 node "<SCRIPTS_DIR>\bx.js" op=metrics file=local/modules/acme.module/include.php
 ```
 
-`file` **либо** `top` (вместе нельзя); `top` — положительное safe integer, default 15, без обоих тоже top-15. `depth` — строго целое 1..5, default 2 только для metrics (`deps`/`rdeps` остаются 1). `fan_in/out` — уникальные проектные соседи; `dependents` — обратная достижимость до depth; `impact` — вся обратная достижимость без ограничения, корень исключён. PageRank — 20 итераций, damping 0.85, равномерная dangling mass; percentile — midrank `(less + halfEqual)/N*100`, в тексте округлённый `pN`. Top: fan_in desc, pagerank desc, стабильный путь asc.
+`file` **or** `top` (not both); `top` is a positive safe integer, default 15, with neither given also top-15. `depth` is a strict integer 1..5, default 2 for metrics only (`deps`/`rdeps` stay 1). `fan_in/out` — unique project neighbors; `dependents` — backward reachability up to depth; `impact` — the entire backward reachability without a limit, root excluded. PageRank — 20 iterations, damping 0.85, uniform dangling mass; percentile — midrank `(less + halfEqual)/N*100`, printed as rounded `pN`. Top: fan_in desc, pagerank desc, stable path asc.
 
-Все существующие типы связей входят во всех четырёх режимах; внешние endpoints не добавляются. `core=true` включает ядро с прежней семантикой, не отменяя vendor/cache и служебные фильтры; свои модули `local/modules/acme.module` входят без core. Это статический файловый граф, не символьный/full runtime call graph и не гарантия риска правки. Вывод — общий текст с `dependents(2)` и `impact`; неизвестный файл — exit1 с `op=stats` и прежней core-подсказкой, если применима; пустой граф показывает `.bx-cache/index.json`, цикл — `циклов: N` без подсказки `op=cycles`. Прогретые graph/parse-кэши не меняются. Полный контракт — в SKILL.md.
+All existing link kinds are counted in all four modes; external endpoints are not added. `core=true` includes the core with the previous semantics without canceling vendor/cache and service filters; custom modules `local/modules/acme.module` are included without core. This is a static file graph, not a symbol-level/full runtime call graph and not a guarantee of edit risk. The output is plain text with `dependents(2)` and `impact`; unknown file — exit1 with `op=stats` and the previous core hint if applicable; an empty graph prints `.bx-cache/index.json`, a cycle — `циклов: N` without an `op=cycles` hint. Warmed graph/parse caches are not touched. The full contract is in SKILL.md.
 
-Связи в графе: класс, функция, `require`/`include`, `IncludeComponent` (на файл компонента и на шаблон), `IncludeFile` и `main.include`, класс или функция-обработчик события, `IncludeModule` (на `include.php` модуля), языковой файл. В Laravel дополнительно: `view('name')` и директивы Blade (`@extends`, `@include`, `@component`, `@each`) на файлы шаблонов, `__()`/`@lang` на языковые файлы. Старое API: глобальные классы, методы в базовых `CAll*`-классах, варианты `classes/mysql`, `mssql`, `oracle`, константы `BX_ROOT`, `SITE_DIR`, `SITE_TEMPLATE_PATH`, синтаксис PHP 5.
+Graph links: class, function, `require`/`include`, `IncludeComponent` (to the component file and to the template), `IncludeFile` and `main.include`, the class or function handling an event, `IncludeModule` (to the module's `include.php`), the language file. In Laravel additionally: `view('name')` and Blade directives (`@extends`, `@include`, `@component`, `@each`) to template files, `__()`/`@lang` to language files. Legacy API: global classes, methods in base `CAll*` classes, the `classes/mysql`, `mssql`, `oracle` variants, the `BX_ROOT`, `SITE_DIR`, `SITE_TEMPLATE_PATH` constants, PHP 5 syntax.
 
-Скорость (синтетический проект на 3300 файлов): первая сборка индекса около 1,2 с, повторный запрос около 0,3 с. Пример экономии: сводка `component` занимает около 350 байт вместо примерно 1800 байт трёх файлов компонента.
+Speed (a synthetic project of 3300 files): the first index build about 1.2 s, a repeated query about 0.3 s. Savings example: a `component` summary takes about 350 bytes instead of roughly 1800 bytes of the component's three files.
 
-## Чего скрипт не видит
+## What the script does not see
 
-- **Данные из базы:** свойства и типы инфоблоков, почтовые шаблоны, агенты, настройки модулей (`b_option`), обработчики, зарегистрированные в БД и не вписанные в код.
-- **Маршруты и разделы:** D7-маршруты (`local/routes`), правила `.htaccess`, `.section.php`, меню (`$aMenuLinks`).
-- **Динамические имена:** компонент или класс, заданный переменной; пути вида `"classes/".$DBType."/…"`; вызовы `$obj->method()`.
-- **Типы в сигнатурах** параметров как самостоятельная связь (связь даёт их `use`-импорт).
-- **`registerAutoLoadClasses` и `AddAutoloadClasses`** не разбираются: классы находятся по самим объявлениям в файлах.
-- **SQL в коде:** запросы `$DB->Query("… FROM b_table")` связей в граф не дают, `table` лишь показывает файлы, где имя таблицы встречается текстом.
-- **JS, CSS и не-PHP файлы** шаблонов (для них используй `search` с `ext`).
-- **Laravel:** события (`Event::listen`, `$listen`), Livewire/Inertia, очереди и jobs, алиасы middleware из `bootstrap/app.php`, маршруты с переменными в URI/контроллерах. Подробности — `references/laravel.md`.
+- **Database data:** infoblock properties and types, mail templates, agents, module settings (`b_option`), handlers registered in the DB and not written into code.
+- **Routes and sections:** D7 routes (`local/routes`), `.htaccess` rules, `.section.php`, menus (`$aMenuLinks`).
+- **Dynamic names:** a component or class given by a variable; paths like `"classes/".$DBType."/…"`; `$obj->method()` calls.
+- **Parameter types in signatures** as a standalone link (the link comes from their `use` import).
+- **`registerAutoLoadClasses` and `AddAutoloadClasses`** are not parsed: classes are found by the declarations themselves in files.
+- **SQL in code:** `$DB->Query("… FROM b_table")` queries produce no graph links, `table` only shows files where the table name occurs as text.
+- **JS, CSS and non-PHP files** of templates (use `search` with `ext` for them).
+- **Laravel:** events (`Event::listen`, `$listen`), Livewire/Inertia, queues and jobs, middleware aliases from `bootstrap/app.php`, routes with variables in URIs/controllers. Details — `references/laravel.md`.
 
-## Что учесть
+## Notes
 
-- **Первый вызов за разговор — `info`.** Он покажет кодировку файлов и предупредит, если есть cp1251.
-- **Кодировки.** Для cp1251 и UTF-16 используй `read`, `patch`, `create`. UTF-16LE/BE определяется по BOM и сохраняется с тем же порядком байтов. Некорректные входные байты UTF-16 и непарные суррогаты в новом представлении для `patch`, `create`, `patch_symbol` (включая dry) отклоняются до публикации; исходные байты при отказе не меняются. Это не PHP lint. Без BOM UTF-16 не угадывается. Непредставимый в cp1251 символ отменяет запись целиком.
-- **Файловый payload:** `@payload` — UTF-8 JSON внутри `root`. Все argv разбираются до чтения: граница — последний явный `root=` либо cwd; относительный путь payload считается от неё. Существующий safe resolver проверяет lexical/realpath containment и обычный файл; внешние пути/ссылки, dangling links и каталоги отклоняются, внутренние ссылки и root-junction допустимы. `root` из файлового JSON игнорируется и не расширяет границу. Несколько `@` сливаются слева направо; явные argv приоритетнее JSON независимо от позиции. JSON из stdin сохраняется при отсутствии `op` после argv/payload; без файлового payload его `root` допустим, явные argv приоритетнее.
-- **Поиск и чтение.** `search` по умолчанию показывает 30 совпавших строк (`limit=0` возвращает default); сниппеты до 120 символов содержимого плюс маркеры `…` (до двух), префикс номера строки не входит в лимит. `read` — `offset=1`, `limit=200` (`limit=0` тоже default). Кап 2000 строк действует только для `read ranges`, несовместимого с `offset`/`limit`; конец диапазона обрезается по EOF, начало за EOF — ошибка.
-- **`patch_symbol` правит только тело** метода или функции и отказывается от правки при неоднозначности или сомнении: класс или функция в нескольких файлах, несколько одноимённых объявлений в одном файле, символ не найден, метод abstract или интерфейсный (унаследованные тела не правятся — правьте базовый класс), файл бинарный, новое тело несбалансировано по скобкам, `body_file` вне проекта, символ непредставим в cp1251. `file` должен совпадать с относительным путём из индекса; `body_file` читается как UTF-8 и не удаляется. Файл при отказе остаётся нетронутым; `dry=true` по умолчанию показывает отчёт без записи. Баланс скобок не является проверкой PHP-синтаксиса.
-- **Ядро по умолчанию не индексируется.** В Битриксе: модули без точки в имени (`main`, `iblock`, `sale`…), компоненты `bitrix:*`, `bitrix/admin`, `bitrix/tools`, `bitrix/activities`, `bitrix/blocks`. В MODX: `core/model`, `core/src`, `core/lexicon`, `core/docs`, `manager/`, `connectors/`; extras в `core/components/` остаются своими. `core=true` включает ядро в индекс и поиск, но не отменяет исключения vendor/cache.
-- **Исключаются:** `vendor/` в местах composer (`vendor`, `local/vendor`, `bitrix/vendor`), `upload`, `bitrix/cache`, `managed_cache`, `backup`, `updates` и подобные служебные каталоги, файлы больше 2 МБ; в Laravel — также `storage/` и `bootstrap/cache/`. Имя `vendor` в пространстве имён компонентов (`local/components/vendor/…`) не исключается.
-- **Варианты под разные СУБД.** Классы из `classes/mssql` и `classes/oracle` скрыты, если есть основной вариант; `"all":true` в `symbol` показывает все.
-- **`route`** переводит условия `urlrewrite.php` из PCRE в JavaScript. Простые выражения совпадают, сложные (именованные группы `(?P<…>)`, рекурсия, флаг `u`) могут отличаться.
-- **Кэш.** Папка `.bx-cache` исключает себя из git сама. Свежесть определяется по списку файлов, mtime и size, не по хешу содержимого. `build` пересчитывает связи, но переиспользует разбор файлов с прежними mtime/size. Если ответы выглядят устаревшими после обновления скилла, удали эту папку.
-- **Проверка.** Автономные регрессии и четыре генерируемых golden-фикстуры не требуют PHP, composer и npm. Команды из корня репозитория приведены ниже; реальные проекты всё равно стоит сверять с ответом `info` и профильных операций.
+- **The first call of a conversation is `info`.** It will show the file encoding and warn if cp1251 is present.
+- **Encodings.** For cp1251 and UTF-16 use `read`, `patch`, `create`. UTF-16LE/BE is detected by BOM and saved with the same byte order. Invalid UTF-16 input bytes and unpaired surrogates in the new representation for `patch`, `create`, `patch_symbol` (including dry) are rejected before publication; on rejection the original bytes stay untouched. This is not a PHP lint. Without a BOM, UTF-16 is not guessed. A character not representable in cp1251 cancels the whole write.
+- **File payload:** `@payload` — UTF-8 JSON inside `root`. All argv are parsed before reading: the boundary is the last explicit `root=` or cwd; a relative payload path is resolved from it. The existing safe resolver checks lexical/realpath containment and a regular file; external paths/links, dangling links and directories are rejected, internal links and a root junction are allowed. A `root` from the file JSON is ignored and does not widen the boundary. Several `@` merge left to right; explicit argv take priority over JSON regardless of position. JSON from stdin is accepted when no `op` remains after argv/payload; without a file payload its `root` is allowed, explicit argv take priority.
+- **Search and reading.** `search` shows 30 matched lines by default (`limit=0` returns the default); snippets up to 120 characters of content plus `…` markers (up to two), the line-number prefix does not count into the limit. `read` — `offset=1`, `limit=200` (`limit=0` also the default). The 2000-line cap applies only to `read ranges`, which is incompatible with `offset`/`limit`; the range end is cut to EOF, a start beyond EOF is an error.
+- **`patch_symbol` edits only the body** of a method or function and refuses to edit on ambiguity or doubt: the class or function exists in several files, several same-name declarations in one file, the symbol is not found, the method is abstract or interface-only (inherited bodies are not edited — edit the base class), the file is binary, the new body is unbalanced in braces, `body_file` outside the project, the symbol is not representable in cp1251. `file` must match the relative path from the index; `body_file` is read as UTF-8 and is not deleted. On rejection the file stays untouched; `dry=true` by default shows a report without writing. Brace balance is not a PHP syntax check.
+- **The core is not indexed by default.** In Bitrix: modules without a dot in the name (`main`, `iblock`, `sale`…), components `bitrix:*`, `bitrix/admin`, `bitrix/tools`, `bitrix/activities`, `bitrix/blocks`. In MODX: `core/model`, `core/src`, `core/lexicon`, `core/docs`, `manager/`, `connectors/`; extras in `core/components/` stay theirs. `core=true` includes the core in the index and search but does not cancel the vendor/cache exclusions.
+- **Excluded:** `vendor/` at composer locations (`vendor`, `local/vendor`, `bitrix/vendor`), `upload`, `bitrix/cache`, `managed_cache`, `backup`, `updates` and similar service directories, files over 2 MB; in Laravel also `storage/` and `bootstrap/cache/`. The name `vendor` in component namespaces (`local/components/vendor/…`) is not excluded.
+- **DBMS variants.** Classes from `classes/mssql` and `classes/oracle` are hidden when the main variant exists; `"all":true` in `symbol` shows all.
+- **`route`** translates `urlrewrite.php` conditions from PCRE to JavaScript. Simple expressions match, complex ones (named groups `(?P<…>)`, recursion, the `u` flag) may differ.
+- **Cache.** The `.bx-cache` folder excludes itself from git on its own. Freshness is determined by the file list, mtime and size, not by content hash. `build` recomputes links but reuses the parsing of files with the same mtime/size. If answers look stale after a skill update, delete that folder.
+- **Verification.** Standalone regressions and four generated golden fixtures require no PHP, composer or npm. The commands from the repository root are below; real projects should still be cross-checked against `info` and the profile operations.
 
-## Тесты в репозитории
+## Tests in the repository
 
 ```sh
 node --test tests/token-economy-php/metrics.test.js
@@ -112,4 +115,4 @@ node skills/token-economy-php/scripts/bx.js op=selftest
 node tests/token-economy-php/run-golden.js check
 ```
 
-`node --test` из корня также подхватывает PHP-регрессии. Golden сам вызывает трекнутые `gen-*-fixture.js` в новых временных каталогах, проверяет stdout по `expected/*.txt` и коды завершения. Локальные `bitrix-site/`, `laravel-app/`, `modx-site/`, `plain-site/` и старые `golden/` не используются и не стираются. Порядок ручной генерации и обновления эталонов — в [README тестов](../../tests/token-economy-php/README.md).
+`node --test` from the root also picks up the PHP regressions. Golden itself invokes the tracked `gen-*-fixture.js` in fresh temp directories, checks stdout against `expected/*.txt` and the exit codes. Local `bitrix-site/`, `laravel-app/`, `modx-site/`, `plain-site/` and the old `golden/` are unused and not wiped. The order of manual generation and reference updates — in the [tests README](../../tests/token-economy-php/README.md).
