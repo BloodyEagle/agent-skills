@@ -78,3 +78,15 @@ Developer regressions from the repository root: `node --test tests/token-economy
 Damaged and unsupported JAR/AAR/.class files are skipped with a warning; if no class was read, a no-match with exit 0 is printed. `sig` picks a version heuristically among the first 30 healthy candidates, not via Gradle dependency resolution; an AAR contains only `classes.jar` for it. `Class#method` filters methods, not fields/constructors. The cache is verified by SHA-256 of content, size and mtime; a change rebuilds the whole index, there is no incremental parsing.
 
 `patch`/`create` write immediately, no dry-run; `patch` is not atomic. UTF-16LE/BE is recognized by BOM. When writing cp1251, non-representable characters are replaced with `?` instead of failing; for new Unicode text choose `enc=utf-8` explicitly. `read` shows 400 lines by default; read large files with `offset`/`limit`. Manifest, Room, DI and resources are static selections, not the result of the manifest/resource merger or of running Android/Gradle.
+
+## CodeGraph nearby
+
+If the project has a CodeGraph index (`.codegraph/`) and the CodeGraph CLI is available — `op=info` reports it in `integrations.codegraph` — structural questions go there first: `codegraph explore "<question>"` covers "how does X work", "who calls Y", "what does a change to Z affect" in one call instead of a series of `search` plus reads. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `op=info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full rule is in SKILL.md, section `CodeGraph рядом`.
+
+| Question | First tool |
+|---|---|
+| How does X work, who calls Y, what does a change affect | `codegraph explore "<question>"` |
+| Exact lines to edit or quote | `graph op=read` / Read |
+| Third-party API signatures | `sig` |
+| Exact text occurrences | `search` |
+| Project passport and CodeGraph detection | `op=info` → `integrations.codegraph` |

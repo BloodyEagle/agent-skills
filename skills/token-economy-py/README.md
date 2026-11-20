@@ -93,3 +93,15 @@ Savings examples: the outline of `subprocess.py` (88 KB, 2216 lines) takes about
 - **Python versions below 3.10.** The set of standard modules is determined via `sys.stdlib_module_names`; 3.9 lacks it, and the list is approximately reconstructed from `sys.builtin_module_names` and the contents of the standard library directory.
 - **Cache.** The `.token-economy` folder excludes itself from git on its own. Internal/external symlink/junction of this folder, links to cache files (including dangling and hard links) and links to `.gitignore` are rejected before read/write; links to sources and a root junction are still allowed. The graph, AST cache, Python hotspots and `.gitignore` are published through a unique exclusive tmp in the verified real cache directory; fixed `*.tmp` files are not touched. A failure before publication keeps the previous cache file and source bytes; no crash-safe transaction or protection from hostile concurrent ancestor substitution is promised. Freshness is determined by the file list, mtime_ns, size and alias paths, not by content hash. The graph is rebuilt on a detected change; only files with changed mtime_ns/size are re-parsed. `graph build` recomputes links but reuses the AST of unchanged files from cache.
 - **Verification.** The skill was tested on test projects and on the Python 3.12 standard library on Linux. Python 3.9 and Windows were not tested: before using it, run `graph stats` and `outline` on your project and compare the result with the code.
+
+## CodeGraph nearby
+
+If the project has a CodeGraph index (`.codegraph/`) and the CodeGraph CLI is available — `op=info` reports it in `integrations.codegraph` — structural questions go there first: `codegraph explore "<question>"` covers "how does X work", "who calls Y", "what does a change to Z affect" in one call instead of a series of `search` plus reads. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `op=info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full rule is in SKILL.md, section `CodeGraph рядом`.
+
+| Question | First tool |
+|---|---|
+| How does X work, who calls Y, what does a change affect | `codegraph explore "<question>"` |
+| Exact lines to edit or quote | `graph op=read` / Read |
+| Third-party API signatures | `sig` |
+| Exact text occurrences | `search` |
+| Project passport and CodeGraph detection | `op=info` → `integrations.codegraph` |

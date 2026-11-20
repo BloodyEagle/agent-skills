@@ -112,3 +112,15 @@ node --test tests/token-economy-java/classfile.test.js tests/token-economy-java/
 ```
 
 The tests do not run Maven/Gradle, use no network and do not touch real user caches. The YAML format stays a subset, not a full YAML parser; unknown tags and alias/merge computations are not interpreted.
+
+## CodeGraph nearby
+
+If the project has a CodeGraph index (`.codegraph/`) and the CodeGraph CLI is available — `op=info` reports it in `integrations.codegraph` — structural questions go there first: `codegraph explore "<question>"` covers "how does X work", "who calls Y", "what does a change to Z affect" in one call instead of a series of `search` plus reads. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `op=info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full rule is in SKILL.md, section `CodeGraph рядом`.
+
+| Question | First tool |
+|---|---|
+| How does X work, who calls Y, what does a change affect | `codegraph explore "<question>"` |
+| Exact lines to edit or quote | `graph op=read` / Read |
+| Third-party API signatures | `sig` |
+| Exact text occurrences | `search` |
+| Project passport and CodeGraph detection | `op=info` → `integrations.codegraph` |
