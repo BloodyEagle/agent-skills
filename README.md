@@ -21,6 +21,8 @@ The analysis scripts run locally and require no installation of their own depend
 
 ## Skills
 
+All five token-economy skills share one optional bridge to [CodeGraph](https://github.com/colbymchenry/codegraph). If the project has a CodeGraph index (`.codegraph/`) and its CLI is on `PATH`, `op=info` reports it in `integrations.codegraph` (`available`, `cli_version`, `index`, `db_path`, `reason`). When it is available, structural questions — "how does X work", "who calls Y", "what does a change to Z affect" — go to `codegraph explore` first, while `sig`, `edit_symbol`, `generate`, `outline`, exact-text `search` and precise ranges (`graph op=read`) stay with the skill. CodeGraph is never required: no index or no CLI means the skills behave exactly as before. Detection runs `codegraph version` with a 2 s timeout and never runs `index`/`init`, reads the database, or caches the verdict.
+
 ### token-economy-ts — TypeScript / JavaScript / Angular
 
 **Docs:** [skills/token-economy-ts/README.md](skills/token-economy-ts/README.md)
@@ -194,6 +196,8 @@ node --test tests/token-economy-java/metrics.test.js
 node --test tests/token-economy-php/metrics.test.js
 node --test tests/token-economy-py/metrics.test.js
 ```
+
+The CodeGraph bridge is covered by `node --test tests/token-economy-*/codegraph.test.js` — the suites run on a fake CLI shim and do not require CodeGraph to be installed.
 
 The Python skill does not require Node.js; here Node is only the test runner. The suites check the formulas, the text/CLI, errors, cycles and the unchanged SHA of the warmed graph. The check of the four JS copies — `tests/metrics-copies.test.js` at the final stage.
 

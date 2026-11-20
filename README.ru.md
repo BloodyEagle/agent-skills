@@ -21,6 +21,8 @@
 
 ## Скиллы
 
+Все пять скиллов token-economy имеют один необязательный мостик к [CodeGraph](https://github.com/colbymchenry/codegraph). Если в проекте есть индекс CodeGraph (`.codegraph/`) и его CLI доступен в `PATH`, `op=info` сообщает об этом в `integrations.codegraph` (`available`, `cli_version`, `index`, `db_path`, `reason`). Когда он доступен, структурные вопросы — «как работает X», «кто вызывает Y», «что заденет правка Z» — идут сначала в `codegraph explore`, а `sig`, `edit_symbol`, `generate`, `outline`, точный поиск текста и точные диапазоны (`graph op=read`) остаются за скиллом. CodeGraph не обязателен: без индекса или без CLI скиллы работают ровно как раньше. Детект запускает `codegraph version` с таймаутом 2 с и никогда не запускает `index`/`init`, не читает базу и не кэширует вердикт.
+
 ### token-economy-ts — TypeScript / JavaScript / Angular
 
 **Документация:** [skills/token-economy-ts/README.ru.md](skills/token-economy-ts/README.ru.md)
@@ -194,6 +196,8 @@ node --test tests/token-economy-java/metrics.test.js
 node --test tests/token-economy-php/metrics.test.js
 node --test tests/token-economy-py/metrics.test.js
 ```
+
+Мостик к CodeGraph покрыт `node --test tests/token-economy-*/codegraph.test.js` — тесты работают на фейковом шиме и не требуют установленного CodeGraph.
 
 Python-скилл не требует Node.js; здесь Node — только runner тестов. Suites проверяют формулы, текст/CLI, ошибки, циклы и неизменность SHA прогретого графа. Проверка четырёх JS-копий — `tests/metrics-copies.test.js` на завершающем этапе.
 
