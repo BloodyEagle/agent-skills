@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -1394,6 +1395,31 @@ def _requirements_deps(root):
 
 # ---------- CodeGraph ----------
 
+def _run_cli_version(cmd, timeout_s: float = 2.0):
+    """Запуск CLI с таймаутом: (код выхода, stdout) либо (None, b"") по таймауту.
+
+    По таймауту убивается всё дерево процессов — taskkill /T на Windows, killpg на POSIX:
+    cmd.exe (или sh) порождает внука, который держит пайпы, и communicate() ждал бы его
+    завершения вместо 2-секундного детекта.
+    """
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        out, _ = proc.communicate(timeout=timeout_s)
+        return proc.returncode, out
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, stdin=subprocess.DEVNULL)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.kill()
+        proc.communicate()
+        return None, b""
+
+
 def detect_codegraph(root: str) -> dict:
     """Мостик с CodeGraph: единственная машинная часть — детект.
 
@@ -1434,24 +1460,22 @@ def detect_codegraph(root: str) -> dict:
                 # строка, а не список: cmd.exe получает команду дословно,
                 # с внутренними кавычками вокруг пути с пробелами
                 cmdline = '"%s" /d /s /c ""%s" version"' % (os.environ.get("COMSPEC") or "cmd.exe", bin_path)
-                r = subprocess.run(cmdline, capture_output=True, timeout=2.0, stdin=subprocess.DEVNULL)
+                rc, out = _run_cli_version(cmdline)
             else:
-                r = subprocess.run([bin_path if is_win else "codegraph", "version"],
-                                   capture_output=True, timeout=2.0, stdin=subprocess.DEVNULL)
+                rc, out = _run_cli_version([bin_path if is_win else "codegraph", "version"])
         except FileNotFoundError:
             res["reason"] = "not_installed"
-            return res
-        except subprocess.TimeoutExpired:
-            res["reason"] = "timeout"
             return res
         except OSError as e:
             res["reason"] = "error:" + str(getattr(e, "winerror", None) or e.errno or "unknown")
             return res
-        if r.returncode != 0:
-            res["reason"] = "error:" + str(r.returncode)
+        if rc is None:
+            res["reason"] = "timeout"
             return res
-        out = (r.stdout or b"").decode("utf-8", "replace")
-        lines = out.splitlines()
+        if rc != 0:
+            res["reason"] = "error:" + str(rc)
+            return res
+        lines = (out or b"").decode("utf-8", "replace").splitlines()
         res["available"] = True
         res["cli_version"] = lines[0].strip() if lines else None
         res["reason"] = None if res["index"] else "no_index"

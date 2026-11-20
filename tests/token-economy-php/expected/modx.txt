@@ -1,4 +1,4 @@
-$ op=info
+$ op=info integrations=0
 проект MODX Revolution
 версия: 3.1.2-pl
 файловых элементов: 2 (extras: acme), tpl-файлов: 1

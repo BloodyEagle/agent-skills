@@ -55,7 +55,7 @@
       "version": "1.5.0",
       "updated": "2026-11-20",
       "files": 7,
-      "sha256": "dfc412b3ad10d912e87cf8d67114db89d9544f0442360eb4295a8336865ffa7c",
+      "sha256": "ab36ea7f3e88e9f6469ada8122be98010a79083a1db823c9515fd8fdde9d3bb5",
       "requires": [
         "python>=3"
       ]
