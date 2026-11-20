@@ -32,10 +32,10 @@
     },
     {
       "name": "token-economy-kt",
-      "version": "1.2.2",
-      "updated": "2026-11-19",
+      "version": "1.3.0",
+      "updated": "2026-11-20",
       "files": 9,
-      "sha256": "ca9b71fb242e00282a2855c4b71ddd68d22aafee27540d9da46458f420a08c16",
+      "sha256": "b12854a82a1766bbd62788faee20591532b62fddda63591e8262ff7d9331b06d",
       "requires": [
         "node>=18"
       ]

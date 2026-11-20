@@ -1,6 +1,6 @@
 ---
 name: token-economy-kt
-version: 1.2.2
+version: 1.3.0
 description: 'Экономный анализ Kotlin/Android-проектов (Jetpack Compose, XML Views, Java interop) скриптом kt.js — без чтения файлов целиком. Звать для поиска определений, статического графа (наследование, Hilt/Dagger, Compose-вызовы, ViewBinding), файловых метрик, git-хотспотов, оглавлений классов и функций, разбора исходного манифеста (компоненты, разрешения, intent-фильтры, deep link), Room, DI-модулей, Retrofit-эндпоинтов, Gradle-модулей и version catalog без сборки, строк по локалям с отсутствующими переводами, сигнатур jar и classes.jar из aar. Правила стека — references/kotlin.md.'
 ---
 # Skill: token-economy-kt
