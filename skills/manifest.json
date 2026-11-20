@@ -22,10 +22,10 @@
     },
     {
       "name": "token-economy-java",
-      "version": "1.2.2",
-      "updated": "2026-11-19",
+      "version": "1.3.0",
+      "updated": "2026-11-20",
       "files": 16,
-      "sha256": "3d8c6f492354f0f943b4d461040d199ccccbd9ed7f5ac7f4a72674819ce96a9f",
+      "sha256": "f166686b4b3d99f2da4da8e1678957df94d7f3c07f5a7e01ff1321b576ddac05",
       "requires": [
         "node>=18"
       ]
