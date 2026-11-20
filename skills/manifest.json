@@ -42,10 +42,10 @@
     },
     {
       "name": "token-economy-php",
-      "version": "1.4.2",
-      "updated": "2026-11-19",
+      "version": "1.5.0",
+      "updated": "2026-11-20",
       "files": 18,
-      "sha256": "90bcde68adc21264f4e81b40922b1912818701ff68b828adce0f4b4ca5b8c741",
+      "sha256": "929ff56bceb75bbc0680341355a2d4bcac47a9dda2d4ade3e07400dd58e35066",
       "requires": [
         "node>=18"
       ]
