@@ -197,6 +197,8 @@ node --test tests/token-economy-php/metrics.test.js
 node --test tests/token-economy-py/metrics.test.js
 ```
 
+The CodeGraph bridge is covered by `node --test tests/token-economy-*/codegraph.test.js` — the suites run on a fake CLI shim and do not require CodeGraph to be installed.
+
 The Python skill does not require Node.js; here Node is only the test runner. The suites check the formulas, the text/CLI, errors, cycles and the unchanged SHA of the warmed graph. The check of the four JS copies — `tests/metrics-copies.test.js` at the final stage.
 
 PHP fixtures and golden checks: [`tests/token-economy-php/README.md`](tests/token-economy-php/README.md). The full HAR benchmark runs separately; the bounded 100 MiB scrub regression is part of the regular set. The tests are not part of a skill directory: when copying into an agent only the contents of `skills/<skill>/` are transferred.

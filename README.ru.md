@@ -197,6 +197,8 @@ node --test tests/token-economy-php/metrics.test.js
 node --test tests/token-economy-py/metrics.test.js
 ```
 
+Мостик к CodeGraph покрыт `node --test tests/token-economy-*/codegraph.test.js` — тесты работают на фейковом шиме и не требуют установленного CodeGraph.
+
 Python-скилл не требует Node.js; здесь Node — только runner тестов. Suites проверяют формулы, текст/CLI, ошибки, циклы и неизменность SHA прогретого графа. Проверка четырёх JS-копий — `tests/metrics-copies.test.js` на завершающем этапе.
 
 PHP-фикстуры и golden-проверки: [`tests/token-economy-php/README.md`](tests/token-economy-php/README.md). Полный HAR-бенчмарк запускается отдельно; bounded-регрессия очистки 100 MiB входит в обычный набор. Тесты в каталог скилла не входят: при копировании в агента переносится только содержимое `skills/<скилл>/`.
