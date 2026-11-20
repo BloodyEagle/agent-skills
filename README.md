@@ -21,6 +21,8 @@ The analysis scripts run locally and require no installation of their own depend
 
 ## Skills
 
+All five token-economy skills share one optional bridge to [CodeGraph](https://github.com/colbymchenry/codegraph). If the project has a CodeGraph index (`.codegraph/`) and its CLI is on `PATH`, `op=info` reports it in `integrations.codegraph` (`available`, `cli_version`, `index`, `db_path`, `reason`). When it is available, structural questions — "how does X work", "who calls Y", "what does a change to Z affect" — go to `codegraph explore` first, while `sig`, `edit_symbol`, `generate`, `outline`, exact-text `search` and precise ranges (`graph op=read`) stay with the skill. CodeGraph is never required: no index or no CLI means the skills behave exactly as before. Detection runs `codegraph version` with a 2 s timeout and never runs `index`/`init`, reads the database, or caches the verdict.
+
 ### token-economy-ts — TypeScript / JavaScript / Angular
 
 **Docs:** [skills/token-economy-ts/README.md](skills/token-economy-ts/README.md)
