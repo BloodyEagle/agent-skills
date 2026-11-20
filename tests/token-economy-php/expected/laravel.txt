@@ -1,4 +1,4 @@
-$ op=info
+$ op=info integrations=0
 проект Laravel ^12.0 (composer.json), структура 11+ (bootstrap/app.php)
 пространство имён: App\
 маршруты: 5 (web.php: 5)

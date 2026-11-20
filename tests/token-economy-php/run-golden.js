@@ -9,14 +9,14 @@ const { spawnSync } = require('child_process');
 const bx = path.resolve(__dirname, '../../skills/token-economy-php/scripts/bx.js');
 const cases = {
   bitrix: [
-    { op: 'info' }, { op: 'symbol', name: 'DemoListComponent' },
+    { op: 'info', integrations: '0' }, { op: 'symbol', name: 'DemoListComponent' },
     { op: 'symbol', name: 'CIBlockElement::GetList' }, { op: 'outline', file: 'Demo\\Helper' },
     { op: 'component', id: 'demo:list' }, { op: 'events', query: 'OnAfterItemAdd' },
     { op: 'search', query: 'includeModule' }, { op: 'rdeps', file: 'Demo\\Helper' },
     { op: 'route', url: '/catalog/item-1/' }, { op: 'table', name: 'b_demo_item' }, { op: 'lang', query: 'Новости' },
   ],
   laravel: [
-    { op: 'info' }, { op: 'routes' }, { op: 'model', name: 'Post' },
+    { op: 'info', integrations: '0' }, { op: 'routes' }, { op: 'model', name: 'Post' },
     { op: 'container', type: 'App\\Contracts\\PaymentGateway' }, { op: 'blade', name: 'posts.index' },
     { op: 'console' }, { op: 'route', url: '/posts', method: 'GET' },
     { op: 'lang', query: 'Записи' }, { op: 'symbol', name: 'App\\Models\\Post' },
@@ -25,7 +25,7 @@ const cases = {
     { op: 'patch_symbol', file: 'app/Models/Post.php', symbol: 'App\\Models\\Post::comments', body: "return $this->hasMany(Comment::class);", dry: true },
   ],
   modx: [
-    { op: 'info' }, { op: 'symbol', name: 'modX' },
+    { op: 'info', integrations: '0' }, { op: 'symbol', name: 'modX' },
     { op: 'outline', file: 'core/model/modx/modx.class.php', core: true },
     { op: 'search', query: 'runSnippet' }, { op: 'element', name: 'hello' },
     { op: 'tpl', name: 'templates/base.tpl' }, { op: 'rdeps', file: 'acme:hello' },
@@ -33,7 +33,7 @@ const cases = {
     { op: 'route', url: '/about/', exit: 1 },
   ],
   plain: [
-    { op: 'info' }, { op: 'symbol', name: 'App\\Services\\Billing' },
+    { op: 'info', integrations: '0' }, { op: 'symbol', name: 'App\\Services\\Billing' },
     { op: 'outline', file: 'App\\Support\\Helper' }, { op: 'deps', file: 'src/Services/Billing.php' },
     { op: 'search', query: 'slugify' }, { op: 'routes', exit: 1 },
     { op: 'node', file: 'src/Services/Billing.php', offset: '0', limit: '1' },

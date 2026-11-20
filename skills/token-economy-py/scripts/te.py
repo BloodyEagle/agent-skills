@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -1392,6 +1393,100 @@ def _requirements_deps(root):
     return sorted(set(names)), files
 
 
+# ---------- CodeGraph ----------
+
+def _run_cli_version(cmd, timeout_s: float = 2.0):
+    """Запуск CLI с таймаутом: (код выхода, stdout) либо (None, b"") по таймауту.
+
+    По таймауту убивается всё дерево процессов — taskkill /T на Windows, killpg на POSIX:
+    cmd.exe (или sh) порождает внука, который держит пайпы, и communicate() ждал бы его
+    завершения вместо 2-секундного детекта.
+    """
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        out, _ = proc.communicate(timeout=timeout_s)
+        return proc.returncode, out
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, stdin=subprocess.DEVNULL)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.kill()
+        proc.communicate()
+        return None, b""
+
+
+def detect_codegraph(root: str) -> dict:
+    """Мостик с CodeGraph: единственная машинная часть — детект.
+
+    Вердикт available — только реальный запуск `codegraph version` с таймаутом 2 с;
+    поиск файла в PATH — локатор для запуска, а не ответ (на Windows .cmd-шим без shell
+    не исполняется). Ни index/init, ни чтения .codegraph/codegraph.db, ни кэша.
+    Никогда не бросает исключение.
+    """
+    res = {"available": False, "cli_version": None, "index": False, "db_path": None, "reason": None}
+    try:
+        res["index"] = os.path.isfile(os.path.join(root, ".codegraph", "codegraph.db"))
+        if res["index"]:
+            res["db_path"] = ".codegraph/codegraph.db"
+        is_win = os.name == "nt"
+        bin_path = None
+        if is_win:
+            for d in os.environ.get("PATH", "").split(os.pathsep):
+                if not d:
+                    continue
+                for name in ("codegraph.cmd", "codegraph.bat", "codegraph.exe"):
+                    try:
+                        p = os.path.join(d, name)
+                    except ValueError:
+                        continue
+                    try:
+                        if os.path.isfile(p):
+                            bin_path = p
+                            break
+                    except OSError:
+                        continue
+                if bin_path:
+                    break
+            if not bin_path:
+                res["reason"] = "not_installed"
+                return res
+        try:
+            if is_win and not bin_path.lower().endswith(".exe"):
+                # строка, а не список: cmd.exe получает команду дословно,
+                # с внутренними кавычками вокруг пути с пробелами
+                cmdline = '"%s" /d /s /c ""%s" version"' % (os.environ.get("COMSPEC") or "cmd.exe", bin_path)
+                rc, out = _run_cli_version(cmdline)
+            else:
+                rc, out = _run_cli_version([bin_path if is_win else "codegraph", "version"])
+        except FileNotFoundError:
+            res["reason"] = "not_installed"
+            return res
+        except OSError as e:
+            res["reason"] = "error:" + str(getattr(e, "winerror", None) or e.errno or "unknown")
+            return res
+        if rc is None:
+            res["reason"] = "timeout"
+            return res
+        if rc != 0:
+            res["reason"] = "error:" + str(rc)
+            return res
+        lines = (out or b"").decode("utf-8", "replace").splitlines()
+        res["available"] = True
+        res["cli_version"] = lines[0].strip() if lines else None
+        res["reason"] = None if res["index"] else "no_index"
+        return res
+    except Exception:
+        res["available"] = False
+        res["cli_version"] = None
+        res["reason"] = "error:internal"
+        return res
+
+
 def cmd_info(a):
     root = os.path.abspath(a.root)
     g = ensure_graph(root, a.src)
@@ -1434,6 +1529,9 @@ def cmd_info(a):
     bad = [n["path"] for n in nodes if n["err"]]
     if bad:
         print(f"ВНИМАНИЕ: не разобраны ({len(bad)}): " + ", ".join(bad[:8]) + (" …" if len(bad) > 8 else ""))
+    if str(getattr(a, "integrations", "1")) != "0":
+        print("integrations: " + json.dumps({"codegraph": detect_codegraph(root)},
+                                            ensure_ascii=False, separators=(",", ":")))
 
 
 # ---------- outline ----------
@@ -2126,7 +2224,7 @@ def main():
     si.add_argument("target")
     si.add_argument("--doc", action="store_true")
 
-    sp.add_parser("info", parents=[common])
+    sp.add_parser("info", parents=[common]).add_argument("--integrations", default="1")
 
     sp.add_parser("selftest", parents=[common])
 

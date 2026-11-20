@@ -78,3 +78,15 @@ node skills/token-economy-ts/scripts/graph-tool.js op=hotspots file=src/merge.ts
 | `sig` | `sig-reader.js` — сигнатуры библиотек из `node_modules` | без чтения `.d.ts` |
 | `edit_symbol` | `edit-symbol.js` — замена тела функции или метода | правка без чтения файла в контекст |
 | `generate` | `scaffold-helper.js` — Angular-сущности через локальный CLI | краткий список созданных файлов |
+
+## CodeGraph рядом
+
+Если в проекте есть индекс CodeGraph (`.codegraph/`) и CLI CodeGraph доступен — `op=info` показывает это в `integrations.codegraph` — структурный вопрос сначала туда: `codegraph explore "<вопрос>"` отвечает «как работает X», «кто вызывает Y», «что заденет правка Z» одним вызовом вместо серии `search` и чтений. Чего у CodeGraph нет, остаётся своим: `sig`, замена тела, генерация, `outline`, точный поиск текста `search`, точные диапазоны `graph op=read` и паспорт проекта `op=info`. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило — в SKILL.md, раздел `CodeGraph рядом`.
+
+| Вопрос | Первый инструмент |
+|---|---|
+| Как работает X, кто вызывает Y, что заденет правка | `codegraph explore "<вопрос>"` |
+| Точные строки для правки или цитирования | `graph op=read` / Read |
+| Сигнатуры сторонних API | `sig` |
+| Точные вхождения текста | `search` |
+| Паспорт проекта и детект CodeGraph | `op=info` → `integrations.codegraph` |

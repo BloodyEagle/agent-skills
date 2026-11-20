@@ -116,3 +116,15 @@ node tests/token-economy-php/run-golden.js check
 ```
 
 `node --test` из корня также подхватывает PHP-регрессии. Golden сам вызывает трекнутые `gen-*-fixture.js` в новых временных каталогах, проверяет stdout по `expected/*.txt` и коды завершения. Локальные `bitrix-site/`, `laravel-app/`, `modx-site/`, `plain-site/` и старые `golden/` не используются и не стираются. Порядок ручной генерации и обновления эталонов — в [README тестов](../../tests/token-economy-php/README.md).
+
+## CodeGraph рядом
+
+Если в проекте есть индекс CodeGraph (`.codegraph/`) и CLI CodeGraph доступен — `op=info` показывает это в `integrations.codegraph` — структурный вопрос сначала туда: `codegraph explore "<вопрос>"` отвечает «как работает X», «кто вызывает Y», «что заденет правка Z» одним вызовом вместо серии `search` и чтений. Чего у CodeGraph нет, остаётся своим: `sig`, замена тела, генерация, `outline`, точный поиск текста `search`, точные диапазоны `graph op=read` и паспорт проекта `op=info`. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило — в SKILL.md, раздел `CodeGraph рядом`.
+
+| Вопрос | Первый инструмент |
+|---|---|
+| Как работает X, кто вызывает Y, что заденет правка | `codegraph explore "<вопрос>"` |
+| Точные строки для правки или цитирования | `graph op=read` / Read |
+| Сигнатуры сторонних API | `sig` |
+| Точные вхождения текста | `search` |
+| Паспорт проекта и детект CodeGraph | `op=info` → `integrations.codegraph` |

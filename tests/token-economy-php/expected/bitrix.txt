@@ -1,4 +1,4 @@
-$ op=info
+$ op=info integrations=0
 корень сайта: .
 версия Битрикса: 23.0.0
 utf_mode: true  (bitrix/.settings.php)

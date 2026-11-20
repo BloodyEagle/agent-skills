@@ -147,6 +147,61 @@ function propUsages(idx) {
   return res;
 }
 
+// ---------- CodeGraph ----------
+// Мостик с CodeGraph: единственная машинная часть — детект. Вердикт available — только
+// реальный запуск `codegraph version` с таймаутом 2 с; поиск файла в PATH — локатор для
+// запуска, а не ответ (на Windows .cmd-шим без shell не исполняется — Node отдаёт EINVAL).
+// Ни index/init, ни чтения .codegraph/codegraph.db, ни кэша между процессами.
+function detectCodegraph(dir) {
+  const res = {available: false, cli_version: null, index: false, db_path: null, reason: null};
+  try {
+    try {
+      res.index = fs.existsSync(path.join(dir, '.codegraph', 'codegraph.db'));
+    } catch (e) { res.index = false; }
+    if (res.index) res.db_path = '.codegraph/codegraph.db';
+    const isWin = process.platform === 'win32';
+    let bin = null;
+    if (isWin) {
+      for (const d of String(process.env.PATH || '').split(path.delimiter)) {
+        if (!d) continue;
+        for (const name of ['codegraph.cmd', 'codegraph.bat', 'codegraph.exe']) {
+          try {
+            if (fs.existsSync(path.join(d, name))) { bin = path.join(d, name); break; }
+          } catch (e) { /* каталог из PATH недоступен */ }
+        }
+        if (bin) break;
+      }
+      if (!bin) { res.reason = 'not_installed'; return res; }
+    }
+    const opts = {timeout: 2000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true};
+    let r;
+    if (isWin && !/\.exe$/i.test(bin)) {
+      r = cp.spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '""' + bin + '" version"'],
+          {...opts, windowsVerbatimArguments: true});
+    } else {
+      r = cp.spawnSync(isWin ? bin : 'codegraph', ['version'], opts);
+    }
+    if (r.error) {
+      res.reason = r.error.code === 'ENOENT' ? 'not_installed'
+          : r.error.code === 'ETIMEDOUT' ? 'timeout'
+              : 'error:' + (r.error.code || 'unknown');
+      return res;
+    }
+    if (r.signal) { res.reason = 'timeout'; return res; }
+    if (r.status !== 0) { res.reason = 'error:' + r.status; return res; }
+    const first = String(r.stdout || '').split(/\r?\n/)[0].trim();
+    res.available = true;
+    res.cli_version = first || null;
+    res.reason = res.index ? null : 'no_index';
+    return res;
+  } catch (e) {
+    res.available = false;
+    res.cli_version = null;
+    res.reason = 'error:internal';
+    return res;
+  }
+}
+
 // ---------- операции ----------
 const ops = {
   build() {
@@ -178,6 +233,7 @@ const ops = {
     if (enc.cp1251) lines.push('ВНИМАНИЕ: есть файлы не в UTF-8. Читай их операцией read, правь операцией patch: штатные инструменты испортят кириллицу.');
     const jx = idx.nodes.filter((n) => n.javax);
     if (jx.length && (major === null || major >= 3)) lines.push(`ВНИМАНИЕ: ${jx.length} файл(ов) используют javax.persistence / servlet / validation (в Boot 3 это jakarta.*): ` + jx.slice(0, 3).map((n) => n.p).join(', ') + (jx.length > 3 ? ' …' : ''));
+    if (String(args.integrations) !== '0') lines.push('integrations: ' + JSON.stringify({codegraph: detectCodegraph(ctx.root)}));
     out(...lines);
   },
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generated": "2026-11-19",
+  "generated": "2026-11-20",
   "skills": [
     {
       "name": "automateskill",
@@ -22,50 +22,50 @@
     },
     {
       "name": "token-economy-java",
-      "version": "1.2.2",
-      "updated": "2026-11-19",
+      "version": "1.3.0",
+      "updated": "2026-11-20",
       "files": 16,
-      "sha256": "3d8c6f492354f0f943b4d461040d199ccccbd9ed7f5ac7f4a72674819ce96a9f",
+      "sha256": "ee549b3ff4c3f579dc605331b7fa1573383e75f96602e32ab2269a0a85e58be9",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-kt",
-      "version": "1.2.2",
-      "updated": "2026-11-19",
+      "version": "1.3.0",
+      "updated": "2026-11-20",
       "files": 9,
-      "sha256": "ca9b71fb242e00282a2855c4b71ddd68d22aafee27540d9da46458f420a08c16",
+      "sha256": "8d5a5a48b49674fcfe4475235a3a25bff14ba36fc200cdbe5260688aa65e0dc4",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-php",
-      "version": "1.4.2",
-      "updated": "2026-11-19",
+      "version": "1.5.0",
+      "updated": "2026-11-20",
       "files": 18,
-      "sha256": "90bcde68adc21264f4e81b40922b1912818701ff68b828adce0f4b4ca5b8c741",
+      "sha256": "c7f16885dae3113b23f590ec5065b3a90d7e1d8619c62e5b0e46d8cde499ecd9",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-py",
-      "version": "1.4.2",
-      "updated": "2026-11-19",
+      "version": "1.5.0",
+      "updated": "2026-11-20",
       "files": 7,
-      "sha256": "a3f72e2b02c984a2ccac16c5ae633b12405d202e303e787a41a872cfd2d2e2a0",
+      "sha256": "ab36ea7f3e88e9f6469ada8122be98010a79083a1db823c9515fd8fdde9d3bb5",
       "requires": [
         "python>=3"
       ]
     },
     {
       "name": "token-economy-ts",
-      "version": "1.6.2",
-      "updated": "2026-11-19",
+      "version": "1.7.0",
+      "updated": "2026-11-20",
       "files": 21,
-      "sha256": "47995ed4d39972719f01018312d8a8ab66906778d250755935d9634b792b7b9d",
+      "sha256": "576c68d952884e874f2874f33f91e8eaf0deebc39a0d4dd51657e35107a784e8",
       "requires": [
         "node>=18"
       ]
