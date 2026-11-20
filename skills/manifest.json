@@ -52,10 +52,10 @@
     },
     {
       "name": "token-economy-py",
-      "version": "1.4.2",
-      "updated": "2026-11-19",
+      "version": "1.5.0",
+      "updated": "2026-11-20",
       "files": 7,
-      "sha256": "a3f72e2b02c984a2ccac16c5ae633b12405d202e303e787a41a872cfd2d2e2a0",
+      "sha256": "0029861e006e862280bdcf52af122ed2e917ada7ec2758a0bb62b1da33980678",
       "requires": [
         "python>=3"
       ]
