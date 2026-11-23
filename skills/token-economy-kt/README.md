@@ -81,11 +81,15 @@ Damaged and unsupported JAR/AAR/.class files are skipped with a warning; if no c
 
 ## CodeGraph nearby
 
-If the project has a CodeGraph index (`.codegraph/`) and the CodeGraph CLI is available — `op=info` reports it in `integrations.codegraph` — structural questions go there first: `codegraph explore "<question>"` covers "how does X work", "who calls Y", "what does a change to Z affect" in one call instead of a series of `search` plus reads. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `op=info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full rule is in SKILL.md, section `CodeGraph рядом`.
+With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
+
+`integrations.codegraph` preserves `available`, `cli_version`, `index`, `db_path`, `reason` and adds absolute full-path `executable`, `source` (`path` or `home`) and nullable `hint`. Lookup checks `PATH` first; only if no candidate exists does it check home `.local/bin` (`os.homedir()` in JavaScript, `os.path.expanduser('~')` in Python). Names: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` on Windows; `codegraph` on POSIX. A broken `PATH` candidate is not masked. Selected `executable`/`source` survive a failed version probe; `hint` is populated only after a successful home probe. Detection only runs `version` with a 2 s timeout: no `index`/`init`, database-content reads or detection cache. No CLI means `reason=not_installed`; no index means `reason=no_index`: use the regular skill workflow, not structural `explore`.
+
+With `available=true` and `index=true`, a home CLI works immediately even outside `PATH`. Agents must show a non-null `hint` in the conversation's language, translating it when needed. It explains optional manual home `.local/bin` addition to `PATH` and a full application restart for new terminals. No automatic changes to process/user `PATH`, profiles or the registry.
 
 | Question | First tool |
 |---|---|
-| How does X work, who calls Y, what does a change affect | `codegraph explore "<question>"` |
+| How does X work, who calls Y, what does a change affect | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
 | Exact lines to edit or quote | `graph op=read` / Read |
 | Third-party API signatures | `sig` |
 | Exact text occurrences | `search` |

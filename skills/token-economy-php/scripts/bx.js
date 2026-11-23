@@ -206,11 +206,12 @@ const keysOnly = (arr) => (arr || []).map((x) => (Array.isArray(x) ? x[0] : x));
 
 // ---------- CodeGraph ----------
 // Мостик с CodeGraph: единственная машинная часть — детект. Вердикт available — только
-// реальный запуск `codegraph version` с таймаутом 2 с; поиск файла в PATH — локатор для
-// запуска, а не ответ (на Windows .cmd-шим без shell не исполняется — Node отдаёт EINVAL).
+// реальный запуск `codegraph version` с таймаутом 2 с; файл в PATH или ~/.local/bin — локатор
+// для запуска, а не ответ (на Windows .cmd-шим без shell не исполняется — Node отдаёт EINVAL).
 // Ни index/init, ни чтения .codegraph/codegraph.db, ни кэша между процессами.
 function detectCodegraph(dir) {
-  const res = {available: false, cli_version: null, index: false, db_path: null, reason: null};
+  const res = {available: false, cli_version: null, index: false, db_path: null, reason: null,
+    executable: null, source: null, hint: null};
   try {
     try {
       res.index = fs.existsSync(path.join(dir, '.codegraph', 'codegraph.db'));
@@ -218,25 +219,34 @@ function detectCodegraph(dir) {
     if (res.index) res.db_path = '.codegraph/codegraph.db';
     const isWin = process.platform === 'win32';
     let bin = null;
-    if (isWin) {
-      for (const d of String(process.env.PATH || '').split(path.delimiter)) {
-        if (!d) continue;
-        for (const name of ['codegraph.cmd', 'codegraph.bat', 'codegraph.exe']) {
+    const names = isWin ? ['codegraph.cmd', 'codegraph.bat', 'codegraph.exe'] : ['codegraph'];
+    for (const source of ['path', 'home']) {
+      const dirs = source === 'path' ? String(process.env.PATH || '').split(path.delimiter)
+          : [path.join(require('os').homedir(), '.local', 'bin')];
+      for (const d of dirs) {
+        if (!d && isWin) continue;
+        for (const name of names) {
           try {
-            if (fs.existsSync(path.join(d, name))) { bin = path.join(d, name); break; }
-          } catch (e) { /* каталог из PATH недоступен */ }
+            const candidate = path.resolve(isWin ? d.replace(/^"(.*)"$/, '$1') : d, name);
+            if (!fs.statSync(candidate).isFile()) continue;
+            if (!isWin) fs.accessSync(candidate, fs.constants.X_OK);
+            bin = candidate;
+            break;
+          } catch (e) { /* кандидат недоступен */ }
         }
         if (bin) break;
       }
-      if (!bin) { res.reason = 'not_installed'; return res; }
+      if (bin) { res.source = source; break; }
     }
+    if (!bin) { res.reason = 'not_installed'; return res; }
+    res.executable = bin;
     const opts = {timeout: 2000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true};
     let r;
     if (isWin && !/\.exe$/i.test(bin)) {
       r = cp.spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '""' + bin + '" version"'],
           {...opts, windowsVerbatimArguments: true});
     } else {
-      r = cp.spawnSync(isWin ? bin : 'codegraph', ['version'], opts);
+      r = cp.spawnSync(bin, ['version'], opts);
     }
     if (r.error) {
       res.reason = r.error.code === 'ENOENT' ? 'not_installed'
@@ -250,6 +260,8 @@ function detectCodegraph(dir) {
     res.available = true;
     res.cli_version = first || null;
     res.reason = res.index ? null : 'no_index';
+    if (res.source === 'home') res.hint = 'CodeGraph найден вне PATH. Интеграция работает. Для вызова codegraph из терминала добавьте «'
+        + path.dirname(bin) + '» в пользовательский PATH и перезапустите приложение.';
     return res;
   } catch (e) {
     res.available = false;
@@ -362,7 +374,11 @@ const ops = {
       lines.push('ВНИМАНИЕ: связи через конфигурацию DI/сервис-контейнера и не-PHP файлы (шаблоны, YAML) не индексируются — пустой rdeps не значит «никем не используется».');
     }
     lines.push(`в индексе файлов: ${idx.nodes.length} (${cust.length} своих)` + (ctx.mode === 'bitrix' && !ctx.core ? '; ядро не индексируется ("core":true включит его)' : ''));
-    if (String(args.integrations) !== '0') lines.push('integrations: ' + JSON.stringify({codegraph: detectCodegraph(ctx.root)}));
+    if (String(args.integrations) !== '0') {
+      const codegraph = detectCodegraph(ctx.root);
+      lines.push('integrations: ' + JSON.stringify({codegraph}));
+      if (codegraph.hint) lines.push(codegraph.hint);
+    }
     out(...lines);
   },
 
