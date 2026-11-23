@@ -32,6 +32,7 @@ Layout:
       SKILL.md                rules and commands for the agent
       README.md               this file (English)
       README.ru.md            Russian version
+      references/java.md      Java stack rules
       references/spring.md    index design, limitations
       scripts/
         jv.js                 entry point, all operations
@@ -109,13 +110,14 @@ From the root of the `agent-skills` repository (Node 18+, no npm dependencies; t
 node skills/token-economy-java/scripts/jv.js op=selftest
 node --test tests/token-economy-java/metrics.test.js
 node --test tests/token-economy-java/classfile.test.js tests/token-economy-java/jar.test.js tests/token-economy-java/paths.test.js tests/token-economy-java/cache.test.js tests/token-economy-java/config.test.js tests/token-economy-java/integration.test.js
+node --test tests/token-economy-java/hotspots.test.js tests/token-economy-java/codegraph.test.js
 ```
 
 The tests do not run Maven/Gradle, use no network and do not touch real user caches. The YAML format stays a subset, not a full YAML parser; unknown tags and alias/merge computations are not interpreted.
 
 ## CodeGraph nearby
 
-With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
+With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `sig` (class signatures from jars without decompilation), `outline`, exact text `search`, precise ranges via `read`, the project passport via `info`, file edits via `patch`/`create` and the Spring operations (`endpoints`, `beans`, `config`, `entities`, `table`, `listeners`, `impls`). Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
 
 `integrations.codegraph` preserves `available`, `cli_version`, `index`, `db_path`, `reason` and adds absolute full-path `executable`, `source` (`path` or `home`) and nullable `hint`. Lookup checks `PATH` first; only if no candidate exists does it check home `.local/bin` (`os.homedir()` in JavaScript, `os.path.expanduser('~')` in Python). Names: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` on Windows; `codegraph` on POSIX. A broken `PATH` candidate is not masked. Selected `executable`/`source` survive a failed version probe; `hint` is populated only after a successful home probe. Detection only runs `version` with a 2 s timeout: no `index`/`init`, database-content reads or detection cache. No CLI means `reason=not_installed`; no index means `reason=no_index`: use the regular skill workflow, not structural `explore`.
 
@@ -124,7 +126,7 @@ With `available=true` and `index=true`, a home CLI works immediately even outsid
 | Question | First tool |
 |---|---|
 | How does X work, who calls Y, what does a change affect | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
-| Exact lines to edit or quote | `graph op=read` / Read |
+| Exact lines to edit or quote | `op=read` / Read |
 | Third-party API signatures | `sig` |
 | Exact text occurrences | `search` |
 | Project passport and CodeGraph detection | `op=info` → `integrations.codegraph` |

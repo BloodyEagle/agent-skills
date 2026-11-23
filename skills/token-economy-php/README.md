@@ -32,6 +32,7 @@ Layout:
       SKILL.md                rules and commands for the agent
       README.md               this file (English)
       README.ru.md            Russian version
+      references/php.md       PHP stack rules
       references/bitrix.md    index design, limitations, legacy API
       references/laravel.md  design of the Laravel part, limitations
       references/modx.md     MODX file-based elements, limitations
@@ -61,6 +62,8 @@ Check: `node scripts\bx.js op=info` in the site root prints the site root, the B
 | **Laravel:** container bindings (`bind`/`singleton`/`scoped`/`instance`, `when…needs…give`) and constructor injections | `container` |
 | **Laravel:** Blade templates — directives, variables, inheritance, who renders it, unused ones | `blade` |
 | **Laravel:** artisan commands and the schedule with frequencies (output capped at 50 records in total; `limit=` changes the cap, `limit=0` — everything, on truncation a marker with the number of hidden records) | `console` |
+| **MODX:** a file element (snippet/chunk/plugin/template) by name — location and links | `element` |
+| **MODX:** a `.tpl` template/chunk — snippet and chunk calls with line numbers, settings, TV and placeholder names | `tpl` |
 | Text search with encoding awareness | `search` |
 | Editing a method/function body without reading the old body into context: signature, comments, encoding, BOM and EOL — byte for byte | `patch_symbol` |
 | Reading, editing and creating files keeping cp1251 / UTF-8 / UTF-16LE/BE, BOM and CRLF; reading several line ranges in one call (`ranges`) | `read`, `patch`, `create` |
@@ -111,6 +114,7 @@ Speed (a synthetic project of 3300 files): the first index build about 1.2 s, a 
 ```sh
 node --test tests/token-economy-php/metrics.test.js
 node --test tests/token-economy-php/audit.test.js tests/token-economy-php/golden.test.js tests/token-economy-php/task1-node-pagination.test.js tests/token-economy-php/task2-outline-limit.test.js tests/token-economy-php/task3-read-ranges.test.js tests/token-economy-php/task4-patch-symbol.test.js tests/token-economy-php/task5-console-cap.test.js
+node --test tests/token-economy-php/hotspots.test.js tests/token-economy-php/payload.test.js tests/token-economy-php/codegraph.test.js
 node skills/token-economy-php/scripts/bx.js op=selftest
 node tests/token-economy-php/run-golden.js check
 ```
@@ -119,7 +123,7 @@ node tests/token-economy-php/run-golden.js check
 
 ## CodeGraph nearby
 
-With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
+With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `outline`, exact text `search`, precise ranges via `read`, the project passport via `info`, method/function body replacement via `patch_symbol`, file edits via `patch`/`create` and the mode-specific operations (Bitrix components, events, lang, URL routes, tables; Laravel routes, models, container, Blade, console; MODX elements and templates). Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
 
 `integrations.codegraph` preserves `available`, `cli_version`, `index`, `db_path`, `reason` and adds absolute full-path `executable`, `source` (`path` or `home`) and nullable `hint`. Lookup checks `PATH` first; only if no candidate exists does it check home `.local/bin` (`os.homedir()` in JavaScript, `os.path.expanduser('~')` in Python). Names: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` on Windows; `codegraph` on POSIX. A broken `PATH` candidate is not masked. Selected `executable`/`source` survive a failed version probe; `hint` is populated only after a successful home probe. Detection only runs `version` with a 2 s timeout: no `index`/`init`, database-content reads or detection cache. No CLI means `reason=not_installed`; no index means `reason=no_index`: use the regular skill workflow, not structural `explore`.
 
@@ -128,7 +132,6 @@ With `available=true` and `index=true`, a home CLI works immediately even outsid
 | Question | First tool |
 |---|---|
 | How does X work, who calls Y, what does a change affect | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
-| Exact lines to edit or quote | `graph op=read` / Read |
-| Third-party API signatures | `sig` |
+| Exact lines to edit or quote | `op=read` / Read |
 | Exact text occurrences | `search` |
 | Project passport and CodeGraph detection | `op=info` → `integrations.codegraph` |

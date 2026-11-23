@@ -30,8 +30,9 @@
 
     token-economy-java/
       SKILL.md                правила и команды для агента
-      README.md               this file (English)
-      README.ru.md            Russian version
+      README.md               английская версия
+      README.ru.md            русская версия (этот файл)
+      references/java.md      правила стека Java
       references/spring.md    устройство индекса, ограничения
       scripts/
         jv.js                 точка входа, все операции
@@ -109,13 +110,14 @@ node "<SCRIPTS_DIR>\jv.js" op=metrics top=15
 node skills/token-economy-java/scripts/jv.js op=selftest
 node --test tests/token-economy-java/metrics.test.js
 node --test tests/token-economy-java/classfile.test.js tests/token-economy-java/jar.test.js tests/token-economy-java/paths.test.js tests/token-economy-java/cache.test.js tests/token-economy-java/config.test.js tests/token-economy-java/integration.test.js
+node --test tests/token-economy-java/hotspots.test.js tests/token-economy-java/codegraph.test.js
 ```
 
 Тесты не запускают Maven/Gradle, не используют сеть и не изменяют реальные пользовательские кэши. Формат YAML остаётся подмножеством, не полноценным YAML-парсером; неизвестные теги и alias/merge-вычисления не интерпретируются.
 
 ## CodeGraph рядом
 
-При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `sig`, замена тела, генерация, `outline`, точный поиск текста `search`, точные диапазоны `graph op=read` и паспорт проекта `info`. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
+При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `sig` (сигнатуры классов из jar без декомпиляции), `outline`, точный поиск текста `search`, точные диапазоны `read`, паспорт проекта `info`, правки и создание файлов `patch`/`create`, а также профильные Spring-операции (`endpoints`, `beans`, `config`, `entities`, `table`, `listeners`, `impls`). Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
 
 `integrations.codegraph` сохраняет `available`, `cli_version`, `index`, `db_path`, `reason` и добавляет полный абсолютный `executable`, `source` (`path` или `home`), `hint` (строка или `null`). CLI ищется сначала в `PATH`; только при отсутствии кандидата — в домашнем `.local/bin` (`os.homedir()` в JavaScript, `os.path.expanduser('~')` в Python). Имена: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` на Windows; `codegraph` на POSIX. Неработающий кандидат в `PATH` не маскируется. Выбранные `executable`/`source` сохраняются при ошибке проверки версии; `hint` заполняется только после успешной домашней проверки. Детект запускает лишь `version` с таймаутом 2 с: без `index`/`init`, чтения содержимого базы и кэша детекта. Нет CLI — `reason=not_installed`; нет индекса — `reason=no_index`: прежний путь скилла, не структурный `explore`.
 
@@ -124,7 +126,7 @@ node --test tests/token-economy-java/classfile.test.js tests/token-economy-java/
 | Вопрос | Первый инструмент |
 |---|---|
 | Как работает X, кто вызывает Y, что заденет правка | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
-| Точные строки для правки или цитирования | `graph op=read` / Read |
+| Точные строки для правки или цитирования | `op=read` / Read |
 | Сигнатуры сторонних API | `sig` |
 | Точные вхождения текста | `search` |
 | Паспорт проекта и детект CodeGraph | `op=info` → `integrations.codegraph` |

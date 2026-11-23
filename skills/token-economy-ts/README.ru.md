@@ -38,12 +38,13 @@ node --test tests/token-economy-ts/ref-read.test.js
 node --test tests/token-economy-ts/edit-docs.test.js
 node --test tests/token-economy-ts/hotspots.test.js
 node --test tests/token-economy-ts/metrics.test.js
+node --test tests/token-economy-ts/codegraph.test.js
 ```
 
 Весь набор один раз в конце:
 
 ```text
-node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/search.test.js tests/token-economy-ts/ranges.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/react-detect.test.js tests/token-economy-ts/react-component.test.js tests/token-economy-ts/ref-corpus.test.js tests/token-economy-ts/ref-read.test.js tests/token-economy-ts/edit-docs.test.js tests/token-economy-ts/hotspots.test.js tests/token-economy-ts/metrics.test.js
+node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/search.test.js tests/token-economy-ts/ranges.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/react-detect.test.js tests/token-economy-ts/react-component.test.js tests/token-economy-ts/ref-corpus.test.js tests/token-economy-ts/ref-read.test.js tests/token-economy-ts/edit-docs.test.js tests/token-economy-ts/hotspots.test.js tests/token-economy-ts/metrics.test.js tests/token-economy-ts/codegraph.test.js
 ```
 
 Тесты создают и удаляют собственные временные проекты; `edit_symbol` в режиме auto может загрузить уже установленный TypeScript (в том числе найденный от каталога скрипта). `npm install` не нужен. В существующих suites проверяются также сигнатуры (`symbols.test.js`), realpath/junction confinement, root exports, missing-dependency fallback, Unicode, Windows-регистр, фантомы из комментариев/шаблонов, JSON completeness и две цепочки по 6200 файлов (линейная и замкнутая).

@@ -31,6 +31,7 @@ Layout:
       SKILL.md                rules and commands for the agent
       README.md               this file (English)
       README.ru.md            Russian version
+      references/kotlin.md    Kotlin stack rules
       references/android.md   index design, roles, limitations
       scripts/kt.js           entry point, all operations
 
@@ -73,7 +74,7 @@ Graph links: `extends`/`implements`, `inject` (a heuristic over constructors, `@
 
 Check from the root of the analyzed project: `node "<SCRIPTS_DIR>\kt.js" op=info`, where `<SCRIPTS_DIR>` is the absolute path to the installed skill. Git signals of «where it hurts»: `node "<SCRIPTS_DIR>\kt.js" op=hotspots top=10` (or `file=ПУТЬ` — one file with personal percentile labels). `op=selftest` — built-in checks without a project; their number is not a stable contract.
 
-Developer regressions from the repository root: `node --test tests/token-economy-kt/audit.test.js`. The checks run the real CLI in temp projects with a separate HOME, a timeout and a heap limit; real Gradle caches and tracked fixtures are not touched. Creating a file symlink may be unavailable on Windows — that check is marked skipped.
+Developer regressions from the repository root: `node --test tests/token-economy-kt/audit.test.js`. Git-signals and CodeGraph-detection regressions: `node --test tests/token-economy-kt/hotspots.test.js tests/token-economy-kt/codegraph.test.js`. The checks run the real CLI in temp projects with a separate HOME, a timeout and a heap limit; real Gradle caches and tracked fixtures are not touched. Creating a file symlink may be unavailable on Windows — that check is marked skipped.
 
 Damaged and unsupported JAR/AAR/.class files are skipped with a warning; if no class was read, a no-match with exit 0 is printed. `sig` picks a version heuristically among the first 30 healthy candidates, not via Gradle dependency resolution; an AAR contains only `classes.jar` for it. `Class#method` filters methods, not fields/constructors. The cache is verified by SHA-256 of content, size and mtime; a change rebuilds the whole index, there is no incremental parsing.
 
@@ -81,7 +82,7 @@ Damaged and unsupported JAR/AAR/.class files are skipped with a warning; if no c
 
 ## CodeGraph nearby
 
-With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
+With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `sig` (class signatures from jar/aar without decompilation), `outline`, exact text `search`, precise ranges via `read`, the project passport via `info`, file edits via `patch`/`create` and the Android operations (`manifest`, `room`, `di`, `nav`, `res`, `api`, `impls`). Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
 
 `integrations.codegraph` preserves `available`, `cli_version`, `index`, `db_path`, `reason` and adds absolute full-path `executable`, `source` (`path` or `home`) and nullable `hint`. Lookup checks `PATH` first; only if no candidate exists does it check home `.local/bin` (`os.homedir()` in JavaScript, `os.path.expanduser('~')` in Python). Names: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` on Windows; `codegraph` on POSIX. A broken `PATH` candidate is not masked. Selected `executable`/`source` survive a failed version probe; `hint` is populated only after a successful home probe. Detection only runs `version` with a 2 s timeout: no `index`/`init`, database-content reads or detection cache. No CLI means `reason=not_installed`; no index means `reason=no_index`: use the regular skill workflow, not structural `explore`.
 
@@ -90,7 +91,7 @@ With `available=true` and `index=true`, a home CLI works immediately even outsid
 | Question | First tool |
 |---|---|
 | How does X work, who calls Y, what does a change affect | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
-| Exact lines to edit or quote | `graph op=read` / Read |
+| Exact lines to edit or quote | `op=read` / Read |
 | Third-party API signatures | `sig` |
 | Exact text occurrences | `search` |
 | Project passport and CodeGraph detection | `op=info` → `integrations.codegraph` |

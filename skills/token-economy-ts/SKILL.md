@@ -1,6 +1,6 @@
 ---
 name: token-economy-ts
-version: 1.7.3
+version: 1.7.4
 description: 'Навигация и экономный анализ TypeScript/JavaScript-проектов — Angular, React, Node (Express/Fastify/Koa), NestJS, отдельные JS/TS-файлы Vue (не .vue SFC). Звать вместо встроенного поиска (search_files/ripgrep) и перед правкой любого TS/JS-кода: текстовый поиск (search), определения и связи символов (graph symbol/deps/rdeps/path), Angular-селекторы (graph selector), файловые метрики (graph op=metrics), git-хотспоты (graph op=hotspots), JSX-использования (graph op=component), outline крупного файла, сигнатуры библиотек (sig), edit_symbol и Angular generate. Сначала прочитай references/typescript.md, затем graph op=info; Angular/React-профили — по типу проекта или перед профильной командой.'
 ---
 

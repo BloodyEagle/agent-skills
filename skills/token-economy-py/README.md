@@ -30,6 +30,7 @@ Layout:
       SKILL.md                rules and commands for the agent
       README.md               this file (English)
       README.ru.md            Russian version
+      references/python.md    Python stack rules
       references/graph.md     graph design, link kinds, limitations
       scripts/
         te.py                 the single script: graph, outline, search, sig, info
@@ -65,6 +66,8 @@ Metrics is a stdlib port inside `te.py`, no Node.js/metrics.js; numeric parity w
 
 From the repository root: `node --test tests/token-economy-py/metrics.test.js`. Node is needed only by the test runner, not by the skill itself. It checks the formulas, JS parity at 1e-9, LF text, the CLI, lazy/types, arguments and the immutability of the warmed cache.
 
+Also from the repository root: `node --test tests/token-economy-py/cli.test.js tests/token-economy-py/hotspots.test.js tests/token-economy-py/codegraph.test.js` (the CLI, git signals and the CodeGraph detection).
+
 Graph links come in three kinds: a static import at module load, a lazy import inside a function (`(lazy)`) and a static import under `TYPE_CHECKING` outside functions (`(types)`). Recognized dynamic calls are always marked `(lazy)`, even at module level. Only runtime edges participate in `graph cycles`: cycles through lazy/types are not shown by that operation; `graph metrics` counts all three kinds. Files are marked `[test]`, `[script]` (has `__main__`) and `[package]`, and `rdeps` shows the tests that statically import the module being changed.
 
 `sig` does not import Python code: it finds the source file via `sys.path`, the project and the virtual environment and parses it with `ast`. It follows re-exports (`from .api import get`), star imports, module aliases (`os.path`) and base classes given by a simple name (including imported ones). For modules from `sys.builtin_module_names` it uses import and `inspect`.
@@ -96,7 +99,7 @@ Savings examples: the outline of `subprocess.py` (88 KB, 2216 lines) takes about
 
 ## CodeGraph nearby
 
-With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `sig`, body replacement, generation, `outline`, exact text `search`, precise ranges via `graph op=read` and the project passport via `info`. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
+With a project index (`.codegraph/`) and `info` reporting `available=true` and `index=true` in `integrations.codegraph`, structural questions go first to `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: use the returned absolute path, not bare `codegraph`. What CodeGraph lacks stays with the skill: `sig` (signatures from installed packages), `outline`, exact text `search` and the project passport via `info`; precise reads and edits stay with the agent's native tools — this skill has no read/edit operations of its own. Coordinates for edits are not taken from the explore output; on a miss or error fall back to the regular path once; `codegraph index`/`init` is never run without an explicit request. The full CodeGraph bridge rule is in SKILL.md.
 
 `integrations.codegraph` preserves `available`, `cli_version`, `index`, `db_path`, `reason` and adds absolute full-path `executable`, `source` (`path` or `home`) and nullable `hint`. Lookup checks `PATH` first; only if no candidate exists does it check home `.local/bin` (`os.homedir()` in JavaScript, `os.path.expanduser('~')` in Python). Names: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` on Windows; `codegraph` on POSIX. A broken `PATH` candidate is not masked. Selected `executable`/`source` survive a failed version probe; `hint` is populated only after a successful home probe. Detection only runs `version` with a 2 s timeout: no `index`/`init`, database-content reads or detection cache. No CLI means `reason=not_installed`; no index means `reason=no_index`: use the regular skill workflow, not structural `explore`.
 
@@ -105,7 +108,7 @@ With `available=true` and `index=true`, a home CLI works immediately even outsid
 | Question | First tool |
 |---|---|
 | How does X work, who calls Y, what does a change affect | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
-| Exact lines to edit or quote | `graph op=read` / Read |
+| Exact lines to edit or quote | Read (the agent's native tool) |
 | Third-party API signatures | `sig` |
 | Exact text occurrences | `search` |
 | Project passport and CodeGraph detection | `op=info` → `integrations.codegraph` |

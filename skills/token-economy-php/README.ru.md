@@ -30,8 +30,9 @@
 
     token-economy-php/
       SKILL.md                правила и команды для агента
-      README.md               this file (English)
-      README.ru.md            Russian version
+      README.md               английская версия
+      README.ru.md            русская версия (этот файл)
+      references/php.md       правила стека PHP
       references/bitrix.md    устройство индекса, ограничения, старое API
       references/laravel.md  устройство Laravel-части, ограничения
       references/modx.md     файловые элементы MODX, ограничения
@@ -61,6 +62,8 @@
 | **Laravel:** привязки контейнера (`bind`/`singleton`/`scoped`/`instance`, `when…needs…give`) и инжекции через конструктор | `container` |
 | **Laravel:** Blade-шаблоны — директивы, переменные, наследование, откуда рендерится, неиспользуемые | `blade` |
 | **Laravel:** artisan-команды и расписание с частотами (вывод ограничен 50 записями суммарно; `limit=` меняет кап, `limit=0` — всё, при усечении — маркер с числом скрытых записей) | `console` |
+| **MODX:** файловый элемент (сниппет/чанк/плагин/шаблон) по имени — расположение и связи | `element` |
+| **MODX:** шаблон/чанк `.tpl` — вызовы сниппетов и чанков с номерами строк, имена настроек, TV и плейсхолдеров | `tpl` |
 | Поиск по тексту с учётом кодировки | `search` |
 | Правка тела метода/функции без чтения старого тела в контекст: сигнатура, комментарии, кодировка, BOM и EOL — байт в байт | `patch_symbol` |
 | Чтение, правка и создание файлов с сохранением cp1251 / UTF-8 / UTF-16LE/BE, BOM и CRLF; чтение нескольких диапазонов строк за вызов (`ranges`) | `read`, `patch`, `create` |
@@ -111,6 +114,7 @@ node "<SCRIPTS_DIR>\bx.js" op=metrics file=local/modules/acme.module/include.php
 ```sh
 node --test tests/token-economy-php/metrics.test.js
 node --test tests/token-economy-php/audit.test.js tests/token-economy-php/golden.test.js tests/token-economy-php/task1-node-pagination.test.js tests/token-economy-php/task2-outline-limit.test.js tests/token-economy-php/task3-read-ranges.test.js tests/token-economy-php/task4-patch-symbol.test.js tests/token-economy-php/task5-console-cap.test.js
+node --test tests/token-economy-php/hotspots.test.js tests/token-economy-php/payload.test.js tests/token-economy-php/codegraph.test.js
 node skills/token-economy-php/scripts/bx.js op=selftest
 node tests/token-economy-php/run-golden.js check
 ```
@@ -119,7 +123,7 @@ node tests/token-economy-php/run-golden.js check
 
 ## CodeGraph рядом
 
-При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `sig`, замена тела, генерация, `outline`, точный поиск текста `search`, точные диапазоны `graph op=read` и паспорт проекта `info`. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
+При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `outline`, точный поиск текста `search`, точные диапазоны `read`, паспорт проекта `info`, правка тела метода/функции `patch_symbol`, точечные правки и создание файлов `patch`/`create`, а также профильные операции режимов (Битрикс: компоненты, события, lang, маршруты, таблицы; Laravel: маршруты, модели, контейнер, Blade, команды; MODX: элементы и шаблоны). Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
 
 `integrations.codegraph` сохраняет `available`, `cli_version`, `index`, `db_path`, `reason` и добавляет полный абсолютный `executable`, `source` (`path` или `home`), `hint` (строка или `null`). CLI ищется сначала в `PATH`; только при отсутствии кандидата — в домашнем `.local/bin` (`os.homedir()` в JavaScript, `os.path.expanduser('~')` в Python). Имена: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` на Windows; `codegraph` на POSIX. Неработающий кандидат в `PATH` не маскируется. Выбранные `executable`/`source` сохраняются при ошибке проверки версии; `hint` заполняется только после успешной домашней проверки. Детект запускает лишь `version` с таймаутом 2 с: без `index`/`init`, чтения содержимого базы и кэша детекта. Нет CLI — `reason=not_installed`; нет индекса — `reason=no_index`: прежний путь скилла, не структурный `explore`.
 
@@ -128,7 +132,6 @@ node tests/token-economy-php/run-golden.js check
 | Вопрос | Первый инструмент |
 |---|---|
 | Как работает X, кто вызывает Y, что заденет правка | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
-| Точные строки для правки или цитирования | `graph op=read` / Read |
-| Сигнатуры сторонних API | `sig` |
+| Точные строки для правки или цитирования | `op=read` / Read |
 | Точные вхождения текста | `search` |
 | Паспорт проекта и детект CodeGraph | `op=info` → `integrations.codegraph` |
