@@ -1424,37 +1424,43 @@ def detect_codegraph(root: str) -> dict:
     """Мостик с CodeGraph: единственная машинная часть — детект.
 
     Вердикт available — только реальный запуск `codegraph version` с таймаутом 2 с;
-    поиск файла в PATH — локатор для запуска, а не ответ (на Windows .cmd-шим без shell
-    не исполняется). Ни index/init, ни чтения .codegraph/codegraph.db, ни кэша.
+    поиск файла в PATH или ~/.local/bin — локатор для запуска, а не ответ (на Windows .cmd-шим
+    не исполняется без shell). Ни index/init, ни чтения .codegraph/codegraph.db, ни кэша.
     Никогда не бросает исключение.
     """
-    res = {"available": False, "cli_version": None, "index": False, "db_path": None, "reason": None}
+    res = {"available": False, "cli_version": None, "index": False, "db_path": None, "reason": None,
+           "executable": None, "source": None, "hint": None}
     try:
         res["index"] = os.path.isfile(os.path.join(root, ".codegraph", "codegraph.db"))
         if res["index"]:
             res["db_path"] = ".codegraph/codegraph.db"
         is_win = os.name == "nt"
         bin_path = None
-        if is_win:
-            for d in os.environ.get("PATH", "").split(os.pathsep):
-                if not d:
+        names = ("codegraph.cmd", "codegraph.bat", "codegraph.exe") if is_win else ("codegraph",)
+        for source in ("path", "home"):
+            dirs = (os.environ.get("PATH", "").split(os.pathsep) if source == "path"
+                    else [os.path.join(os.path.expanduser("~"), ".local", "bin")])
+            for d in dirs:
+                if not d and is_win:
                     continue
-                for name in ("codegraph.cmd", "codegraph.bat", "codegraph.exe"):
+                for name in names:
                     try:
-                        p = os.path.join(d, name)
-                    except ValueError:
-                        continue
-                    try:
-                        if os.path.isfile(p):
-                            bin_path = p
-                            break
-                    except OSError:
+                        p = os.path.abspath(os.path.join(d.strip('"') if is_win else d, name))
+                        if not os.path.isfile(p) or (not is_win and not os.access(p, os.X_OK)):
+                            continue
+                        bin_path = p
+                        break
+                    except (OSError, ValueError):
                         continue
                 if bin_path:
                     break
-            if not bin_path:
-                res["reason"] = "not_installed"
-                return res
+            if bin_path:
+                res["source"] = source
+                break
+        if not bin_path:
+            res["reason"] = "not_installed"
+            return res
+        res["executable"] = bin_path
         try:
             if is_win and not bin_path.lower().endswith(".exe"):
                 # строка, а не список: cmd.exe получает команду дословно,
@@ -1462,7 +1468,7 @@ def detect_codegraph(root: str) -> dict:
                 cmdline = '"%s" /d /s /c ""%s" version"' % (os.environ.get("COMSPEC") or "cmd.exe", bin_path)
                 rc, out = _run_cli_version(cmdline)
             else:
-                rc, out = _run_cli_version([bin_path if is_win else "codegraph", "version"])
+                rc, out = _run_cli_version([bin_path, "version"])
         except FileNotFoundError:
             res["reason"] = "not_installed"
             return res
@@ -1479,6 +1485,9 @@ def detect_codegraph(root: str) -> dict:
         res["available"] = True
         res["cli_version"] = lines[0].strip() if lines else None
         res["reason"] = None if res["index"] else "no_index"
+        if res["source"] == "home":
+            res["hint"] = ("CodeGraph найден вне PATH. Интеграция работает. Для вызова codegraph из терминала добавьте «"
+                           + os.path.dirname(bin_path) + "» в пользовательский PATH и перезапустите приложение.")
         return res
     except Exception:
         res["available"] = False
@@ -1530,8 +1539,11 @@ def cmd_info(a):
     if bad:
         print(f"ВНИМАНИЕ: не разобраны ({len(bad)}): " + ", ".join(bad[:8]) + (" …" if len(bad) > 8 else ""))
     if str(getattr(a, "integrations", "1")) != "0":
-        print("integrations: " + json.dumps({"codegraph": detect_codegraph(root)},
+        codegraph = detect_codegraph(root)
+        print("integrations: " + json.dumps({"codegraph": codegraph},
                                             ensure_ascii=False, separators=(",", ":")))
+        if codegraph["hint"]:
+            print(codegraph["hint"])
 
 
 # ---------- outline ----------

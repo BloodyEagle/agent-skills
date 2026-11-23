@@ -96,11 +96,15 @@ Metrics — stdlib-порт в `te.py`, без Node.js/metrics.js; числов�
 
 ## CodeGraph рядом
 
-Если в проекте есть индекс CodeGraph (`.codegraph/`) и CLI CodeGraph доступен — `op=info` показывает это в `integrations.codegraph` — структурный вопрос сначала туда: `codegraph explore "<вопрос>"` отвечает «как работает X», «кто вызывает Y», «что заденет правка Z» одним вызовом вместо серии `search` и чтений. Чего у CodeGraph нет, остаётся своим: `sig`, замена тела, генерация, `outline`, точный поиск текста `search`, точные диапазоны `graph op=read` и паспорт проекта `op=info`. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило — в SKILL.md, раздел `CodeGraph рядом`.
+При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `sig`, замена тела, генерация, `outline`, точный поиск текста `search`, точные диапазоны `graph op=read` и паспорт проекта `info`. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
+
+`integrations.codegraph` сохраняет `available`, `cli_version`, `index`, `db_path`, `reason` и добавляет полный абсолютный `executable`, `source` (`path` или `home`), `hint` (строка или `null`). CLI ищется сначала в `PATH`; только при отсутствии кандидата — в домашнем `.local/bin` (`os.homedir()` в JavaScript, `os.path.expanduser('~')` в Python). Имена: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` на Windows; `codegraph` на POSIX. Неработающий кандидат в `PATH` не маскируется. Выбранные `executable`/`source` сохраняются при ошибке проверки версии; `hint` заполняется только после успешной домашней проверки. Детект запускает лишь `version` с таймаутом 2 с: без `index`/`init`, чтения содержимого базы и кэша детекта. Нет CLI — `reason=not_installed`; нет индекса — `reason=no_index`: прежний путь скилла, не структурный `explore`.
+
+При `available=true` и `index=true` домашний CLI работает сразу даже вне `PATH`. Агент обязан показать ненулевой `hint` на языке разговора, при необходимости перевести. Подсказка объясняет необязательное ручное добавление домашнего `.local/bin` в `PATH` и полный перезапуск приложения для новых терминалов. Никаких автоматических изменений `PATH` процесса/пользователя, профилей или реестра.
 
 | Вопрос | Первый инструмент |
 |---|---|
-| Как работает X, кто вызывает Y, что заденет правка | `codegraph explore "<вопрос>"` |
+| Как работает X, кто вызывает Y, что заденет правка | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
 | Точные строки для правки или цитирования | `graph op=read` / Read |
 | Сигнатуры сторонних API | `sig` |
 | Точные вхождения текста | `search` |
