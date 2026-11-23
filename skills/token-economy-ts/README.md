@@ -38,12 +38,13 @@ node --test tests/token-economy-ts/ref-read.test.js
 node --test tests/token-economy-ts/edit-docs.test.js
 node --test tests/token-economy-ts/hotspots.test.js
 node --test tests/token-economy-ts/metrics.test.js
+node --test tests/token-economy-ts/codegraph.test.js
 ```
 
 The whole set at once at the end:
 
 ```text
-node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/search.test.js tests/token-economy-ts/ranges.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/react-detect.test.js tests/token-economy-ts/react-component.test.js tests/token-economy-ts/ref-corpus.test.js tests/token-economy-ts/ref-read.test.js tests/token-economy-ts/edit-docs.test.js tests/token-economy-ts/hotspots.test.js tests/token-economy-ts/metrics.test.js
+node --test tests/token-economy-ts/files.test.js tests/token-economy-ts/symbols.test.js tests/token-economy-ts/graph.test.js tests/token-economy-ts/search.test.js tests/token-economy-ts/ranges.test.js tests/token-economy-ts/angular.test.js tests/token-economy-ts/react-detect.test.js tests/token-economy-ts/react-component.test.js tests/token-economy-ts/ref-corpus.test.js tests/token-economy-ts/ref-read.test.js tests/token-economy-ts/edit-docs.test.js tests/token-economy-ts/hotspots.test.js tests/token-economy-ts/metrics.test.js tests/token-economy-ts/codegraph.test.js
 ```
 
 The tests create and delete their own temporary projects; `edit_symbol` in auto mode may load an already installed TypeScript (including one found from the script directory). `npm install` is not needed. The existing suites also cover signatures (`symbols.test.js`), realpath/junction confinement, root exports, missing-dependency fallback, Unicode, Windows case handling, phantoms from comments/templates, JSON completeness and two chains of 6200 files (linear and closed).

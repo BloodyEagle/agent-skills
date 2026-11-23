@@ -28,8 +28,9 @@
 
     token-economy-py/
       SKILL.md                правила и команды для агента
-      README.md               this file (English)
-      README.ru.md            Russian version
+      README.md               английская версия
+      README.ru.md            русская версия (этот файл)
+      references/python.md    правила стека Python
       references/graph.md     устройство графа, виды связей, ограничения
       scripts/
         te.py                 единый скрипт: graph, outline, search, sig, info
@@ -65,6 +66,8 @@ Metrics — stdlib-порт в `te.py`, без Node.js/metrics.js; числов�
 
 Из корня репозитория: `node --test tests/token-economy-py/metrics.test.js`. Node нужен только тестовому runner, не самому скиллу. Проверяются формулы, JS-паритет 1e-9, LF-текст, CLI, lazy/types, аргументы и неизменность прогретого кэша.
 
+Также из корня репозитория: `node --test tests/token-economy-py/cli.test.js tests/token-economy-py/hotspots.test.js tests/token-economy-py/codegraph.test.js` (CLI, git-сигналы и детект CodeGraph).
+
 Связи в графе трёх видов: статический импорт при загрузке модуля, ленивый импорт внутри функции (`(lazy)`) и статический импорт под `TYPE_CHECKING` вне функции (`(types)`). Распознанные динамические вызовы всегда помечаются `(lazy)`, даже на уровне модуля. В `graph cycles` участвуют только runtime-рёбра: циклы через lazy/types эта операция не показывает; `graph metrics` учитывает все три вида связей. Файлы помечены `[test]`, `[script]` (есть `__main__`) и `[package]`, а `rdeps` показывает тесты, которые статически импортируют изменяемый модуль.
 
 `sig` не импортирует Python-код: он находит файл-источник по `sys.path`, проекту и виртуальному окружению и разбирает его через `ast`. Идёт по реэкспортам (`from .api import get`), звёздным импортам, псевдонимам модулей (`os.path`) и базовым классам, заданным простым именем (в том числе импортированным). Для модулей из `sys.builtin_module_names` применяется импорт и `inspect`.
@@ -96,7 +99,7 @@ Metrics — stdlib-порт в `te.py`, без Node.js/metrics.js; числов�
 
 ## CodeGraph рядом
 
-При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `sig`, замена тела, генерация, `outline`, точный поиск текста `search`, точные диапазоны `graph op=read` и паспорт проекта `info`. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
+При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `sig` (сигнатуры установленных пакетов), `outline`, точный поиск текста `search` и паспорт проекта `info`; точечное чтение и правки — штатными инструментами агента, своих операций чтения/правок в этом скилле нет. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
 
 `integrations.codegraph` сохраняет `available`, `cli_version`, `index`, `db_path`, `reason` и добавляет полный абсолютный `executable`, `source` (`path` или `home`), `hint` (строка или `null`). CLI ищется сначала в `PATH`; только при отсутствии кандидата — в домашнем `.local/bin` (`os.homedir()` в JavaScript, `os.path.expanduser('~')` в Python). Имена: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` на Windows; `codegraph` на POSIX. Неработающий кандидат в `PATH` не маскируется. Выбранные `executable`/`source` сохраняются при ошибке проверки версии; `hint` заполняется только после успешной домашней проверки. Детект запускает лишь `version` с таймаутом 2 с: без `index`/`init`, чтения содержимого базы и кэша детекта. Нет CLI — `reason=not_installed`; нет индекса — `reason=no_index`: прежний путь скилла, не структурный `explore`.
 
@@ -105,7 +108,7 @@ Metrics — stdlib-порт в `te.py`, без Node.js/metrics.js; числов�
 | Вопрос | Первый инструмент |
 |---|---|
 | Как работает X, кто вызывает Y, что заденет правка | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
-| Точные строки для правки или цитирования | `graph op=read` / Read |
+| Точные строки для правки или цитирования | Read (штатный инструмент агента) |
 | Сигнатуры сторонних API | `sig` |
 | Точные вхождения текста | `search` |
 | Паспорт проекта и детект CodeGraph | `op=info` → `integrations.codegraph` |

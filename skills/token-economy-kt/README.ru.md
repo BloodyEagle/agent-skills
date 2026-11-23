@@ -29,8 +29,9 @@
 
     token-economy-kt/
       SKILL.md                правила и команды для агента
-      README.md               this file (English)
-      README.ru.md            Russian version
+      README.md               английская версия
+      README.ru.md            русская версия (этот файл)
+      references/kotlin.md    правила стека Kotlin
       references/android.md   устройство индекса, роли, ограничения
       scripts/kt.js           точка входа, все операции
 
@@ -73,7 +74,7 @@ node "<SCRIPTS_DIR>\kt.js" op=metrics top=15
 
 Проверка из корня анализируемого проекта: `node "<SCRIPTS_DIR>\kt.js" op=info`, где `<SCRIPTS_DIR>` — абсолютный путь к установленному скиллу. Git-сигналы «где болит»: `node "<SCRIPTS_DIR>\kt.js" op=hotspots top=10` (или `file=ПУТЬ` — один файл с персональными процентильными метками). `op=selftest` — встроенные проверки без проекта; их число не является стабильным контрактом.
 
-Регрессии разработчика из корня репозитория скиллов: `node --test tests/token-economy-kt/audit.test.js`. Проверки запускают настоящий CLI во временных проектах с отдельным HOME, таймаутом и лимитом heap; реальные Gradle-кэши и отслеживаемые фикстуры не меняются. Создание файловых symlink может быть недоступно в Windows — соответствующая проверка отмечается skipped.
+Регрессии разработчика из корня репозитория скиллов: `node --test tests/token-economy-kt/audit.test.js`. Регрессии git-сигналов и детекта CodeGraph: `node --test tests/token-economy-kt/hotspots.test.js tests/token-economy-kt/codegraph.test.js`. Проверки запускают настоящий CLI во временных проектах с отдельным HOME, таймаутом и лимитом heap; реальные Gradle-кэши и отслеживаемые фикстуры не меняются. Создание файловых symlink может быть недоступно в Windows — соответствующая проверка отмечается skipped.
 
 Повреждённые и неподдерживаемые JAR/AAR/.class пропускаются с предупреждением; если ни один класс не прочитан, выводится no-match с exit 0. `sig` выбирает версию эвристически среди первых 30 исправных кандидатов, не по Gradle dependency resolution; AAR содержит для него только `classes.jar`. `Class#method` фильтрует методы, но не поля/конструкторы. Кэш проверяется по SHA-256 содержимого, размеру и mtime; изменение пересобирает индекс целиком, инкрементального парсинга нет.
 
@@ -81,7 +82,7 @@ node "<SCRIPTS_DIR>\kt.js" op=metrics top=15
 
 ## CodeGraph рядом
 
-При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `sig`, замена тела, генерация, `outline`, точный поиск текста `search`, точные диапазоны `graph op=read` и паспорт проекта `info`. Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
+При индексе проекта (`.codegraph/`) и `available=true` вместе с `index=true` в `integrations.codegraph` ответа `info` структурные вопросы идут сначала в `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"`: подставьте возвращённый абсолютный путь, а не вызывайте `codegraph` без пути. Чего у CodeGraph нет, остаётся своим: `sig` (сигнатуры классов из jar/aar без декомпиляции), `outline`, точный поиск текста `search`, точные диапазоны `read`, паспорт проекта `info`, правки и создание файлов `patch`/`create`, а также профильные Android-операции (`manifest`, `room`, `di`, `nav`, `res`, `api`, `impls`). Координаты для правки из вывода explore не берутся; пусто или ошибка — один раз уйти в прежний путь; `codegraph index`/`init` без явной просьбы не запускается. Полное правило мостика к CodeGraph — в SKILL.md.
 
 `integrations.codegraph` сохраняет `available`, `cli_version`, `index`, `db_path`, `reason` и добавляет полный абсолютный `executable`, `source` (`path` или `home`), `hint` (строка или `null`). CLI ищется сначала в `PATH`; только при отсутствии кандидата — в домашнем `.local/bin` (`os.homedir()` в JavaScript, `os.path.expanduser('~')` в Python). Имена: `codegraph.cmd`, `codegraph.bat`, `codegraph.exe` на Windows; `codegraph` на POSIX. Неработающий кандидат в `PATH` не маскируется. Выбранные `executable`/`source` сохраняются при ошибке проверки версии; `hint` заполняется только после успешной домашней проверки. Детект запускает лишь `version` с таймаутом 2 с: без `index`/`init`, чтения содержимого базы и кэша детекта. Нет CLI — `reason=not_installed`; нет индекса — `reason=no_index`: прежний путь скилла, не структурный `explore`.
 
@@ -90,7 +91,7 @@ node "<SCRIPTS_DIR>\kt.js" op=metrics top=15
 | Вопрос | Первый инструмент |
 |---|---|
 | Как работает X, кто вызывает Y, что заденет правка | `"<absolute-path-from-integrations.codegraph.executable>" explore "<question>"` |
-| Точные строки для правки или цитирования | `graph op=read` / Read |
+| Точные строки для правки или цитирования | `op=read` / Read |
 | Сигнатуры сторонних API | `sig` |
 | Точные вхождения текста | `search` |
 | Паспорт проекта и детект CodeGraph | `op=info` → `integrations.codegraph` |

@@ -22,50 +22,50 @@
     },
     {
       "name": "token-economy-java",
-      "version": "1.3.2",
+      "version": "1.3.3",
       "updated": "2026-11-23",
       "files": 16,
-      "sha256": "d7da1c9143ea97e3fadd5084c4083d77ab886d2ef1cec764add58c9e76aae32f",
+      "sha256": "ee41aa6dbc02381edef1afc8f3966951cce9a107136c216840f2a457bf3a20d7",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-kt",
-      "version": "1.3.2",
+      "version": "1.3.3",
       "updated": "2026-11-23",
       "files": 9,
-      "sha256": "f83cf99fcd6d00d33fb3eb123abed74d807eaa9ebff46fd32fb505bc514e1e74",
+      "sha256": "93712d888dec513f47820b1a373c46c7b851d3975c3eaf4b663266f1926b936e",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-php",
-      "version": "1.5.2",
+      "version": "1.5.3",
       "updated": "2026-11-23",
       "files": 18,
-      "sha256": "22e3ecda6cb82ed6a892e65164291ed9f731fb877acc5ab60cd409bcacd8d900",
+      "sha256": "0a1edafa527794b6cd28f9244b28683e8bfc655f2624669b3f8656fddb334032",
       "requires": [
         "node>=18"
       ]
     },
     {
       "name": "token-economy-py",
-      "version": "1.5.2",
+      "version": "1.5.3",
       "updated": "2026-11-23",
       "files": 7,
-      "sha256": "d3dea69b4ae7ab60d049c5b01bc7d770b379e88b500da4b754d34a73f4a87ea6",
+      "sha256": "904acf8590083d1a0e5b9f8683c4837a67c260de51221222edc282a4a3b8a240",
       "requires": [
         "python>=3"
       ]
     },
     {
       "name": "token-economy-ts",
-      "version": "1.7.3",
+      "version": "1.7.4",
       "updated": "2026-11-23",
       "files": 21,
-      "sha256": "5bc0bfa2c0d0b843e7a2493dbef91388140f8c88ad179dae8f6971f18a932c18",
+      "sha256": "b7b7723afcc2d4ad3f1673129943909ac926c8c3dcee8b992ed4a72ef3804260",
       "requires": [
         "node>=18"
       ]
